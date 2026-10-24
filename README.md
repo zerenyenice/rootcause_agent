@@ -199,3 +199,35 @@ build-mvp) automatically.
 - **Security-first**: no hardcoded secrets, validated inputs, parameterized queries; sensitive diffs get a security review automatically.
 - **`PROJECT.md` wins**: if a task conflicts with it, agents stop and raise it rather than reinterpreting scope.
 - **Conventional commits**: `feat:` / `fix:` / `refactor:` / `test:` / `docs:` / `chore:`.
+
+## Development
+
+The repository is a Python monorepo managed as a [`uv`](https://docs.astral.sh/uv/)
+workspace. Python 3.12 is pinned in `.python-version`; `uv` installs it on
+demand if it is missing.
+
+```bash
+uv sync                 # create .venv and install every workspace package (editable) + dev tools
+uv run pytest           # run all tests with coverage (fails under 80%)
+uv run ruff check .     # lint
+uv run ruff format --check .
+uv run mypy             # strict type-check of every src/ tree
+```
+
+Layout:
+
+```
+apps/
+├── api/        — rootcause_api: the FastAPI service (lands in T005; not runnable yet)
+└── web/        — placeholder for the Next.js UI (lands in T070; not runnable yet)
+packages/       — one installable distribution each: core, agents, tools, catalog,
+                  connections, anomaly, memory, evals (src/ layout, py.typed)
+docs/           — PRD, backlog, plans and process documentation
+deploy/         — placeholder for the Docker Compose stack (lands in T002)
+tests/          — workspace-level tests; each package also has its own tests/
+```
+
+Every distribution under `apps/api` and `packages/*` is a workspace member and is
+installed in editable mode by `uv sync`, so changes are importable without a
+reinstall. Shared tooling (ruff, mypy, pytest, coverage) is configured once in the
+root `pyproject.toml`.
