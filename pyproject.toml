@@ -1,0 +1,75 @@
+[project]
+name = "rootcause-workspace"
+version = "0.1.0"
+description = "uv workspace root for the RootCause monorepo (apps/ and packages/)."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
+
+[dependency-groups]
+dev = ["pytest>=8", "pytest-cov>=5", "ruff>=0.6", "mypy>=1.11"]
+# Workspace members are installed editable by `uv sync` through this default
+# group so the root project itself carries no runtime dependencies.
+workspace = [
+    "rootcause-api",
+    "rootcause-core",
+    "rootcause-agents",
+    "rootcause-tools",
+    "rootcause-catalog",
+    "rootcause-connections",
+    "rootcause-anomaly",
+    "rootcause-memory",
+    "rootcause-evals",
+]
+
+[tool.uv]
+package = false
+default-groups = ["dev", "workspace"]
+
+[tool.uv.workspace]
+members = ["apps/api", "packages/*"]
+
+[tool.uv.sources]
+rootcause-api = { workspace = true }
+rootcause-core = { workspace = true }
+rootcause-agents = { workspace = true }
+rootcause-tools = { workspace = true }
+rootcause-catalog = { workspace = true }
+rootcause-connections = { workspace = true }
+rootcause-anomaly = { workspace = true }
+rootcause-memory = { workspace = true }
+rootcause-evals = { workspace = true }
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+# Workspace src/ trees so isort classifies rootcause_* imports as first-party.
+src = [".", "apps/api/src", "packages/*/src"]
+# Pre-existing template/harness tooling, not part of the product codebase.
+extend-exclude = [".claude", "scripts/backlog_to_github.py", "setup-harness.py"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["apps/api/src", "packages/*/src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "apps", "packages"]
+# importlib mode lets every package keep its own tests/test_smoke.py without
+# basename collisions; the --cov flags enforce the 80% gate from the rules.
+addopts = "--import-mode=importlib --cov --cov-report=term-missing --cov-fail-under=80"
+markers = [
+    "unit: fast isolated tests",
+    "integration: tests touching services",
+    "e2e: end-to-end flows",
+]
+
+[tool.coverage.run]
+source = ["apps", "packages"]
+omit = ["*/tests/*"]
+
+[tool.coverage.report]
+show_missing = true
