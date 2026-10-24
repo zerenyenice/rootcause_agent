@@ -1,0 +1,1177 @@
+# RootCause backlog — source of truth for the GitHub project "RootCause".
+# Derived from docs/PRD.md. Upload with: python3 scripts/backlog_to_github.py --repo <owner/repo> --project RootCause
+#
+# size: S (<1 day), M (1-3 days), L (3-5 days), XL (>1 week, should be split)
+# phase: 0 Foundations, 1 Anomaly agent, 2 Root-cause agent, 3 Memory, 4 Catalog UI and hardening
+# area labels: backend, frontend, agents, data, evals, devops, security, docs
+
+milestones:
+  - name: "Phase 0 - Foundations"
+    description: "Connection service, catalog crawl and search, orchestrator + metadata agent, demo warehouse, CI. Gate: question-to-SQL works on the demo warehouse."
+  - name: "Phase 1 - Anomaly agent"
+    description: "aggregate_series, detection skills, decomposition, anomaly records, minimal chat UI. Gate: scan finds 90% of seeded anomalies."
+  - name: "Phase 2 - Root-cause agent"
+    description: "5 Whys skill port, branching, validation, WhyChain report, evidence panel. Gate: 70% accepted on 20 seeded cases."
+  - name: "Phase 3 - Memory"
+    description: "OpenViking server, session commit, lesson extraction, skill promotion, memory UI. Gate: a repeated case is solved using a lesson."
+  - name: "Phase 4 - Catalog UI and hardening"
+    description: "Catalog browser, review queue, connections UI, auth, roles, dialects. Gate: pilot on one real customer database."
+
+labels:
+  - { name: "epic", color: "5319E7", description: "Epic grouping several tasks" }
+  - { name: "area:backend", color: "1D76DB", description: "Python services and API" }
+  - { name: "area:frontend", color: "0E8A16", description: "Next.js UI" }
+  - { name: "area:agents", color: "D93F0B", description: "DeepAgents orchestrator, subagents, prompts, skills" }
+  - { name: "area:data", color: "FBCA04", description: "Catalog, connections, SQL, storage" }
+  - { name: "area:evals", color: "C2E0C6", description: "Evaluation dataset and scoring" }
+  - { name: "area:devops", color: "BFD4F2", description: "CI/CD, Docker, deployment" }
+  - { name: "area:security", color: "B60205", description: "Auth, secrets, tenant isolation" }
+  - { name: "area:docs", color: "EDEDED", description: "Documentation and ADRs" }
+  - { name: "phase:0", color: "F9D0C4", description: "Phase 0 Foundations" }
+  - { name: "phase:1", color: "F9D0C4", description: "Phase 1 Anomaly agent" }
+  - { name: "phase:2", color: "F9D0C4", description: "Phase 2 Root-cause agent" }
+  - { name: "phase:3", color: "F9D0C4", description: "Phase 3 Memory" }
+  - { name: "phase:4", color: "F9D0C4", description: "Phase 4 Catalog UI and hardening" }
+  - { name: "size:S", color: "E6E6E6", description: "Under one day" }
+  - { name: "size:M", color: "E6E6E6", description: "One to three days" }
+  - { name: "size:L", color: "E6E6E6", description: "Three to five days" }
+  - { name: "size:XL", color: "E6E6E6", description: "More than a week, split before starting" }
+
+epics:
+  - id: EP0
+    title: "Epic: Repository, tooling and CI foundations"
+    phase: 0
+    body: |
+      Monorepo scaffolding, Python workspace, quality tooling and the CI pipeline that every later task relies on.
+      PRD sections: 10 (tech stack, repo layout), 12 (phase 0).
+  - id: EP1
+    title: "Epic: Database connection service and query tools"
+    phase: 0
+    body: |
+      Read-only, audited access to customer databases through a small tool surface used by every agent.
+      PRD section 6.
+  - id: EP2
+    title: "Epic: Metadata catalog (indexing, storage, retrieval)"
+    phase: 0
+    body: |
+      The semantic layer: tables, columns, categorical values, joins, metrics, glossary, events; hybrid search; versions.
+      PRD section 7.
+  - id: EP3
+    title: "Epic: Orchestrator and metadata agent (DeepAgents)"
+    phase: 0
+    body: |
+      The DeepAgents orchestrator, backends, subagent contracts, and the metadata agent that turns questions into SQL.
+      PRD sections 3 and 7.
+  - id: EP4
+    title: "Epic: Evaluation dataset and scoring harness"
+    phase: 0
+    body: |
+      Synthetic manufacturing warehouse with 20 seeded incidents at three difficulty levels, ground-truth manifest, scoring rubric, CI integration.
+      PRD section 11.
+  - id: EP5
+    title: "Epic: Anomaly detection agent"
+    phase: 1
+    body: |
+      Confirm and scan modes, SQL-first aggregation, detection skills, decomposition, ranking, anomaly records.
+      PRD section 5.
+  - id: EP6
+    title: "Epic: Root-cause agent (5 Whys)"
+    phase: 2
+    body: |
+      Port of the 5 Whys skill with query-backed evidence, branching, backward validation, countermeasures, WhyChain contract.
+      PRD section 4.
+  - id: EP7
+    title: "Epic: Investigate (chat) UI"
+    phase: 1
+    body: |
+      Streaming chat, anomaly feed, evidence panel, verdict controls, approval prompts, memory transparency.
+      PRD section 9.
+  - id: EP8
+    title: "Epic: Memory layer on OpenViking"
+    phase: 3
+    body: |
+      OpenViking deployment, namespaces, session commit, lesson extraction, deduplication, skill promotion, DeepAgents integration, governance.
+      PRD section 8.
+  - id: EP9
+    title: "Epic: Catalog and connections management UI"
+    phase: 4
+    body: |
+      Schema browser, table and column pages, join graph, review queue, metrics and glossary editors, connections and audit views.
+      PRD section 9.
+  - id: EP10
+    title: "Epic: Security, auth, multi-dialect and pilot hardening"
+    phase: 4
+    body: |
+      Auth and roles, tenant scoping, secrets, Snowflake and BigQuery dialects, performance tests, pilot runbook.
+      PRD sections 10 and 13.
+
+tasks:
+  # ---------------- EP0 Foundations ----------------
+  - id: T001
+    epic: EP0
+    title: "Scaffold monorepo layout and uv workspace"
+    phase: 0
+    size: M
+    labels: [area:backend, area:devops]
+    depends_on: []
+    body: |
+      Create the repository layout from PRD section 10: `apps/api`, `apps/web`, `packages/{agents,tools,catalog,connections,anomaly,memory,evals}`, `deploy/`, `docs/`.
+      Set up a `uv` workspace with one `pyproject.toml` per package, Python 3.12, shared dev dependencies (`ruff`, `mypy`, `pytest`, `pytest-cov`).
+
+      **Acceptance criteria**
+      - `uv sync` installs all packages in editable mode from a clean clone.
+      - `uv run pytest` runs and passes an empty smoke test in every package.
+      - `ruff check` and `mypy` pass on the scaffold.
+      - README documents how to run the API, the UI and the tests.
+  - id: T002
+    epic: EP0
+    title: "Docker Compose for local stack (Postgres+pgvector, OpenViking, API, web)"
+    phase: 0
+    size: M
+    labels: [area:devops]
+    depends_on: [T001]
+    body: |
+      `deploy/docker-compose.yml` with Postgres 16 + pgvector, OpenViking server (pinned 0.3.x), the API and the web app. `.env.example` with placeholders only.
+
+      **Acceptance criteria**
+      - `docker compose up` brings up all services; healthchecks pass.
+      - Postgres has the `vector` extension enabled on first start.
+      - No secrets in the repo; required variables are validated at API startup.
+  - id: T003
+    epic: EP0
+    title: "CI pipeline: lint, typecheck, tests with 80% coverage gate, security audit"
+    phase: 0
+    size: M
+    labels: [area:devops]
+    depends_on: [T001]
+    body: |
+      GitHub Actions `ci.yml` per `.claude/rules/devops`: ruff + black check, mypy, pytest with coverage failing under 80%, pip-audit, secret scan. Frontend job added when `apps/web` exists (eslint, tsc, vitest, build).
+
+      **Acceptance criteria**
+      - Actions pinned to commit SHAs, `permissions: contents: read`, `timeout-minutes`, concurrency cancel.
+      - Coverage below 80% fails the job.
+      - `actionlint` passes.
+  - id: T004
+    epic: EP0
+    title: "Shared settings, logging and OpenTelemetry bootstrap"
+    phase: 0
+    size: S
+    labels: [area:backend]
+    depends_on: [T001]
+    body: |
+      `packages/core` (or `apps/api/core`) with pydantic-settings configuration, structured JSON logging, OpenTelemetry tracer provider with console/OTLP exporters, optional LangSmith env passthrough.
+
+      **Acceptance criteria**
+      - Missing required settings fail fast at startup with a clear message.
+      - Every API request and tool call emits a span with a trace id that appears in logs.
+  - id: T005
+    epic: EP0
+    title: "FastAPI app skeleton beside LangGraph Server with health and version endpoints"
+    phase: 0
+    size: M
+    labels: [area:backend]
+    depends_on: [T001, T004]
+    body: |
+      `apps/api` with FastAPI, consistent response envelope (`success`, `data`, `error`, `meta`), `/health`, `/version`, error handlers, rate limiting middleware, and `langgraph.json` registering the orchestrator graph for LangGraph Server.
+
+      **Acceptance criteria**
+      - `uvicorn` serves `/health` returning dependency status (Postgres, OpenViking).
+      - `langgraph dev` starts with the placeholder graph.
+      - Integration tests cover the envelope and error handlers.
+  - id: T006
+    epic: EP0
+    title: "Database migrations with Alembic for app, catalog and audit schemas"
+    phase: 0
+    size: S
+    labels: [area:backend, area:data]
+    depends_on: [T002]
+    body: |
+      Alembic set up against the app Postgres with separate schemas `app`, `catalog`, `audit`. First migration creates the connections, audit log and catalog version tables.
+
+      **Acceptance criteria**
+      - `alembic upgrade head` on a fresh database succeeds; `downgrade` reverses it.
+      - CI runs migrations against a service Postgres before tests.
+  - id: T007
+    epic: EP0
+    title: "ADR process and initial ADRs (DeepAgents, pgvector, OpenViking, read-only access)"
+    phase: 0
+    size: S
+    labels: [area:docs]
+    depends_on: []
+    body: |
+      `docs/adr/` with a template and the four decisions already taken in the PRD (section 13).
+
+      **Acceptance criteria**
+      - Four ADRs with context, decision, consequences, status Accepted.
+
+  # ---------------- EP1 Connection service ----------------
+  - id: T010
+    epic: EP1
+    title: "Connection registry with encrypted credentials and read-only verification"
+    phase: 0
+    size: M
+    labels: [area:backend, area:data, area:security]
+    depends_on: [T006]
+    body: |
+      Repository and service for connections: id, display name, dialect, SQLAlchemy URL parts, Fernet-encrypted secret, limits (timeout, max rows, concurrency, scan threshold). On register: test connectivity and verify the role cannot write (attempt a transaction that is rolled back, or check grants).
+
+      **Acceptance criteria**
+      - Credentials are never returned by any API; agents receive connection ids only.
+      - Registering a writable role is rejected with a clear error.
+      - Unit tests for encryption round trip and read-only check on Postgres and DuckDB.
+  - id: T011
+    epic: EP1
+    title: "SQL validator with sqlglot: allow list, transpile, LIMIT injection, referenced objects"
+    phase: 0
+    size: M
+    labels: [area:backend, area:data, area:security]
+    depends_on: [T001]
+    body: |
+      `validate_sql(connection, sql)`: parse with sqlglot in the target dialect, reject anything but a single SELECT/WITH (no DDL, DML, procedures, multiple statements), extract referenced tables and columns, inject LIMIT when absent and not an aggregate, return structured warnings.
+
+      **Acceptance criteria**
+      - Test matrix of 40+ statements (allowed, forbidden, edge cases such as CTE with INSERT, comments, `;` chains) for Postgres and DuckDB.
+      - Unknown columns are flagged when a catalog snapshot is supplied.
+  - id: T012
+    epic: EP1
+    title: "run_sql tool with limits, Arrow results, filesystem handles and audit logging"
+    phase: 0
+    size: L
+    labels: [area:backend, area:data]
+    depends_on: [T010, T011]
+    body: |
+      Execute validated queries through a pooled engine per connection with statement timeout, row cap and concurrency cap. Results as Arrow; over 200 rows go to the DeepAgents virtual filesystem and a handle plus summary is returned. Every call writes an audit row (connection, agent, thread, purpose, SQL, duration, rows, status, error code). Structured error codes for repair.
+
+      **Acceptance criteria**
+      - Timeouts and row caps enforced in integration tests against Postgres and DuckDB.
+      - Audit row written for success and failure.
+      - Identical query within a thread served from the result cache (hit visible in audit metadata).
+  - id: T013
+    epic: EP1
+    title: "Introspection tools: list_schemas, list_tables, describe_table, sample_rows, column_profile"
+    phase: 0
+    size: M
+    labels: [area:backend, area:data]
+    depends_on: [T010]
+    body: |
+      Dialect-aware introspection via SQLAlchemy inspector plus dialect-specific statistics (row estimates, last modified). `sample_rows` uses TABLESAMPLE where available. `column_profile` computes distinct count, null rate, min, max, top values and caches into the catalog.
+
+      **Acceptance criteria**
+      - Works on Postgres and DuckDB in tests; MySQL and SQL Server behind a dialect interface with stubs.
+      - Profiling of a 10M-row table uses sampling and completes under 30 s in the test harness.
+  - id: T014
+    epic: EP1
+    title: "explain_sql tool and cost estimate for approval prompts"
+    phase: 0
+    size: S
+    labels: [area:backend, area:data]
+    depends_on: [T012]
+    body: |
+      Return plan summary and an estimated rows-scanned figure per dialect (EXPLAIN for Postgres and DuckDB). Used by the orchestrator to decide whether `interrupt_on` should fire.
+
+      **Acceptance criteria**
+      - Returns a normalised `{estimated_rows, estimated_cost, plan_text}` for both reference dialects.
+  - id: T015
+    epic: EP1
+    title: "Connections API endpoints (CRUD, test, limits, audit log query)"
+    phase: 0
+    size: M
+    labels: [area:backend]
+    depends_on: [T005, T010, T012]
+    body: |
+      REST endpoints under `/connections` for create, update, delete, test, set limits, and `/connections/{id}/audit` with filters (thread, agent, status, time range) and pagination.
+
+      **Acceptance criteria**
+      - OpenAPI documented; integration tests for each endpoint; input validation with Pydantic.
+      - Audit endpoint paginates and never returns credentials.
+
+  # ---------------- EP2 Catalog ----------------
+  - id: T020
+    epic: EP2
+    title: "Catalog data model and migrations (tables, columns, values, joins, metrics, glossary, events, versions)"
+    phase: 0
+    size: M
+    labels: [area:backend, area:data]
+    depends_on: [T006]
+    body: |
+      SQLAlchemy models for the objects in PRD section 7 with provenance fields (source: crawl, profile, llm, human; confidence; approved_by; approved_at), catalog versions and pending edits. pgvector columns for embeddings.
+
+      **Acceptance criteria**
+      - Migration applies cleanly; model tests cover constraints and versioning.
+  - id: T021
+    epic: EP2
+    title: "Structural crawl job with snapshot diff and schema-change events"
+    phase: 0
+    size: M
+    labels: [area:backend, area:data]
+    depends_on: [T013, T020]
+    body: |
+      Incremental crawl of schemas, tables, columns, constraints per connection. Diff against the last snapshot; added, removed and changed objects produce `business_events` of type schema_change.
+
+      **Acceptance criteria**
+      - Crawl of the demo warehouse completes under 1 minute; a renamed column appears as a change event.
+      - Job is idempotent and resumable.
+  - id: T022
+    epic: EP2
+    title: "Profiling job with cost caps and categorical value index"
+    phase: 0
+    size: M
+    labels: [area:backend, area:data]
+    depends_on: [T021]
+    body: |
+      Per-column statistics and top values for columns under the cardinality threshold (default 500), with per-connection cost caps and approximate distinct counts on large tables.
+
+      **Acceptance criteria**
+      - Values index for the demo warehouse contains all shift, reason code and product family values with frequencies.
+      - Caps stop profiling of a table that exceeds the budget and record the reason.
+  - id: T023
+    epic: EP2
+    title: "Join inference job (name heuristics, type compatibility, inclusion dependency test)"
+    phase: 0
+    size: M
+    labels: [area:backend, area:data]
+    depends_on: [T022]
+    body: |
+      Infer joins beyond declared foreign keys. Score candidates; above threshold auto-approve, below threshold wait for human approval. Cardinality classification.
+
+      **Acceptance criteria**
+      - On the demo warehouse, precision above 90% at the default threshold against the known schema.
+  - id: T024
+    epic: EP2
+    title: "LLM enrichment job: descriptions, semantic types, candidate metrics and dimensions"
+    phase: 0
+    size: M
+    labels: [area:backend, area:agents]
+    depends_on: [T022]
+    body: |
+      Generate table and column descriptions, semantic types and candidate metrics from names, samples and comments using a fast model. Results are machine-generated pending edits until confirmed.
+
+      **Acceptance criteria**
+      - Enrichment output compared against the demo data dictionary: semantic type accuracy at least 85%.
+      - Prompt cached; cost per 200-table catalog recorded in the job log.
+  - id: T025
+    epic: EP2
+    title: "Embedding and hybrid search (tsvector + pgvector) over catalog objects"
+    phase: 0
+    size: M
+    labels: [area:backend, area:data]
+    depends_on: [T020, T024]
+    body: |
+      Embed tables, columns, values, metrics and glossary terms. `search_catalog(query, kinds, connection, k)` combines BM25-style ranking with vector similarity and returns L0 one-line summaries with ids.
+
+      **Acceptance criteria**
+      - Top-3 accuracy at least 90% on a held-out set of 50 analyst questions against the demo warehouse.
+      - p95 latency under 300 ms.
+  - id: T026
+    epic: EP2
+    title: "Catalog retrieval tools: get_table_context, resolve_value, find_join_path, get_metric, propose_enrichment"
+    phase: 0
+    size: M
+    labels: [area:backend, area:agents, area:data]
+    depends_on: [T023, T025]
+    body: |
+      LangChain tools over the catalog as listed in PRD section 7. `get_table_context` builds the prompt block for SQL generation. `propose_enrichment` creates pending edits.
+
+      **Acceptance criteria**
+      - Each tool has a typed schema, unit tests and a docstring the model reads.
+      - `find_join_path` returns the shortest approved path with cardinality warnings.
+  - id: T027
+    epic: EP2
+    title: "Catalog publish and versioning, JSON export and import"
+    phase: 0
+    size: S
+    labels: [area:backend, area:data]
+    depends_on: [T020]
+    body: |
+      Stamp a catalog version after jobs complete; agents read the published version. Export and import the catalog as JSON.
+
+      **Acceptance criteria**
+      - A reindex in progress is invisible to agents until published.
+      - Export then import on an empty database reproduces the catalog.
+  - id: T028
+    epic: EP2
+    title: "Catalog API endpoints (browse, search, edit, approve, jobs)"
+    phase: 0
+    size: M
+    labels: [area:backend]
+    depends_on: [T026, T027]
+    body: |
+      REST endpoints for browsing objects, search, inline edits, review queue approve or reject, job trigger and status, version diff.
+
+      **Acceptance criteria**
+      - Every human edit records who and when and emits an event the memory service can consume.
+      - Integration tests per endpoint.
+
+  # ---------------- EP3 Orchestrator and metadata agent ----------------
+  - id: T030
+    epic: EP3
+    title: "DeepAgents orchestrator skeleton with CompositeBackend and TodoList middleware"
+    phase: 0
+    size: M
+    labels: [area:agents]
+    depends_on: [T005]
+    body: |
+      `create_deep_agent` wiring: system prompt for problem framing, `write_todos`, CompositeBackend routing `/memories/` and `/skills/` to a StoreBackend on Postgres and everything else to thread state, Postgres checkpointer, `interrupt_on` for `run_sql` above the scan threshold.
+
+      **Acceptance criteria**
+      - A thread survives an API restart and resumes from the checkpointer.
+      - Interrupt fires in a test when `explain_sql` estimate exceeds the threshold and resumes on approval.
+  - id: T031
+    epic: EP3
+    title: "Subagent contracts: Pydantic report models and shared SubAgent registry"
+    phase: 0
+    size: S
+    labels: [area:agents]
+    depends_on: [T030]
+    body: |
+      Define `AnomalyRecord`, `WhyChain`, `MetadataReport` models and the registry that declares each SubAgent (name, description, prompt, tools, model). Reports are returned as JSON plus a short human summary.
+
+      **Acceptance criteria**
+      - Models validated with round-trip tests; registry builds the `subagents` list consumed by `create_deep_agent`.
+  - id: T032
+    epic: EP3
+    title: "Metadata agent: question-to-SQL with catalog context and repair loop"
+    phase: 0
+    size: L
+    labels: [area:agents, area:data]
+    depends_on: [T026, T012, T031]
+    body: |
+      Subagent that searches the catalog, assembles table context, writes SQL, validates, executes, and repairs on structured errors (max three attempts). Returns rows, SQL and the catalog objects used.
+
+      **Acceptance criteria**
+      - 90% of a 50-question set over the demo warehouse returns correct results (checked against reference SQL).
+      - Repair loop covers unknown column, wrong join and timeout cases in tests.
+  - id: T033
+    epic: EP3
+    title: "Orchestrator problem framing and delegation flow for 'why did X change?'"
+    phase: 0
+    size: M
+    labels: [area:agents]
+    depends_on: [T030, T032]
+    body: |
+      Prompt and flow from PRD section 3: restate the problem in the 5 Whys template, reject vague statements, plan with todos, delegate to metadata agent (phase 0), later to anomaly and root-cause agents. Final report assembly with linked evidence.
+
+      **Acceptance criteria**
+      - Gate for phase 0: a natural-language question over the demo warehouse produces a correct SQL-backed answer end to end through the API.
+  - id: T034
+    epic: EP3
+    title: "Context engineering: large results to filesystem, L0/L1 catalog disclosure, token budget"
+    phase: 0
+    size: M
+    labels: [area:agents]
+    depends_on: [T030, T012]
+    body: |
+      Enforce the context rules from PRD section 3: results over 200 rows to files with summaries, catalog L0 first, per-investigation token budget with hard stop and honest partial report.
+
+      **Acceptance criteria**
+      - A test with a 50k-row result keeps the model context under a configured limit.
+      - Budget exhaustion returns a partial report, never an exception to the user.
+  - id: T035
+    epic: EP3
+    title: "Agent event streaming API (messages, todos, tool calls, subagent steps)"
+    phase: 0
+    size: M
+    labels: [area:backend, area:agents]
+    depends_on: [T030, T005]
+    body: |
+      Expose LangGraph streaming through the API with typed projections for messages, todo state, tool calls (SQL, duration, rows) and subagent lifecycle, plus thread CRUD.
+
+      **Acceptance criteria**
+      - A CLI client can follow a run and see each tool call with its SQL.
+      - Integration test asserts event ordering and completeness.
+
+  # ---------------- EP4 Evaluation dataset ----------------
+  - id: T040
+    epic: EP4
+    title: "Manufacturing warehouse generator: dimensions and baseline production, telemetry, quality"
+    phase: 0
+    size: L
+    labels: [area:evals, area:data]
+    depends_on: [T001]
+    body: |
+      `packages/evals/manufacturing` baseline layer from PRD section 11: plants, lines, machines, products, suppliers, lots, operators, shift assignments, work orders, hourly production runs, inspections, telemetry, downtime, maintenance, calibrations, energy, warranty, business events. Deterministic from a seed, weekly seasonality, shift effects, holidays, trend, noise.
+
+      **Acceptance criteria**
+      - Base scale generates in under 2 minutes; row counts match the PRD table within 10%.
+      - Data dictionary markdown generated alongside.
+      - Outputs: DuckDB file, Postgres SQL dump, CSVs.
+  - id: T041
+    epic: EP4
+    title: "Incident layer: easy cases E1 to E3 with ground-truth manifest"
+    phase: 0
+    size: M
+    labels: [area:evals, area:data]
+    depends_on: [T040]
+    body: |
+      Implement E1 (coolant pump failure), E2 (power outage), E3 (product mix change) as composable incident modules, each instantiated twice (dev and held-out), writing `cases.json` entries.
+
+      **Acceptance criteria**
+      - Generator asserts each planted anomaly has robust z-score above 3 on the affected series.
+      - Manifest entries contain all fields listed in the PRD (chain, evidence tables, counterfactual, decoys, keywords).
+  - id: T042
+    epic: EP4
+    title: "Incident layer: medium cases M1 to M3 with decoys"
+    phase: 1
+    size: M
+    labels: [area:evals, area:data]
+    depends_on: [T041]
+    body: |
+      Implement M1 (new supplier lot out of spec), M2 (uncertified night-shift operators), M3 (skipped maintenance, pressure drift) with their coinciding decoys.
+
+      **Acceptance criteria**
+      - Decoys are verified not to produce a z-score above 3 on the target metric.
+      - Each case is detectable only after the documented decomposition or join.
+  - id: T043
+    epic: EP4
+    title: "Incident layer: difficult cases D1 to D4 (lag, duplicates, mix effect, delayed material)"
+    phase: 2
+    size: L
+    labels: [area:evals, area:data]
+    depends_on: [T042]
+    body: |
+      Implement D1 (calibration gap behind warranty lag), D2 (duplicate inspection rows plus real worn tool), D3 (shift mix effect from scheduling policy), D4 (storage temperature event with 1 to 3 week lag).
+
+      **Acceptance criteria**
+      - D3 verified: per-shift rates flat while the overall rate falls 8%.
+      - D2 verified: deduplicated scrap rate shows the smaller real increase on one line only.
+  - id: T044
+    epic: EP4
+    title: "Benign events and data traps (holidays, planned maintenance, late data, local timestamps, null lots)"
+    phase: 1
+    size: S
+    labels: [area:evals, area:data]
+    depends_on: [T040]
+    body: |
+      Labelled non-anomalies and the traps from PRD section 11, recorded in the manifest as benign.
+
+      **Acceptance criteria**
+      - Manifest lists each benign event with its window; the last two days are incomplete; one plant has a `timezone` column.
+  - id: T045
+    epic: EP4
+    title: "Scoring harness: detection, root cause (LLM judge + keywords), chain validity, decoys, efficiency"
+    phase: 1
+    size: L
+    labels: [area:evals, area:agents]
+    depends_on: [T041, T035]
+    body: |
+      Runner that executes each case through the API, collects anomaly records and WhyChains, scores per the PRD rubric, and writes a per-level pass-rate report (JSON and markdown).
+
+      **Acceptance criteria**
+      - Judge prompt and keyword matcher unit-tested against hand-written good and bad answers.
+      - Report shows per-case and per-level results with tool-call and token counts.
+  - id: T046
+    epic: EP4
+    title: "CI integration of the evaluation suite with per-level pass-rate thresholds"
+    phase: 1
+    size: S
+    labels: [area:devops, area:evals]
+    depends_on: [T045, T003]
+    body: |
+      Nightly and on-demand workflow running the dev set; phase gates read from it. Model calls use a budget cap and recorded fixtures for PR runs.
+
+      **Acceptance criteria**
+      - Workflow publishes the report as an artifact and a job summary; threshold regressions fail the job.
+  - id: T047
+    epic: EP4
+    title: "10x scale variant of the warehouse for performance tests"
+    phase: 4
+    size: S
+    labels: [area:evals]
+    depends_on: [T040]
+    body: |
+      Parameterised scale: 10-minute production grain, 5 plants, loaded into Postgres for indexing and scan performance tests.
+
+      **Acceptance criteria**
+      - Generated in under 15 minutes; used by the performance tasks in EP10.
+
+  # ---------------- EP5 Anomaly agent ----------------
+  - id: T050
+    epic: EP5
+    title: "list_metrics and aggregate_series tools (grain-correct SQL from the catalog)"
+    phase: 1
+    size: M
+    labels: [area:agents, area:data]
+    depends_on: [T026, T012]
+    body: |
+      Discover measurable columns, time columns and dimensions from the catalog; generate daily or hourly aggregates per metric and per top dimension values; return a dataframe handle in the virtual filesystem.
+
+      **Acceptance criteria**
+      - Aggregates for scrap rate, units per hour, defect rate and energy per unit on the demo warehouse match reference SQL.
+  - id: T051
+    epic: EP5
+    title: "Detection skills: ts_robust_zscore and ts_stl_residual"
+    phase: 1
+    size: M
+    labels: [area:agents, area:backend]
+    depends_on: [T050]
+    body: |
+      Skills as SKILL.md plus Python functions with declared applicability, parameters recorded in output.
+
+      **Acceptance criteria**
+      - Unit tests on synthetic series with known injected anomalies: recall at least 95%, false positive rate under 2% on seasonal baseline.
+  - id: T052
+    epic: EP5
+    title: "Detection skills: ts_changepoint (ruptures) and ts_forecast_interval"
+    phase: 1
+    size: M
+    labels: [area:agents, area:backend]
+    depends_on: [T050]
+    body: |
+      Level shift and regime change detection; forecast interval breaches for trending series.
+
+      **Acceptance criteria**
+      - Detects M3-style gradual drift and E3-style level shift in unit tests.
+  - id: T053
+    epic: EP5
+    title: "Detection skills: data_quality_anomaly and distribution_shift"
+    phase: 1
+    size: M
+    labels: [area:agents, area:backend, area:data]
+    depends_on: [T050]
+    body: |
+      SQL-only row count, null rate, duplicate key and freshness deviations; PSI and KS tests between windows.
+
+      **Acceptance criteria**
+      - Flags the D2 duplicate rows and the late-arriving last two days as data quality findings, not metric anomalies.
+  - id: T054
+    epic: EP5
+    title: "Segment contribution decomposition with Simpson's paradox check"
+    phase: 1
+    size: M
+    labels: [area:agents, area:backend]
+    depends_on: [T050]
+    body: |
+      `decompose(metric, baseline, anomaly, dims)`: per-dimension contribution to the delta, mix versus rate split, flag segments above a threshold share.
+
+      **Acceptance criteria**
+      - On D3, reports the mix effect correctly (rate flat, mix changed).
+      - On M1, isolates the product family and supplier lot segments.
+  - id: T055
+    epic: EP5
+    title: "Ensemble, ranking and deduplication of anomalies; AnomalyRecord persistence"
+    phase: 1
+    size: M
+    labels: [area:agents, area:backend]
+    depends_on: [T051, T052, T053, T054, T031]
+    body: |
+      Agreement rule (two skills or one very high confidence), scoring by effect size, confidence, business weight and recency, dedup by cause signature, `save_anomaly` writing records and chart specs.
+
+      **Acceptance criteria**
+      - Scan of the dev set finds at least 90% of seeded anomalies with at most 1 benign event flagged.
+  - id: T056
+    epic: EP5
+    title: "Anomaly subagent (confirm and scan modes) wired into the orchestrator"
+    phase: 1
+    size: M
+    labels: [area:agents]
+    depends_on: [T055, T033]
+    body: |
+      SubAgent definition with prompt, tool subset and fast model; orchestrator delegates confirm mode for user claims and scan mode for scan requests.
+
+      **Acceptance criteria**
+      - Phase 1 gate: scan of the dev set via the API finds 90% of seeded anomalies within 15 minutes.
+  - id: T057
+    epic: EP5
+    title: "multivariate_outlier skill (Isolation Forest on entity features)"
+    phase: 2
+    size: S
+    labels: [area:agents, area:backend]
+    depends_on: [T050]
+    body: |
+      Entity-level outliers (machines, lots, operators) from aggregated features.
+
+      **Acceptance criteria**
+      - Flags the out-of-spec supplier lots in M1 as entity outliers.
+
+  # ---------------- EP6 Root-cause agent ----------------
+  - id: T060
+    epic: EP6
+    title: "Port the 5 Whys skill to a RootCause SKILL.md with query-backed evidence rules"
+    phase: 2
+    size: M
+    labels: [area:agents, area:docs]
+    depends_on: [T031]
+    body: |
+      Adapt https://github.com/awesome-skills/5-whys-skill into the agent's skill: problem template, iterative why loop with candidate generation and query testing, stop conditions, backward validation, countermeasures, pitfalls as guardrails, output format mapped to `WhyChain`.
+
+      **Acceptance criteria**
+      - Skill loads via the DeepAgents skill loader with progressive disclosure.
+      - Prompt tests: vague problem statements are rejected; blame-style conclusions are rewritten to process causes.
+  - id: T061
+    epic: EP6
+    title: "Root-cause tools: ask_sql, compare_windows, data_quality_probe, recall_lessons stub"
+    phase: 2
+    size: M
+    labels: [area:agents, area:data]
+    depends_on: [T032, T054, T053]
+    body: |
+      Tool wrappers that delegate to the metadata agent's SQL path and the anomaly package's decomposition and data quality functions. `recall_lessons` returns empty until EP8.
+
+      **Acceptance criteria**
+      - Each tool typed, tested, and returns SQL alongside results for evidence linking.
+  - id: T062
+    epic: EP6
+    title: "Why-loop with hypothesis generation, ranking and branching"
+    phase: 2
+    size: L
+    labels: [area:agents]
+    depends_on: [T060, T061]
+    body: |
+      Per level: generate 2 to 4 candidates from the priority sources (lessons, decomposition, data quality, related metrics, events), test with queries, keep supported candidates, branch when two explain more than 25% each. Depth 3 to 7.
+
+      **Acceptance criteria**
+      - On M1, the chain reaches the supplier lot spec measurement; on D2, two branches are produced.
+  - id: T063
+    epic: EP6
+    title: "Backward validation with counterfactual queries and countermeasures"
+    phase: 2
+    size: M
+    labels: [area:agents]
+    depends_on: [T062]
+    body: |
+      For each link, run a counterfactual (exclude segment or event) and record pass or fail; produce immediate, preventive and detection countermeasures; detection items become candidate monitors.
+
+      **Acceptance criteria**
+      - On D3, validation shows that holding shift mix constant removes the anomaly.
+  - id: T064
+    epic: EP6
+    title: "WhyChain report rendering (markdown per the skill's output format) with evidence links"
+    phase: 2
+    size: S
+    labels: [area:agents, area:backend]
+    depends_on: [T063]
+    body: |
+      Render the skill's markdown report from the `WhyChain` model with per-level SQL, row summaries and chart references; include confidence and root cause type.
+
+      **Acceptance criteria**
+      - Every level in the report links to an audit log entry.
+  - id: T065
+    epic: EP6
+    title: "Root-cause subagent wired into the orchestrator with budgets and partial reporting"
+    phase: 2
+    size: M
+    labels: [area:agents]
+    depends_on: [T064, T056]
+    body: |
+      SubAgent definition with the reasoning model, budget (default 25 tool calls, 8 minutes), isolated mode, structured report back to the orchestrator; orchestrator composes the final answer.
+
+      **Acceptance criteria**
+      - Phase 2 gate: at least 70% of the 20 seeded cases accepted by the scoring harness; easy at least 90%.
+  - id: T066
+    epic: EP6
+    title: "Verdict capture API (accept, reject, partial, note) on reports"
+    phase: 2
+    size: S
+    labels: [area:backend]
+    depends_on: [T035]
+    body: |
+      Endpoint and model to record the analyst's verdict on a thread's final report; emits an event consumed by the memory service.
+
+      **Acceptance criteria**
+      - Verdict stored with user, time and note; visible in the thread API.
+
+  # ---------------- EP7 Investigate UI ----------------
+  - id: T070
+    epic: EP7
+    title: "Next.js app scaffold with auth placeholder, layout and LangGraph SDK client"
+    phase: 1
+    size: M
+    labels: [area:frontend]
+    depends_on: [T035]
+    body: |
+      `apps/web` with Next.js 15, Tailwind, three top-level areas (Investigate, Catalog, Connections), LangGraph JS SDK client against the API, Vitest and Playwright set up.
+
+      **Acceptance criteria**
+      - `npm run build` passes in CI; one Playwright smoke test opens each area.
+  - id: T071
+    epic: EP7
+    title: "Streaming chat thread with todo plan and collapsible subagent steps"
+    phase: 1
+    size: L
+    labels: [area:frontend]
+    depends_on: [T070]
+    body: |
+      Render orchestrator messages, todo state, tool calls (SQL, duration, rows) and subagent steps from the event stream; thread list with search and pinning.
+
+      **Acceptance criteria**
+      - First token visible within 3 s on the demo; long scans show todo progress.
+      - React Testing Library tests for event rendering; Playwright flow for asking a question.
+  - id: T072
+    epic: EP7
+    title: "Anomaly feed cards with sparkline and 'Investigate' action"
+    phase: 1
+    size: M
+    labels: [area:frontend]
+    depends_on: [T071, T056]
+    body: |
+      Cards from `AnomalyRecord` with sparkline (Recharts), effect size, segment and hypothesis; "Investigate" starts a thread with the record pre-loaded.
+
+      **Acceptance criteria**
+      - Clicking Investigate opens a thread whose first message contains the anomaly record.
+  - id: T073
+    epic: EP7
+    title: "Evidence panel: why-chain tree, charts, result tables, click-through to queries"
+    phase: 2
+    size: L
+    labels: [area:frontend]
+    depends_on: [T071, T064]
+    body: |
+      Right-hand panel rendering the `WhyChain` as a tree, anomaly charts, result tables with export; clicking a level scrolls to its evidence; every number links to its query.
+
+      **Acceptance criteria**
+      - Playwright test: open a seeded case, expand level 3, see its SQL and rows.
+  - id: T074
+    epic: EP7
+    title: "Verdict controls and human-in-the-loop approval prompts"
+    phase: 2
+    size: M
+    labels: [area:frontend]
+    depends_on: [T071, T066]
+    body: |
+      Accept, reject, partially correct plus note on the final report; approval dialog when `interrupt_on` fires showing SQL, estimated cost, approve or edit.
+
+      **Acceptance criteria**
+      - Verdict persists and is shown on reload; approval resumes the run.
+  - id: T075
+    epic: EP7
+    title: "'What informed this' drawer listing retrieved cases, lessons and skills"
+    phase: 3
+    size: S
+    labels: [area:frontend]
+    depends_on: [T073, T085]
+    body: |
+      Drawer on the report showing memories used, with links to the memory browser.
+
+      **Acceptance criteria**
+      - Lists at least the items the API reports as used; empty state when none.
+
+  # ---------------- EP8 Memory ----------------
+  - id: T080
+    epic: EP8
+    title: "OpenViking client adapter behind a MemoryStore interface"
+    phase: 3
+    size: M
+    labels: [area:backend, area:agents]
+    depends_on: [T002]
+    body: |
+      Thin adapter over the OpenViking Python client: `find`, `search`, `read`, `write`, `commit_session`; namespace helpers for the viking:// layout in PRD section 8; version pin; integration tests against the Docker service.
+
+      **Acceptance criteria**
+      - Interface has an in-memory fake for unit tests; adapter passes contract tests against OpenViking 0.3.x.
+  - id: T081
+    epic: EP8
+    title: "Namespace layout, tenant and connection scoping"
+    phase: 3
+    size: S
+    labels: [area:backend, area:security]
+    depends_on: [T080]
+    body: |
+      Create the resources, user and agent directories per tenant; enforce that retrieval is scoped to tenant and connection unless a memory is marked generic.
+
+      **Acceptance criteria**
+      - A lesson written for connection A is not returned for connection B in tests.
+  - id: T082
+    epic: EP8
+    title: "Session commit on investigation end with verdict"
+    phase: 3
+    size: M
+    labels: [area:backend, area:agents]
+    depends_on: [T080, T066]
+    body: |
+      On verdict, commit the transcript, WhyChain, anomaly records and verdict to OpenViking; write the case memory file.
+
+      **Acceptance criteria**
+      - Case file present at `viking://agent/orchestrator/memories/cases/{case_id}.md` after an accepted run.
+  - id: T083
+    epic: EP8
+    title: "Lesson extractor and negative lessons"
+    phase: 3
+    size: M
+    labels: [area:agents]
+    depends_on: [T082]
+    body: |
+      Prompt and pipeline turning an accepted case into a lesson (trigger, hypothesis order, decisive queries, resolution) and a rejected case into a negative lesson.
+
+      **Acceptance criteria**
+      - Extractor output validated against a schema; unit tests with fixture cases.
+  - id: T084
+    epic: EP8
+    title: "Lesson deduplication, support counter and decay"
+    phase: 3
+    size: S
+    labels: [area:backend, area:agents]
+    depends_on: [T083]
+    body: |
+      Search existing lessons before writing; near-duplicates increment support; lessons unused for 180 days move to archive.
+
+      **Acceptance criteria**
+      - Two accepted twins of the same archetype produce one lesson with support 2.
+  - id: T085
+    epic: EP8
+    title: "Memory tools for agents (recall_lessons, search_memory) and retrieval at framing"
+    phase: 3
+    size: M
+    labels: [area:agents]
+    depends_on: [T081, T033, T062]
+    body: |
+      Expose search and find as tools; orchestrator retrieves at framing (L0 then L1 for top five); root-cause agent recalls scoped lessons; used memories are cited in the report.
+
+      **Acceptance criteria**
+      - Phase 3 gate: the held-out twin of a solved case is solved using a stored lesson with fewer tool calls than the first run.
+  - id: T086
+    epic: EP8
+    title: "Skill promotion into DeepAgents skill directories with versioning"
+    phase: 3
+    size: M
+    labels: [area:agents]
+    depends_on: [T084]
+    body: |
+      Promote a lesson with three supporting cases (or a human playbook flag) into a SKILL.md under the owning agent, sync to the harness skill directory, version and record justifying case ids; admins can retire.
+
+      **Acceptance criteria**
+      - Promoted skill appears in the agent's loaded skill list on the next run.
+  - id: T087
+    epic: EP8
+    title: "Mount OpenViking memories as a DeepAgents backend at /memories/"
+    phase: 3
+    size: M
+    labels: [area:agents, area:backend]
+    depends_on: [T080, T030]
+    body: |
+      Custom backend so `ls` and `read_file` work over memories within the CompositeBackend.
+
+      **Acceptance criteria**
+      - Agent can `ls /memories/lessons/` and read a lesson in an integration test.
+  - id: T088
+    epic: EP8
+    title: "Catalog corrections and anomaly dismissals written as memories"
+    phase: 3
+    size: S
+    labels: [area:backend]
+    depends_on: [T082, T028]
+    body: |
+      Catalog edit events become metadata-agent lessons; dismissed anomalies become anomaly-agent detection notes.
+
+      **Acceptance criteria**
+      - A join correction in the catalog is recalled by the metadata agent on the next SQL for that table.
+  - id: T089
+    epic: EP8
+    title: "Memory admin API and UI (browse viking://, delete, retire skills, retention)"
+    phase: 3
+    size: M
+    labels: [area:backend, area:frontend]
+    depends_on: [T081, T086, T070]
+    body: |
+      Endpoints and a settings page to browse memories per agent, delete, retire skills and set retention.
+
+      **Acceptance criteria**
+      - A user can delete a memory about themselves and it no longer appears in retrieval.
+
+  # ---------------- EP9 Catalog and connections UI ----------------
+  - id: T090
+    epic: EP9
+    title: "Connections UI: add, edit, test, limits, health"
+    phase: 4
+    size: M
+    labels: [area:frontend]
+    depends_on: [T070, T015]
+    body: |
+      Dialect-specific forms, test connection, read-only verification feedback, limits editor, health view.
+
+      **Acceptance criteria**
+      - Playwright: register the demo Postgres, see health green; a writable role is refused with a message.
+  - id: T091
+    epic: EP9
+    title: "Query audit log view with filters and export"
+    phase: 4
+    size: S
+    labels: [area:frontend]
+    depends_on: [T090]
+    body: |
+      Table of agent queries per connection with thread, agent, purpose, SQL, duration, rows, status; CSV export.
+
+      **Acceptance criteria**
+      - Filters by thread and status; export matches the filtered set.
+  - id: T092
+    epic: EP9
+    title: "Catalog schema browser and table page"
+    phase: 4
+    size: L
+    labels: [area:frontend]
+    depends_on: [T070, T028]
+    body: |
+      Tree of connection, schema, table, column with search and semantic type badges; table page with description, importance, time columns, metrics, joins, sample values, statistics, pending suggestions, inline editing.
+
+      **Acceptance criteria**
+      - Editing a description saves and shows provenance (human, timestamp).
+  - id: T093
+    epic: EP9
+    title: "Column page with categorical values, labels and synonyms editor"
+    phase: 4
+    size: M
+    labels: [area:frontend]
+    depends_on: [T092]
+    body: |
+      Statistics and value list with editable display labels and synonyms used by `resolve_value`.
+
+      **Acceptance criteria**
+      - Adding a synonym makes `resolve_value` resolve it in an integration test.
+  - id: T094
+    epic: EP9
+    title: "Join graph view with approve or reject"
+    phase: 4
+    size: M
+    labels: [area:frontend]
+    depends_on: [T092]
+    body: |
+      Graph of tables and joins coloured by approval state; inline approve or reject; cardinality shown.
+
+      **Acceptance criteria**
+      - Rejecting a join removes it from `find_join_path` results.
+  - id: T095
+    epic: EP9
+    title: "Metrics and glossary editors with SQL preview; events editor with CSV import"
+    phase: 4
+    size: M
+    labels: [area:frontend, area:backend]
+    depends_on: [T092]
+    body: |
+      Define metrics with SQL expression, grain and dimensions; glossary terms mapped to objects; business events table with CSV import.
+
+      **Acceptance criteria**
+      - Metric preview runs against the connection with a LIMIT and shows rows.
+  - id: T096
+    epic: EP9
+    title: "Review queue for machine-generated enrichments and catalog version diff"
+    phase: 4
+    size: M
+    labels: [area:frontend]
+    depends_on: [T092]
+    body: |
+      Queue with bulk approve or reject; diff view between two catalog versions.
+
+      **Acceptance criteria**
+      - Bulk approving 50 suggestions completes in one request and publishes a new version.
+  - id: T097
+    epic: EP9
+    title: "Indexing controls with job progress and logs"
+    phase: 4
+    size: S
+    labels: [area:frontend]
+    depends_on: [T092]
+    body: |
+      Trigger crawl, profiling, join inference and enrichment per connection; show progress and logs.
+
+      **Acceptance criteria**
+      - A running job shows live progress; a failed job shows its error.
+
+  # ---------------- EP10 Security and hardening ----------------
+  - id: T100
+    epic: EP10
+    title: "Authentication and roles (analyst, data engineer, admin) with per-connection access"
+    phase: 4
+    size: L
+    labels: [area:backend, area:frontend, area:security]
+    depends_on: [T005, T070]
+    body: |
+      OIDC login (configurable provider), session handling, role model, per-connection access checks on every API and tool path, CSRF protection.
+
+      **Acceptance criteria**
+      - An analyst without access to a connection cannot see its threads, catalog or audit entries (tests at API and tool level).
+      - Security reviewer sign-off recorded.
+  - id: T101
+    epic: EP10
+    title: "Tenant isolation across threads, catalog, memory and audit"
+    phase: 4
+    size: M
+    labels: [area:backend, area:security]
+    depends_on: [T100, T081]
+    body: |
+      Tenant id on every row and namespace; enforced in repositories and in OpenViking namespaces.
+
+      **Acceptance criteria**
+      - Cross-tenant access attempts are denied and logged in tests.
+  - id: T102
+    epic: EP10
+    title: "Column masking and privacy controls in the catalog"
+    phase: 4
+    size: S
+    labels: [area:backend, area:security]
+    depends_on: [T020]
+    body: |
+      Mark columns as masked; `sample_rows` and `column_profile` skip or hash them; memories never store raw samples.
+
+      **Acceptance criteria**
+      - A masked column never appears in tool outputs or memory files in tests.
+  - id: T103
+    epic: EP10
+    title: "Snowflake and BigQuery dialect support with test matrix"
+    phase: 4
+    size: L
+    labels: [area:backend, area:data]
+    depends_on: [T011, T013]
+    body: |
+      Dialect adapters for introspection, sampling, EXPLAIN and limits; sqlglot transpilation tests; recorded-fixture tests when live credentials are absent.
+
+      **Acceptance criteria**
+      - Validator and introspection test matrix passes for both dialects.
+  - id: T104
+    epic: EP10
+    title: "Performance tests on the 10x warehouse (indexing, scan, search latency)"
+    phase: 4
+    size: M
+    labels: [area:evals, area:backend]
+    depends_on: [T047, T056, T025]
+    body: |
+      Measure structural crawl, profiling, scan time and catalog search latency against the PRD targets.
+
+      **Acceptance criteria**
+      - Report with numbers against targets; regressions tracked in CI as informational.
+  - id: T105
+    epic: EP10
+    title: "Model configuration, prompt caching and per-role model routing"
+    phase: 2
+    size: S
+    labels: [area:agents, area:backend]
+    depends_on: [T031]
+    body: |
+      Settings for model per agent role via `init_chat_model`, prompt caching on, cost logging per investigation.
+
+      **Acceptance criteria**
+      - Cost per seeded case appears in the evaluation report.
+  - id: T106
+    epic: EP10
+    title: "English and Turkish language support in chat and reports"
+    phase: 4
+    size: M
+    labels: [area:agents, area:frontend]
+    depends_on: [T065]
+    body: |
+      Detect the user's language; prompts and report templates in both; UI strings localised.
+
+      **Acceptance criteria**
+      - Three Turkish seeded-case questions produce Turkish reports scored equal to English.
+  - id: T107
+    epic: EP10
+    title: "Pilot runbook, deployment guide and AGPL review note for OpenViking"
+    phase: 4
+    size: S
+    labels: [area:docs, area:devops]
+    depends_on: [T002]
+    body: |
+      Runbook for a single-host Docker Compose pilot: prerequisites, read-only replica, indexing, first investigation, backups; note on running OpenViking unmodified under AGPLv3 for legal review.
+
+      **Acceptance criteria**
+      - A new engineer can stand up the pilot from the runbook without help.
+  - id: T108
+    epic: EP10
+    title: "Security review of the full stack before pilot"
+    phase: 4
+    size: M
+    labels: [area:security]
+    depends_on: [T100, T101, T102, T012]
+    body: |
+      Security reviewer audit against OWASP Top 10, SQL injection paths through tools, secret handling, audit immutability.
+
+      **Acceptance criteria**
+      - No CRITICAL or HIGH findings open at pilot start.
