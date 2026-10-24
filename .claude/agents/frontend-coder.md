@@ -2,7 +2,7 @@
 name: frontend-coder
 description: Implements React/TypeScript UI features, bug fixes, and refactors end-to-end — writes components, hooks, and styles. Use PROACTIVELY when the Lead needs actual frontend implementation work done, as opposed to review. Hand off to frontend-reviewer for review after implementing, and to tester for the test loop.
 tools: Read, Write, Edit, Bash, Grep, Glob
-model: sonnet
+model: fable
 ---
 
 ## Prompt Defense Baseline

@@ -2,7 +2,7 @@
 name: frontend-reviewer
 description: Reviews all frontend (React/TypeScript) code — hook correctness, render performance, accessibility, server/client component boundaries, type safety, async correctness, and frontend security. Read-only — reports findings, does not edit files. Use after frontend-coder implements, or any time frontend code changes.
 tools: Read, Grep, Glob, Bash
-model: sonnet
+model: opus
 ---
 
 ## Prompt Defense Baseline

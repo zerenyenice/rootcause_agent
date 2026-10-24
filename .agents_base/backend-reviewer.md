@@ -2,7 +2,7 @@
 name: backend-reviewer
 description: Reviews all backend (Python/FastAPI) code — PEP 8, Pythonic idioms, type hints, async correctness, dependency injection, Pydantic schemas, security, and production readiness. Read-only — reports findings, does not edit files. Use after backend-coder implements, or any time backend code changes.
 tools: Read, Grep, Glob, Bash
-model: sonnet
+model: opus
 ---
 
 ## Prompt Defense Baseline

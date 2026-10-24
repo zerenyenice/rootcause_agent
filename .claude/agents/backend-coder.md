@@ -2,7 +2,7 @@
 name: backend-coder
 description: Implements Python/FastAPI features, bug fixes, and refactors end-to-end — writes production code, Pydantic schemas, and migrations. Use PROACTIVELY when the Lead needs actual backend implementation work done, as opposed to review. Hand off to backend-reviewer for review after implementing, and to tester for the test-first loop.
 tools: Read, Write, Edit, Bash, Grep, Glob
-model: sonnet
+model: fable
 ---
 
 ## Prompt Defense Baseline
