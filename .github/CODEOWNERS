@@ -4,6 +4,6 @@
 # team handles (e.g. `/backend/ @teammate1 @teammate2`) as collaborators join.
 # Paired with a branch ruleset that has "require code owner review" enabled,
 # the owner(s) below become required approvers on protected branches
-# (dev/stage/main) — see docs/CI.md § Repository governance.
+# (dev/master) — see docs/CI.md § Repository governance.
 
 * @zerenyenice

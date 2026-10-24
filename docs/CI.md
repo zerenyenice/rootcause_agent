@@ -120,7 +120,7 @@ environment variables and the script reads commit subjects/bodies with
 **Reproduce locally** (compare against the branch's actual base):
 
 ```bash
-merge_base=$(git merge-base origin/dev HEAD)   # or origin/main / origin/stage
+merge_base=$(git merge-base origin/dev HEAD)   # or origin/master
 for sha in $(git rev-list --no-merges "${merge_base}..HEAD"); do
   git show -s --format='%H%n%s%n%n%b%n---' "$sha"
 done
@@ -132,8 +132,8 @@ done
 
 **What it checks:** `gitleaks detect` over the full git history
 (`fetch-depth: 0`, `--log-opts="--all"` so every ref is scanned, not just
-the current branch). Runs on `pull_request`, on `push` to `dev`/`stage`/
-`main`, and on a **weekly cron** (Mondays 03:00 UTC) — the cron exists
+the current branch). Runs on `pull_request`, on `push` to `dev`/
+`master`, and on a **weekly cron** (Mondays 03:00 UTC) — the cron exists
 because gitleaks' detection rules are updated upstream between the version
 bumps Dependabot brings in here, so a secret pattern only classified as
 sensitive *after* it was committed only surfaces on a re-scan of full
@@ -167,13 +167,13 @@ not just the review requirement (security-reviewer finding, MEDIUM);
 pushing protocol commits (plans, process changes, task merges) directly to
 it, so `dev` gets integrity protection but not PR/check gates.
 
-**Ruleset 1 — `branch-integrity` (`dev`, `stage`, `main`, `master`; NO
+**Ruleset 1 — `branch-integrity` (`dev`, `master`; NO
 bypass actors):**
 - Block force-pushes (non-fast-forward) and branch deletion — mirrors the
   protocol's forbidden-operations list
   (`rules/common/git-workflow.md` § Forbidden Operations).
 
-**Ruleset 2 — `required-checks` (`stage`, `main`, `master`; NO bypass
+**Ruleset 2 — `required-checks` (`master`; NO bypass
 actors):**
 - Require these status checks to pass (names must match the job `name:`
   values above exactly): `harness-sync`, `lint-shell`, `lint-workflows`,
@@ -183,7 +183,7 @@ actors):**
 - Effect: a **direct push to these branches is rejected** — an un-merged
   commit has no passing checks, so only PRs whose checks are green can land.
 
-**Ruleset 3 — `review-gates` (`stage`, `main`, `master`; bypass: repo
+**Ruleset 3 — `review-gates` (`master`; bypass: repo
 admin):**
 - Require a pull request with at least 1 approving review, and require
   review from a Code Owner (pairs with `.github/CODEOWNERS` — see its
