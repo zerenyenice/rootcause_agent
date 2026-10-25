@@ -1,6 +1,6 @@
 """Orchestrator construction (no graph is created at import time)."""
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -16,6 +16,7 @@ from langgraph.store.base import BaseStore
 
 from rootcause.agents.backends import build_backend, build_checkpointer
 from rootcause.agents.prompts import load_orchestrator_prompt
+from rootcause.agents.tools.schema import SchemaExecutor, TableDocLike, make_schema_tools
 from rootcause.agents.tools.sql import (
     ApprovalDecision,
     ApprovalRegistry,
@@ -87,8 +88,14 @@ def build_orchestrator(
     checkpointer: BaseCheckpointSaver[Any] | None = None,
     executor: QueryExecutor | None = None,
     extra_tools: Sequence[BaseTool] = (),
+    table_docs: Mapping[str, TableDocLike] | None = None,
 ) -> OrchestratorHandle:
-    """Build the orchestrator; pass ``model`` to avoid creating a real chat model."""
+    """Build the orchestrator; pass ``model`` to avoid creating a real chat model.
+
+    An ``executor`` that can also introspect the catalog (``list_tables``,
+    ``describe_table``, ``distinct_values``) additionally gets the schema tools,
+    annotated with ``table_docs`` when given.
+    """
     resolved = settings if settings is not None else get_settings()
     if resolved.environment is Environment.PROD and (checkpointer is None or store is None):
         raise ConfigurationError(
@@ -105,6 +112,8 @@ def build_orchestrator(
         registry = ApprovalRegistry()
         tools.extend(make_sql_tools(executor, threshold, registry))
         interrupt_on["run_sql"] = _approval_config(executor, threshold, registry)
+        if isinstance(executor, SchemaExecutor):
+            tools.extend(make_schema_tools(executor, table_docs))
 
     graph = create_deep_agent(
         model=agent_model,
