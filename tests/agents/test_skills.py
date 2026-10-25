@@ -5,7 +5,8 @@ from importlib import resources
 from pathlib import Path
 
 import pytest
-from rootcause.agents.skills import skill_paths  # type: ignore[import-not-found]
+
+from rootcause.agents.skills import skill_paths
 
 SKILL_REL = "skills/root-cause/SKILL.md"
 

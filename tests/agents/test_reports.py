@@ -4,7 +4,8 @@ from typing import Any
 
 import pytest
 from pydantic import ValidationError
-from rootcause.agents.reports import (  # type: ignore[import-not-found]
+
+from rootcause.agents.reports import (
     Countermeasure,
     Evidence,
     ProblemStatement,

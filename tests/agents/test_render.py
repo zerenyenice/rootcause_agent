@@ -3,8 +3,8 @@
 import re
 from typing import Any
 
-from rootcause.agents.render import render_why_chain  # type: ignore[import-not-found]
-from rootcause.agents.reports import (  # type: ignore[import-not-found]
+from rootcause.agents.render import render_why_chain
+from rootcause.agents.reports import (
     Countermeasure,
     Evidence,
     ProblemStatement,
