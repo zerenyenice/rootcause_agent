@@ -214,6 +214,7 @@ class Settings(BaseSettings):
         """Require a usable Fernet key; the error never echoes the value."""
         if value is not None and not is_fernet_key(value.get_secret_value()):
             raise ValueError(SECRET_KEY_FORMAT_ERROR)
+        return value
 
     @field_validator("agent_allowed_origins")
     @classmethod
