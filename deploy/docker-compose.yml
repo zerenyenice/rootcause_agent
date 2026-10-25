@@ -1,0 +1,128 @@
+# RootCause local stack: the stateful services every later task depends on.
+# Task T002 (docs/plans/T002-docker-compose-stack.md). Owner: devops.
+#
+# Quick start (from the repo root):
+#   cp deploy/.env.example deploy/.env      # then replace every placeholder
+#   docker compose -f deploy/docker-compose.yml up -d
+# Compose reads deploy/.env automatically (the project directory is the
+# directory of this file). See deploy/README.md for verify/reset steps.
+#
+# Conventions:
+#   - exact image tags, never `latest`; bump via a deliberate `chore(deploy):`
+#     commit (observed manifest digests are recorded next to each image)
+#   - every published port binds to 127.0.0.1 only
+#   - no secret lives in this file or in any tracked file; values come from
+#     deploy/.env (gitignored) and the `:?` required-variable markers make
+#     the stack refuse to start without them
+#   - `restart: unless-stopped` + healthchecks on every service
+
+name: rootcause
+
+services:
+  # ---------------------------------------------------------------------------
+  # Postgres 16 + pgvector (ADR-0003: catalog, audit log, app state, LangGraph
+  # checkpointer/store all live here; hybrid search via pgvector).
+  # Image: the pgvector project's official build on top of the official
+  # postgres image. 0.8.7-pg16 = pgvector 0.8.7 on PostgreSQL 16 (Debian
+  # bookworm). Multi-arch index digest observed 2026-10-25:
+  #   sha256:7b822b0aac60967beb1ea5e576b8602c94c300a157d187f385ae3e0da199b90a
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: pgvector/pgvector:0.8.7-pg16
+    restart: unless-stopped
+    environment:
+      # Only the POSTGRES_* subset of deploy/.env is handed to this container
+      # (no `env_file:` on purpose: the OpenViking provider keys must not leak
+      # into the database container's environment).
+      POSTGRES_USER: ${POSTGRES_USER:-rootcause}
+      POSTGRES_DB: ${POSTGRES_DB:-rootcause}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/.env}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      # Runs once, on first start against an empty volume: CREATE EXTENSION
+      # vector + schemas app/catalog/audit. `down -v` to re-run.
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/10-rootcause-init.sql:ro
+    healthcheck:
+      # $$ defers expansion to the container shell, where POSTGRES_* are set.
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # OpenViking server (ADR-0003: agent memory, lessons and skills; run
+  # unmodified as a separate AGPLv3 service, only its client is used from our
+  # code). PROJECT.md section 6 and ADR-0003 pin the 0.3.x line; v0.3.24
+  # (2026-06-05) is the last 0.3.x release.
+  # Official image: ghcr.io/volcengine/openviking, published by the upstream
+  # build-docker-image.yml workflow (docs/en/guides/03-deployment.md "Docker").
+  # Mirrors: docker.io/openviking/openviking and
+  # openviking-cn-beijing.cr.volces.com/volcengine/openviking.
+  # Multi-arch index digest observed 2026-10-25:
+  #   sha256:07b01246fda12ca9ca6b5d7e21add2d2d2d9673da805ca4f09ec8d026a878dc7
+  # Server port 1933; GET /health is the unauthenticated liveness probe
+  # ({"status": "ok"}), GET /ready additionally checks the embedding provider.
+  # ---------------------------------------------------------------------------
+  openviking:
+    image: ghcr.io/volcengine/openviking:v0.3.24
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${OPENVIKING_PORT:-1933}:1933"
+    volumes:
+      # All persistent state (workspace data, API-key index) under one mount;
+      # ov.conf is NOT in here, see the template mount below.
+      - openviking_data:/app/.openviking
+      # Secret-free template; the server expands ${VAR} references from this
+      # container's environment at load time (see deploy/openviking/ov.conf).
+      # Kept outside the data volume so config edits apply on the next
+      # restart instead of being frozen by the first start.
+      - ./openviking/ov.conf:/etc/openviking/ov.conf:ro
+    environment:
+      OPENVIKING_CONFIG_FILE: /etc/openviking/ov.conf
+      # VikingBot (the agent framework bundled with the image) is not part of
+      # this stack; only the context-database server is wanted.
+      OPENVIKING_WITH_BOT: "0"
+      # Required because the server binds 0.0.0.0 inside the container
+      # (upstream refuses to start without it); selects `api_key` auth mode.
+      OPENVIKING_ROOT_API_KEY: ${OPENVIKING_ROOT_API_KEY:?set OPENVIKING_ROOT_API_KEY in deploy/.env}
+      # Embedding provider (PRD: OpenAI-compatible by default, Ollama for
+      # air-gapped installs). Provider ids and model/dimension pairs:
+      # https://github.com/volcengine/OpenViking/blob/v0.3.24/docs/en/guides/01-configuration.md#embedding
+      OPENVIKING_EMBEDDING_PROVIDER: ${OPENVIKING_EMBEDDING_PROVIDER:-openai}
+      OPENVIKING_EMBEDDING_API_BASE: ${OPENVIKING_EMBEDDING_API_BASE:-https://api.openai.com/v1}
+      OPENVIKING_EMBEDDING_API_KEY: ${OPENVIKING_EMBEDDING_API_KEY:?set OPENVIKING_EMBEDDING_API_KEY in deploy/.env}
+      OPENVIKING_EMBEDDING_MODEL: ${OPENVIKING_EMBEDDING_MODEL:-text-embedding-3-small}
+      OPENVIKING_EMBEDDING_DIMENSION: ${OPENVIKING_EMBEDDING_DIMENSION:-1536}
+      # VLM used by OpenViking for L0/L1 summary generation. Defaults to the
+      # same provider/key as embeddings.
+      OPENVIKING_VLM_PROVIDER: ${OPENVIKING_VLM_PROVIDER:-${OPENVIKING_EMBEDDING_PROVIDER:-openai}}
+      OPENVIKING_VLM_API_BASE: ${OPENVIKING_VLM_API_BASE:-${OPENVIKING_EMBEDDING_API_BASE:-https://api.openai.com/v1}}
+      OPENVIKING_VLM_API_KEY: ${OPENVIKING_VLM_API_KEY:-${OPENVIKING_EMBEDDING_API_KEY}}
+      OPENVIKING_VLM_MODEL: ${OPENVIKING_VLM_MODEL:?set OPENVIKING_VLM_MODEL in deploy/.env}
+    healthcheck:
+      # curl ships in the upstream runtime image (it is what the upstream
+      # HEALTHCHECK uses too). /health needs no API key.
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:1933/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+
+  # ---------------------------------------------------------------------------
+  # Application services (profile `app`) are added to this file by later tasks
+  # and are NOT started by a plain `docker compose up`; use
+  # `docker compose --profile app up` once they exist.
+  #
+  #   api:   T005 (FastAPI beside LangGraph Server). Reads ROOTCAUSE_* from
+  #          deploy/.env; inside the compose network it reaches the services
+  #          as postgres:5432 and http://openviking:1933; depends_on both with
+  #          condition: service_healthy.
+  #   web:   T070 (Next.js app). depends_on: api.
+  # ---------------------------------------------------------------------------
+
+volumes:
+  postgres_data:
+  openviking_data:

@@ -9,6 +9,8 @@ name: CI
 #   2. Harness integrity — generated surfaces must match their sources,
 #      shell/JSON config must parse and lint clean, and every commit must
 #      carry this project's git-protocol trailers.
+#   3. Deploy config — `compose-config` keeps deploy/docker-compose.yml
+#      parsing and interpolating against the committed placeholder env.
 # See docs/CI.md for the full rationale and local repro commands for each
 # job below.
 
@@ -156,6 +158,60 @@ jobs:
             fi
           done
           exit "$failed"
+
+  # deploy/docker-compose.yml (T002) must always parse, satisfy the compose
+  # schema and interpolate every ${VAR} against the committed placeholder
+  # env file, so a broken stack definition fails here and not on a
+  # developer's first `up`. `config -q` resolves the file without pulling
+  # images or starting containers (docker compose is preinstalled on
+  # ubuntu-latest), so the job is cheap and needs no secrets. The second
+  # step performs the same ${VAR} expansion OpenViking applies to its
+  # config template at load time and checks the result is valid JSON.
+  compose-config:
+    name: compose-config
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Validate deploy/docker-compose.yml against deploy/.env.example
+        run: |
+          set -euo pipefail
+          docker compose version
+          docker compose -f deploy/docker-compose.yml --env-file deploy/.env.example config -q
+          echo "deploy/docker-compose.yml parses and interpolates cleanly."
+
+      - name: Check deploy/openviking/ov.conf expands to valid JSON
+        run: |
+          set -euo pipefail
+          # Export the placeholder env exactly as compose would hand it to the
+          # container, then expand the template the way the server does
+          # (os.path.expandvars + json.loads).
+          set -a
+          # shellcheck disable=SC1091
+          . deploy/.env.example
+          set +a
+          : "${OPENVIKING_VLM_PROVIDER:=$OPENVIKING_EMBEDDING_PROVIDER}"
+          : "${OPENVIKING_VLM_API_BASE:=$OPENVIKING_EMBEDDING_API_BASE}"
+          : "${OPENVIKING_VLM_API_KEY:=$OPENVIKING_EMBEDDING_API_KEY}"
+          export OPENVIKING_VLM_PROVIDER OPENVIKING_VLM_API_BASE OPENVIKING_VLM_API_KEY
+          python3 - <<'PYCHECK'
+          import json, os, pathlib, sys
+          raw = pathlib.Path("deploy/openviking/ov.conf").read_text(encoding="utf-8")
+          expanded = os.path.expandvars(raw)
+          if "${" in expanded:
+              sys.exit("::error::unexpanded ${VAR} left in deploy/openviking/ov.conf")
+          conf = json.loads(expanded)
+          for key in ("server", "storage", "embedding", "vlm"):
+              if key not in conf:
+                  sys.exit(f"::error::deploy/openviking/ov.conf is missing the '{key}' section")
+          if not isinstance(conf["embedding"]["dense"]["dimension"], int):
+              sys.exit("::error::embedding.dense.dimension must expand to a JSON integer")
+          print("deploy/openviking/ov.conf expands to valid JSON with all required sections.")
+          PYCHECK
 
   # This repo's git protocol (rules/common/git-workflow.md) requires every
   # commit to carry a conventional-commit type prefix plus Agent:/Task:
