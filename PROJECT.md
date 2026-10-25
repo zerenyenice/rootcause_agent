@@ -110,17 +110,23 @@ agreement from two detection skills or one at very high confidence; lessons
 are promoted to skills only after three supporting accepted cases or a human
 playbook flag.
 
-Delivery order (changed 2026-10-25): an MVP vertical slice comes first
-(docs/plans/MVP.md). An analyst asks a why-question about the demo warehouse
-in a minimal chat UI; the orchestrator delegates to the 5 Whys root-cause
-subagent, which inspects the schema, runs validated read-only SQL and returns
-a WhyChain report where every level cites an executed query. MVP gate: the
-easy evaluation cases E1 to E3 all pass, which also meets the Phase 0 gate.
-Work not in the MVP is labelled `later` and resumes after the gate in phase
-order: Phase 1 Anomaly agent (scan finds 90% of seeded anomalies); Phase 2
-Root-cause depth (70% accepted on 20 seeded cases); Phase 3 Memory (a
-repeated case is solved using a lesson); Phase 4 Catalog UI and hardening
-(pilot on one real customer database). Task tracking: the GitHub project
+Delivery order (changed 2026-10-25, extended the same day): an MVP comes
+first (docs/plans/MVP.md). The MVP is a runnable platform: a web UI for chat
+(streaming), database connection management (Postgres and DuckDB) and
+metadata management (select tables and columns, add descriptions, build the
+search index); a backend API for the UI and a separate deep-agent service
+that streams agent runs; Docker Compose running every service; Langfuse
+tracing of the agent system. In chat the orchestrator delegates why-questions
+to the 5 Whys root-cause subagent, which runs validated read-only SQL on the
+selected connection and returns a WhyChain report where every level cites an
+executed query. MVP gate: the platform runs from Docker Compose and the easy
+evaluation cases E1 to E3 all pass on the demo warehouse, which also meets
+the Phase 0 gate. Work not in the MVP is labelled `later` and resumes after
+the gate in phase order: Phase 1 Anomaly agent (scan finds 90% of seeded
+anomalies); Phase 2 Root-cause depth (70% accepted on 20 seeded cases);
+Phase 3 Memory (a repeated case is solved using a lesson); Phase 4 hardening
+(auth, tenancy, extra dialects; pilot on one real customer database).
+Task tracking: the GitHub project
 "RootCause" (labels mvp and later, milestone MVP); docs/backlog/backlog.yaml
 is the original breakdown and is no longer synced.
 ```
@@ -296,24 +302,28 @@ is the phase 4 pilot with the success metrics in section 2 measured.
 As of 2026-10-25.
 
 Done (merged to dev): uv-based repository, CI pipeline (lint, typecheck,
-tests with the 80% gate, secret scan, dependency audit, migrations check),
-branch protection on master and dev; Docker Compose stack (Postgres with
-pgvector, OpenViking, optional self-hosted Langfuse); shared settings,
-logging and OpenTelemetry; service clients (Anthropic, Azure OpenAI,
-embeddings, OpenViking, Langfuse); Langfuse tracing with redaction of
-secrets, rows and personal data, plus prompt management with repo fallback;
-SQLAlchemy models and Alembic migrations with the three-role model and audit
-triggers; sqlglot SQL validator; FastAPI skeleton with health endpoints;
-DeepAgents orchestrator skeleton with human approval for expensive queries;
-evaluation warehouse generator with easy incidents E1 to E3; ADRs 0001 to
-0007; MVP plan and tiered development process; single-package repository
-layout (src/rootcause).
+tests with the 80% gate, secret scan, dependency audit, static security
+analysis, web checks, migrations check), branch protection; Docker Compose
+stack for Postgres with pgvector, OpenViking and optional self-hosted
+Langfuse; shared settings, logging and OpenTelemetry; service clients
+(Anthropic, Azure OpenAI, embeddings, OpenViking, Langfuse); Langfuse tracing
+with redaction plus prompt management with repo fallback; SQLAlchemy models
+and Alembic migrations with the three-role model and audit triggers; sqlglot
+SQL validator; FastAPI skeleton with health endpoints; single-package layout
+(src/rootcause); DuckDB read-only executor and schema tools; 5 Whys skill,
+WhyChain report and root-cause subagent wired into the orchestrator with run
+budgets; unattended investigate() entry point; evaluation warehouse generator
+(easy incidents E1 to E3) and evaluation runner; minimal Next.js chat UI;
+Azure OpenAI support for structured output; actionable errors for invalid
+SQL. Measured on Azure gpt-5.1 (3 runs per case): E2 passes 6/6, E1 and E3
+0/6.
 
-Next (MVP): run_sql executor on DuckDB and schema tools; 5 Whys skill and
-WhyChain report; root-cause subagent wired into the orchestrator;
-evaluation runner on E1 to E3; minimal chat UI.
+Next (MVP): agent always returns a WhyChain and never reports findings it
+did not receive (#138, #139); deep-agent service with streaming and a
+Postgres checkpointer; backend API for connections (Postgres, DuckDB) and
+the metadata catalog with a search index; management UI; Docker Compose for
+every service with Langfuse tracing; MVP gate run.
 
-Not started: anomaly agent, metadata catalog, memory and lessons, catalog
-and connections UI, authentication, tenancy, extra dialects, pilot
-hardening.
+Not started: anomaly agent, memory and lessons, authentication, tenancy,
+extra dialects, pilot hardening.
 ```
