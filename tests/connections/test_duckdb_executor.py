@@ -517,3 +517,50 @@ def test_explain_fails_closed_when_plan_has_no_cardinality(
 @pytest.mark.unit
 def test_explain_still_reports_positive_estimate_for_real_plan(executor: DuckDBExecutor) -> None:
     assert executor.explain("select * from production").estimated_rows > 0
+
+
+# --- Actionable detail for invalid statements (RED) --------------------------------
+# ``QueryFailed.detail`` carries DuckDB's message only for ParserException,
+# BinderException and CatalogException (errors about the statement, not the data).
+
+_BINDER_UNKNOWN_COLUMN_SQL = "SELECT s.no_such_column FROM (SELECT plant_id FROM plants) AS s"
+_CAST_SENTINEL = "SENTINEL-row-value"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("method", ["explain", "run"])
+def test_binder_error_carries_duckdb_detail_naming_the_column(
+    executor: DuckDBExecutor, method: str
+) -> None:
+    with pytest.raises(QueryFailed) as caught:
+        if method == "explain":
+            executor.explain(_BINDER_UNKNOWN_COLUMN_SQL)
+        else:
+            executor.run(_BINDER_UNKNOWN_COLUMN_SQL, "probe")
+    error = caught.value
+    assert error.error_type == "BinderException"
+    detail = getattr(error, "detail", None)
+    assert isinstance(detail, str)
+    assert "no_such_column" in detail
+    assert "no_such_column" not in str(error)  # the message itself stays generic
+    assert error.__cause__ is None
+
+
+@pytest.mark.unit
+def test_cast_error_carries_no_detail_and_is_not_chained(executor: DuckDBExecutor) -> None:
+    with pytest.raises(QueryFailed) as caught:
+        executor.run(f"SELECT CAST('{_CAST_SENTINEL}' AS INTEGER)", "bad cast")
+    error = caught.value
+    assert error.error_type == "ConversionException"
+    assert hasattr(error, "detail")
+    assert error.detail is None
+    assert _CAST_SENTINEL not in str(error)
+    assert error.__cause__ is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("error_type", ["MissingEstimate", "MalformedPlan", "ConversionException"])
+def test_query_failed_without_duckdb_message_has_no_detail(error_type: str) -> None:
+    error = QueryFailed(error_type)
+    assert hasattr(error, "detail")
+    assert error.detail is None
