@@ -162,8 +162,8 @@ Return only a WhyChain JSON object matching `rootcause.agents.reports`:
 }
 ```
 
-For worked examples and the pitfalls in detail, read
-`references/pitfalls.md` in this skill directory when a chain gets stuck.
+For worked examples and the pitfalls in detail, see `references/pitfalls.md`
+(appended below as a reference section) when a chain gets stuck.
 
 ## Checklist
 

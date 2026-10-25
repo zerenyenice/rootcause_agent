@@ -1,10 +1,12 @@
 """Unattended, bounded investigation: question in, the subagent's WhyChain out.
 
 Used by the evaluation runner, whose contract hands the agent only the question.
+The orchestrator is told no user is available, so it delegates instead of asking.
 Every approval interrupt is rejected (nobody is there to approve an expensive
 scan), so the run continues with the agent proposing cheaper queries.
 """
 
+import time
 import uuid
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
@@ -25,12 +27,19 @@ from rootcause.errors import ConfigurationError
 from rootcause.logging import get_logger
 from rootcause.settings import get_settings
 
-# Upper bound on auto-rejected approval rounds within one run.
+# Upper bound on auto-rejected approval rounds within one run (read at call time).
 MAX_RESUMES = 20
 TASK_TOOL = "task"
 _REJECTION_MESSAGE = (
     "Rejected automatically: unattended runs cannot approve large scans. "
     "Use a cheaper query (filters, sampling, aggregates)."
+)
+_UNATTENDED_INSTRUCTION = (
+    "Unattended run: no user is available to answer questions or approve scans. "
+    "Do not ask for clarification. Delegate the question below, as given, to the "
+    "`root-cause` subagent with the `task` tool; the subagent measures any missing "
+    "what, when, where or impact from the data.\n\n"
+    "Question: {question}"
 )
 
 _logger = get_logger(__name__)
@@ -78,23 +87,33 @@ def _handle_from_settings() -> Iterator[OrchestratorHandle]:
 
 
 def _run(handle: OrchestratorHandle, question: str) -> WhyChain | None:
+    settings = handle.settings
     config: RunnableConfig = {
         "configurable": {"thread_id": f"investigate-{uuid.uuid4().hex}"},
-        "recursion_limit": handle.settings.investigation_max_steps,
+        "recursion_limit": settings.investigation_max_steps,
     }
-    payload: Any = {"messages": [HumanMessage(question)]}
+    payload: Any = {"messages": [HumanMessage(_UNATTENDED_INSTRUCTION.format(question=question))]}
+    deadline = time.monotonic() + settings.investigation_timeout_seconds
+    max_resumes = MAX_RESUMES
+    resumes = 0
     try:
-        for resumes in range(MAX_RESUMES + 1):
+        for resumes in range(max_resumes + 1):
             result = handle.graph.invoke(payload, config)
             pending = result.get("__interrupt__") or ()
             if not pending:
                 return _log_outcome(_why_chain(result.get("messages", ())), resumes)
+            if time.monotonic() >= deadline:
+                _logger.warning(
+                    "investigation_time_budget_exhausted",
+                    timeout_seconds=settings.investigation_timeout_seconds,
+                )
+                return _log_outcome(_why_chain(result.get("messages", ())), resumes)
             payload = Command(resume=_reject_all(pending))
     except GraphRecursionError:
         _logger.warning("investigation_step_budget_exhausted", max_steps=config["recursion_limit"])
-        return None
-    _logger.warning("investigation_resume_budget_exhausted", max_resumes=MAX_RESUMES)
-    return _why_chain(result.get("messages", ()))
+        return _log_outcome(None, resumes)
+    _logger.warning("investigation_resume_budget_exhausted", max_resumes=max_resumes)
+    return _log_outcome(_why_chain(result.get("messages", ())), max_resumes)
 
 
 def _reject_all(interrupts: Sequence[Any]) -> dict[str, Any]:

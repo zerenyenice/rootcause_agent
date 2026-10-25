@@ -116,12 +116,13 @@ def _approval_config(
 
 def _sql_wiring(
     executor: QueryExecutor | None,
-    threshold: int,
+    settings: Settings,
     table_docs: Mapping[str, TableDocLike] | None,
 ) -> tuple[list[BaseTool], dict[str, bool | InterruptOnConfig], list[SubAgent]]:
-    """Warehouse tools, the run_sql approval gate and the root-cause subagent."""
+    """Warehouse tools, the run_sql approval gate and the budgeted root-cause subagent."""
     if executor is None:
         return [], {}, []
+    threshold = settings.scan_row_threshold
     registry = ApprovalRegistry()
     tools = list(make_sql_tools(executor, threshold, registry))
     if isinstance(executor, SchemaExecutor):
@@ -129,7 +130,12 @@ def _sql_wiring(
     interrupt_on: dict[str, bool | InterruptOnConfig] = {
         "run_sql": _approval_config(executor, threshold, registry)
     }
-    return tools, interrupt_on, [root_cause_subagent(tools)]
+    subagent = root_cause_subagent(
+        tools,
+        max_tool_calls=settings.investigation_max_tool_calls,
+        max_steps=settings.investigation_max_steps,
+    )
+    return tools, interrupt_on, [subagent]
 
 
 def build_orchestrator(
@@ -152,6 +158,11 @@ def build_orchestrator(
     ``checkpointer=None`` builds the default saver; ``checkpointer=False`` compiles
     without one, for hosts that inject their own (LangGraph Server, which also
     provides the store, so the prod durability check does not apply).
+
+    Warning:
+        ``checkpointer=False`` is only for server-managed persistence. It skips the
+        prod durability check, and without an injected checkpointer approval
+        interrupts cannot be resumed and threads keep no history.
     """
     resolved = settings if settings is not None else get_settings()
     server_managed = checkpointer is False
@@ -166,7 +177,7 @@ def build_orchestrator(
         )
     agent_model = model if model is not None else chat_model("orchestrator", resolved)
     saver = _resolve_checkpointer(checkpointer, resolved)
-    tools, interrupt_on, subagents = _sql_wiring(executor, resolved.scan_row_threshold, table_docs)
+    tools, interrupt_on, subagents = _sql_wiring(executor, resolved, table_docs)
 
     graph = create_deep_agent(
         model=agent_model,

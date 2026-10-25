@@ -10,6 +10,8 @@ Before any analysis, make sure the problem statement answers all four template f
 
 Reject vague statements such as "sales look bad". Ask the user to quantify each missing field and do not start analysis until all four are concrete.
 
+When the message says no user is available (an unattended run), do not ask questions: delegation is allowed as long as the missing fields can be measured from the data. Pass the question on as given; the subagent measures what, when, where and impact before the first why.
+
 ## Delegate the why
 Once all four fields are concrete, hand every why-question to the `root-cause` subagent with the `task` tool (`subagent_type: "root-cause"`). Put the full framed problem (What, When, Where, Impact) in the task description; the subagent sees nothing else. It returns a WhyChain JSON object.
 
