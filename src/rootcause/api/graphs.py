@@ -1,7 +1,9 @@
-"""Graph factory registered in ``langgraph.json`` as ``rootcause``.
+"""Graph factories: ``langgraph.json`` (``rootcause``) and the agent service.
 
-Importing this module builds nothing; LangGraph Server calls :func:`make_graph`
-and injects its own checkpointer and store.
+Importing this module builds nothing. LangGraph Server calls :func:`make_graph`
+and injects its own checkpointer and store; the agent service
+(:mod:`rootcause.agent_service`) calls :func:`make_service_graph` once at
+startup with the checkpointer and store it owns.
 """
 
 import atexit
@@ -9,7 +11,9 @@ import threading
 from pathlib import Path
 from typing import Any
 
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph.state import CompiledStateGraph
+from langgraph.store.base import BaseStore
 
 from rootcause.agents.orchestrator import build_orchestrator
 from rootcause.agents.tools.sql import QueryExecutor
@@ -44,6 +48,31 @@ def make_graph() -> CompiledStateGraph[Any, Any, Any, Any]:
         settings=settings,
         checkpointer=False,
         executor=_shared_executor(settings),
+        table_docs=TABLE_DOCS,
+    ).graph
+
+
+def make_service_graph(
+    *,
+    checkpointer: BaseCheckpointSaver[Any],
+    store: BaseStore | None = None,
+    settings: Settings | None = None,
+) -> CompiledStateGraph[Any, Any, Any, Any]:
+    """Build the orchestrator compiled with the caller's ``checkpointer`` and ``store``.
+
+    Same tools and warehouse executor as :func:`make_graph`. Blocking (it may open
+    the warehouse file): call it once, from a worker thread in async code.
+
+    Raises:
+        ConfigurationError: the settings are invalid, the warehouse file is missing,
+            or ``store`` is missing in prod.
+    """
+    resolved = settings if settings is not None else get_settings()
+    return build_orchestrator(
+        settings=resolved,
+        checkpointer=checkpointer,
+        store=store,
+        executor=_shared_executor(resolved),
         table_docs=TABLE_DOCS,
     ).graph
 
