@@ -61,6 +61,8 @@ dev = [
     "pandas-stubs>=3.0",
     "pytest-postgresql>=6",
     "psycopg[binary]>=3.2",
+    # Python SAST for the `security-sast` CI job (exact version pinned in uv.lock).
+    "bandit>=1.9.4,<2",
 ]
 
 [tool.ruff]
@@ -77,6 +79,13 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 # RED tests import modules that do not exist yet; without this ruff
 # classifies them as third-party and the GREEN commit fails I001.
 known-first-party = ["rootcause"]
+
+[tool.bandit]
+# Python SAST for the `security-sast` CI job: `uv run bandit -c pyproject.toml -r src -ll`
+# (-ll = fail on medium severity and above). No global `skips`/`exclude_dirs` on purpose:
+# a false positive is suppressed only at its line with `# nosec B<id>` plus a one-line
+# reason comment, so every exception stays visible and reviewable in the diff.
+skips = []
 
 [tool.mypy]
 python_version = "3.12"

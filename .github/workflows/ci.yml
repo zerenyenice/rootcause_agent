@@ -6,6 +6,7 @@ name: CI
 #   1. Product quality — `python-quality` mirrors the local lint → format →
 #      typecheck → test commands and fails under 80% coverage (the Gate 2
 #      bar); `dependency-audit` checks locked runtime deps for known CVEs;
+#      `security-sast` runs bandit static security analysis over src/;
 #      `db-migrations` migrates a service Postgres up/down/up and runs the
 #      integration tests against it; `web-quality` runs the Next.js app's
 #      (web/) lint → typecheck → format → test (80% coverage) → build →
@@ -607,3 +608,40 @@ jobs:
         run: >
           uv tool run "pip-audit@${PIP_AUDIT_VERSION}"
           -r requirements-audit.txt --strict --progress-spinner off
+
+  # Python SAST gate (rules/devops/ci-cd.md § Security): bandit over src/,
+  # failing on medium severity and above (-ll). bandit is pinned through the
+  # uv `dev` group (exact version in uv.lock) and configured in pyproject's
+  # [tool.bandit]. Only the dev group is installed (--only-group: no project,
+  # no runtime deps), so the job stays fast. A false positive is suppressed
+  # only at its line with `# nosec B<id>` and a one-line reason; adding a
+  # global skip, raising the severity floor or continue-on-error is a gate
+  # override only the user can grant.
+  security-sast:
+    name: security-sast
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # cache-suffix keeps this job's cache key distinct from python-quality's
+      # (same uv.lock glob) so the jobs don't race to save one key.
+      - name: Install uv (cache keyed on uv.lock)
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: "0.13.5"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+          cache-suffix: sast
+
+      - name: Install Python 3.12
+        run: uv python install 3.12
+
+      - name: Sync only the locked dev tool group (fails if lockfile is stale)
+        run: uv sync --locked --only-group dev
+
+      - name: Scan src/ with bandit (fail on medium severity and above)
+        run: uv run --no-sync bandit -c pyproject.toml -r src -ll

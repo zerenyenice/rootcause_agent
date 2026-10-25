@@ -92,7 +92,7 @@ inline. Use agents proactively without user prompt:
 - Backend implementation → **backend-coder**, then **backend-reviewer** (review)
 - Frontend implementation → **frontend-coder**, then **frontend-reviewer** (review)
 - Bug fix or new feature → **tester** (failing test first) + the relevant coder agent (fix)
-- Security-sensitive code → **security-reviewer**
+- Security-sensitive code → label the PR `security`; **security-reviewer** reviews it on the release PR (dev → master), or on demand
 - CI pipeline failures, workflow authoring, PR check status → **devops** (diagnoses via `gh` CLI; code/test fixes route back through the Lead to the coder/tester agents)
 - Frontend build failures → `/frontend-build` command (self-contained, no dedicated agent)
 - Dead code / duplication sweeps → `/refactor-clean` command (self-contained, no dedicated agent)
@@ -191,11 +191,36 @@ reason.
 |---|---|---|---|
 | **Light** | docs, config, CI, scaffolding, eval tooling, behavior-preserving refactors, prototypes | The implementing agent writes tests together with the code (no separate RED commit). Mechanical refactors may move test files and change imports/paths only | Lead reads the diff; one reviewer only if the diff exceeds ~300 source lines |
 | **Standard** (default for product features) | agents, tools, API, UI | Tester writes the failing test first; Lead commits it (`test: … (RED)`), then the coder implements without touching test files | One round by `backend-reviewer` / `frontend-reviewer` |
-| **Sensitive** | executing SQL against customer data, credentials and secrets, auth, tenant isolation, exporting data off-host | As Standard | Standard reviewer plus `security-reviewer`, in parallel, one round |
+| **Sensitive** | executing SQL against customer data, credentials and secrets, auth, tenant isolation, exporting data off-host | As Standard | Standard reviewer, one round; the PR gets the `security` label so the release review looks at it first |
+
+**Security review happens on PRs, not per development step:**
+- Every PR: automated security checks in CI (secret scan, dependency audit,
+  `security-sast` static analysis). The Lead merges only when every check
+  passes; on master the ruleset enforces it.
+- Release PR (dev → master): one `security-reviewer` pass over the whole
+  release diff, `security`-labelled PRs first. CRITICAL/HIGH findings are
+  fixed on dev before the release merges; MEDIUM/LOW become `later` issues.
+- On demand: the user or the Lead may request a `security-reviewer` pass on
+  any single PR.
 
 Rules that hold in every tier: CI coverage ≥ 80%, lint/format/typecheck clean
 (`--no-cache`), commit trailers, no secrets, tests never weakened to pass,
 reviewers flag test tampering as CRITICAL.
+
+**Batching tasks into one PR (default):** group related backlog tasks on one
+branch and one PR instead of one PR per task. Group by deliverable or area
+(e.g. "catalog retrieval", "anomaly detection skills"). Rules:
+- Name the branch after the batch (`feat/<batch-slug>`); the PR body lists
+  every issue it closes (`Closes #a, closes #b`).
+- Keep each task's commits separate and in protocol order (its own RED and
+  implementation commits); every commit's `Task:` trailer names the task it
+  belongs to, so `git log --grep "Task: <slug>"` still works per task.
+- One review round per PR, not per task. A Sensitive task in the batch makes
+  the whole PR `security`-labelled.
+- Keep a batch reviewable: about 800 changed source lines (tests excluded)
+  at most; split larger work into several PRs.
+- Do not batch unrelated changes with process (`chore(process)`) or
+  `PROJECT.md` changes; those stay standalone.
 
 **Efficiency rules for the Lead:**
 - Size tasks so one coder finishes in one dispatch; merge tasks that touch the
