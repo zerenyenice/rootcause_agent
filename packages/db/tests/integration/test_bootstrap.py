@@ -205,7 +205,9 @@ def privileged_group(request, db_roles):
         yield kind
         return
     name = f"rc_group_{db_roles.owner[-10:]}"
-    _admin_exec(db_roles, PRIVILEGED_GROUPS[kind].format(name=name))
+    create_template = PRIVILEGED_GROUPS[kind]
+    assert create_template is not None, f"no CREATE ROLE template for {kind}"
+    _admin_exec(db_roles, create_template.format(name=name))
     try:
         yield name
     finally:
