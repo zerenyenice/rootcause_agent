@@ -213,13 +213,20 @@ uv run pytest --no-cov -k <expr>   # focused run; the 80% coverage gate applies 
 uv run ruff check .     # lint
 uv run ruff format --check .
 uv run mypy             # strict type-check of every src/ tree
+uv run uvicorn --factory rootcause_api.main:create_app --reload   # serve the API (needs ROOTCAUSE_DATABASE_URL)
+(cd apps/api && uv run --with "langgraph-cli[inmem]" langgraph dev)   # LangGraph Server, placeholder graph
 ```
+
+The API exposes an application factory, so always start it with `--factory`.
+Rate limiting keys on the peer address (`X-Forwarded-For` is never read). Behind
+a reverse proxy, start uvicorn with `--proxy-headers --forwarded-allow-ips <proxy-ip>`
+so the real client address is taken from trusted proxies only.
 
 Layout:
 
 ```
 apps/
-├── api/        — rootcause_api: the FastAPI service (lands in T005; not runnable yet)
+├── api/        — rootcause_api: the FastAPI service (/health, /version) and langgraph.json
 └── web/        — placeholder for the Next.js UI (lands in T070; not runnable yet)
 packages/       — one installable distribution each: core, agents, tools, catalog,
                   connections, anomaly, memory, evals (src/ layout, py.typed)
