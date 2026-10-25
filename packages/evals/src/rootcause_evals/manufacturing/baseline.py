@@ -69,6 +69,17 @@ class RunGrid:
     work_order_product: npt.NDArray[np.int64]  # product index per work order (1-D)
 
 
+def scrap_rate(
+    shift_idx: npt.NDArray[np.int64], complexity: npt.NDArray[np.float64], multiplier: float = 1.0
+) -> npt.NDArray[np.float64]:
+    """Per-unit scrap probability by shift index and product complexity, capped at the maximum.
+
+    ``multiplier`` scales the base rate (1.0 is the baseline; incidents raise it).
+    """
+    rate = multiplier * BASE_SCRAP_RATE * SCRAP_SHIFT_FACTOR[shift_idx] * (0.8 + 0.1 * complexity)
+    return np.asarray(np.minimum(rate, MAX_SCRAP_RATE), dtype=np.float64)
+
+
 def _flat[S: np.generic](matrix: npt.NDArray[S]) -> npt.NDArray[S]:
     """Flatten a ``(lines, periods)`` matrix period-major."""
     return np.ascontiguousarray(matrix.T).reshape(-1)
@@ -127,8 +138,7 @@ def build_run_grid(
         * noise
     )
     units = rng.poisson(expected).astype(np.int64)
-    scrap_rate = BASE_SCRAP_RATE * SCRAP_SHIFT_FACTOR[shift_idx] * (0.8 + 0.1 * complexity)
-    scrapped = rng.binomial(units, np.minimum(scrap_rate, MAX_SCRAP_RATE)).astype(np.int64)
+    scrapped = rng.binomial(units, scrap_rate(shift_idx, complexity)).astype(np.int64)
     is_night = shift_idx == SHIFT_NAMES.index("night")
     cycle = std_cycle * (CYCLE_TIME_DRIFT + CYCLE_TIME_NOISE_SD * rng.normal(size=std_cycle.shape))
     cycle = cycle * (1.0 + NIGHT_CYCLE_TIME_PENALTY * is_night)
@@ -143,17 +153,16 @@ def build_run_grid(
     )
 
 
-def assign_material_lots(
+def pick_recent_lots(
     rng: np.random.Generator,
     run_ts: npt.NDArray[np.datetime64],
     run_material: npt.NDArray[np.str_],
     lots: pd.DataFrame,
-) -> pd.Series:
-    """Pick one of the most recently received lots of the run's material.
+) -> npt.NDArray[np.object_]:
+    """Pick one of the most recently received lots of each run's material (no blanking).
 
     Lots are sorted by ``received_date``; the opening-stock lot per material
-    guarantees at least one eligible lot. Exactly ``MATERIAL_LOT_NULL_SHARE``
-    of runs are then blanked (PRD data trap).
+    guarantees at least one eligible lot.
     """
     chosen = np.empty(len(run_ts), dtype=object)
     received_all = lots["received_date"].to_numpy()
@@ -166,6 +175,20 @@ def assign_material_lots(
         eligible = np.searchsorted(received, run_ts[run_mask], side="right")
         back = rng.integers(0, RECENT_LOTS_IN_USE, size=int(run_mask.sum()))
         chosen[run_mask] = lot_ids_all[lot_mask][np.clip(eligible - 1 - back, 0, None)]
+    return chosen
+
+
+def assign_material_lots(
+    rng: np.random.Generator,
+    run_ts: npt.NDArray[np.datetime64],
+    run_material: npt.NDArray[np.str_],
+    lots: pd.DataFrame,
+) -> pd.Series:
+    """Pick recent lots per run, then blank exactly ``MATERIAL_LOT_NULL_SHARE`` of runs.
+
+    The blanked share is the PRD data trap.
+    """
+    chosen = pick_recent_lots(rng, run_ts, run_material, lots)
     blank = rng.choice(len(run_ts), size=int(MATERIAL_LOT_NULL_SHARE * len(run_ts)), replace=False)
     chosen[blank] = None
     return pd.Series(chosen, dtype="str")
