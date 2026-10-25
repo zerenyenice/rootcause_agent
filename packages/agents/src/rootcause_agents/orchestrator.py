@@ -7,7 +7,6 @@ from typing import Any
 from deepagents import create_deep_agent
 from langchain.agents.middleware import TodoListMiddleware
 from langchain.agents.middleware.human_in_the_loop import InterruptOnConfig
-from langchain.chat_models import init_chat_model
 from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -15,7 +14,6 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.store.base import BaseStore
 
 from rootcause_agents.backends import build_backend, build_checkpointer
-from rootcause_agents.config import AgentModels
 from rootcause_agents.prompts import load_orchestrator_prompt
 from rootcause_agents.tools.sql import (
     ApprovalDecision,
@@ -24,12 +22,9 @@ from rootcause_agents.tools.sql import (
     make_sql_tools,
     thread_id_of,
 )
+from rootcause_core.clients import chat_model
 from rootcause_core.errors import ConfigurationError
 from rootcause_core.settings import Environment, Settings, get_settings
-
-MODEL_TIMEOUT_SECONDS = 60
-MODEL_MAX_RETRIES = 2
-MODEL_MAX_TOKENS = 8192
 
 
 @dataclass(frozen=True)
@@ -78,16 +73,7 @@ def build_orchestrator(
             "A durable checkpointer and store are required in prod; "
             "open postgres_checkpointer_cm in the app lifespan and pass both."
         )
-    chat_model = (
-        model
-        if model is not None
-        else init_chat_model(
-            AgentModels.from_settings(resolved).orchestrator,
-            timeout=MODEL_TIMEOUT_SECONDS,
-            max_retries=MODEL_MAX_RETRIES,
-            max_tokens=MODEL_MAX_TOKENS,
-        )
-    )
+    agent_model = model if model is not None else chat_model("orchestrator", resolved)
     saver = checkpointer if checkpointer is not None else build_checkpointer(resolved)
 
     tools: list[BaseTool] = []
@@ -99,7 +85,7 @@ def build_orchestrator(
         interrupt_on["run_sql"] = _approval_config(executor, threshold, registry)
 
     graph = create_deep_agent(
-        model=chat_model,
+        model=agent_model,
         tools=[*tools, *extra_tools],
         system_prompt=load_orchestrator_prompt(),
         middleware=[TodoListMiddleware()],
