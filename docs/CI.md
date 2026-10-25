@@ -1,15 +1,95 @@
 # CI/CD
 
-This repo ships no application (no `package.json`/`pyproject.toml`, no
-tests) — it is the agent-harness template itself. CI protects the template's
-own integrity: generated surfaces must match their sources, tracked
-shell/workflow/JSON files must lint and parse clean, no secret ever lands in
-history, and every commit carries this project's git-protocol trailers.
+This repo is both the agent-harness template and the RootCause Python
+monorepo — a `uv` workspace (`apps/api` + `packages/*`, see `pyproject.toml`
+and `uv.lock`) with `ruff`, `mypy` and `pytest` configured at the root. CI
+therefore has two concerns:
+
+1. **Product quality** — `python-quality` runs the same lint → format →
+   typecheck → test commands a developer runs locally and fails the job
+   under 80% coverage (the Gate 2 bar from `rules/common/testing.md`);
+   `dependency-audit` checks the locked runtime dependency set for known
+   vulnerabilities.
+2. **Harness integrity** — generated agent surfaces must match their
+   sources, tracked shell/workflow/JSON files must lint and parse clean, no
+   secret ever lands in history, and every commit carries this project's
+   git-protocol trailers.
 
 Owner agent: `devops`. Governing rules: `.claude/rules/devops/ci-cd.md`,
 `.claude/rules/devops/github-actions.md`, `.claude/rules/devops/security.md`.
 
 ## `.github/workflows/ci.yml`
+
+### `python-quality`
+
+**What it checks:** the Python workspace, in fail-fast order (cheap checks
+before expensive ones, per `rules/devops/ci-cd.md`):
+
+1. `uv sync --locked` — install exactly what `uv.lock` pins; the job fails
+   if `pyproject.toml` and `uv.lock` have drifted apart.
+2. `uv run ruff check .` — lint (rule set from `[tool.ruff.lint]`).
+3. `uv run ruff format --check .` — formatting, no rewrites.
+4. `uv run mypy` — strict typecheck over the paths in `[tool.mypy].files`
+   (the workspace `src/` trees plus the test directories; tests get the
+   relaxed `[[tool.mypy.overrides]]` for untyped defs, everything else is
+   `strict = true`).
+5. `uv run pytest -q --cov --cov-report=xml --cov-report=term-missing
+   --cov-fail-under=80` — the full suite with coverage; **under 80% the
+   step fails**. The threshold is repeated on the command line on purpose so
+   the gate is visible in the workflow diff, not only in `pyproject.toml`.
+
+`coverage.xml` is uploaded as the `coverage-xml` artifact with `if:
+always()` (so a red run still yields evidence) and 7-day retention (it is a
+debugging aid, not storage).
+
+**Why:** this is the machine-enforced half of Gate 2 — "CI mirrors the merge
+gate". The commands are the ones from `pyproject.toml`/T001, so a run that is
+green here and red locally (or vice versa) is a pipeline defect to fix, never
+a reason to loosen the gate. Lowering `--cov-fail-under`, adding
+`continue-on-error`, or deleting a step is a gate override only the user can
+grant (`rules/devops/ci-cd.md` § Never weaken to go green).
+
+**Toolchain pinning:** `astral-sh/setup-uv` is pinned to a commit SHA and
+installs a pinned `uv` version (the same minor the team runs locally) with
+its cache keyed on `uv.lock`; `uv python install 3.12` matches
+`.python-version`. Bumping the `uv` version is a deliberate `ci:` change,
+not something the runner decides.
+
+**Reproduce locally** (from the repo root, after `uv sync --locked`):
+
+```bash
+uv run ruff check . && uv run ruff format --check . && uv run mypy \
+  && uv run pytest -q --cov --cov-report=xml --cov-report=term-missing --cov-fail-under=80
+```
+
+### `dependency-audit`
+
+**What it checks:** the locked *runtime* dependency set of every workspace
+member, audited against the PyPI advisory database with
+[`pip-audit`](https://github.com/pypa/pip-audit):
+
+```bash
+uv export --locked --no-dev --no-emit-workspace --format requirements.txt -o requirements-audit.txt
+uv tool run pip-audit@2.10.1 -r requirements-audit.txt --strict --progress-spinner off
+```
+
+`--no-dev` drops the `dev` tooling group (ruff/mypy/pytest are not shipped),
+`--no-emit-workspace` drops the workspace members themselves (they are
+first-party, not auditable on PyPI) while keeping their transitive
+third-party dependencies, and `--locked` refuses to run if `uv.lock` is
+stale. Any known vulnerability fails the job (`pip-audit` exits non-zero);
+`--strict` additionally fails the run if a dependency cannot be resolved for
+auditing, instead of silently skipping it.
+
+**Empty audit set:** while the workspace carries no third-party runtime
+dependencies, the exported file is comment-only. `pip-audit` handles that
+(prints `No known vulnerabilities found`, exit 0) — the job just emits a
+`::notice::` so the empty set is visible in the run rather than mistaken
+for a clean audit of a real dependency tree.
+
+**Why:** `rules/devops/security.md` requires a dependency audit in CI; new
+HIGH/CRITICAL advisories are review findings to act on (bump, pin, or an
+explicitly justified `--ignore-vuln`), not noise to silence.
 
 ### `harness-sync`
 
@@ -176,9 +256,13 @@ bypass actors):**
 **Ruleset 2 — `required-checks` (`master`; NO bypass
 actors):**
 - Require these status checks to pass (names must match the job `name:`
-  values above exactly): `harness-sync`, `lint-shell`, `lint-workflows`,
-  `validate-json`, `secret-scan`, `commit-protocol` (the last enforces the
-  git-audit-trail guarantee the whole protocol depends on).
+  values above exactly): `python-quality`, `dependency-audit`,
+  `harness-sync`, `lint-shell`, `lint-workflows`, `validate-json`,
+  `secret-scan`, `commit-protocol` (the last enforces the git-audit-trail
+  guarantee the whole protocol depends on). `python-quality` and
+  `dependency-audit` were added in T003; the Lead adds them to the ruleset
+  after that PR merges (a check cannot be required before it exists on the
+  base branch).
 - Require branches to be up to date before merging (strict policy).
 - Effect: a **direct push to these branches is rejected** — an un-merged
   commit has no passing checks, so only PRs whose checks are green can land.

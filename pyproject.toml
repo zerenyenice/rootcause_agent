@@ -7,7 +7,7 @@ requires-python = ">=3.12"
 dependencies = []
 
 [dependency-groups]
-dev = ["pytest>=8", "pytest-cov>=5", "ruff>=0.6", "mypy>=1.11"]
+dev = ["pytest>=9.1", "pytest-cov>=7.1", "ruff>=0.17", "mypy>=2.4"]
 # Workspace members are installed editable by `uv sync` through this default
 # group so the root project itself carries no runtime dependencies.
 workspace = [
@@ -46,7 +46,7 @@ target-version = "py312"
 # Workspace src/ trees so isort classifies rootcause_* imports as first-party.
 src = [".", "apps/api/src", "packages/*/src"]
 # Pre-existing template/harness tooling, not part of the product codebase.
-extend-exclude = [".claude", "scripts/backlog_to_github.py", "setup-harness.py"]
+extend-exclude = [".claude", "setup-harness.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
@@ -54,7 +54,31 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 [tool.mypy]
 python_version = "3.12"
 strict = true
-files = ["apps/api/src", "packages/*/src"]
+# Every tests/ dir has a test_smoke.py and no __init__.py, so mypy needs explicit
+# package bases to give them distinct module names (packages.core.tests.test_smoke
+# etc.). The src/ roots are listed as bases so library modules keep their real
+# names (rootcause_core, ...); mypy_path does not expand globs, hence the list.
+explicit_package_bases = true
+mypy_path = [
+    "apps/api/src",
+    "packages/agents/src",
+    "packages/anomaly/src",
+    "packages/catalog/src",
+    "packages/connections/src",
+    "packages/core/src",
+    "packages/evals/src",
+    "packages/memory/src",
+    "packages/tools/src",
+]
+files = ["apps/api/src", "packages/*/src", "tests", "apps/api/tests", "packages/*/tests"]
+
+# Tests are checked with relaxed rules: fixtures and test functions may omit
+# annotations, but their bodies are still checked.
+[[tool.mypy.overrides]]
+module = ["tests.*", "*.tests.*"]
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+check_untyped_defs = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "apps", "packages"]
