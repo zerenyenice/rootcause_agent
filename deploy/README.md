@@ -112,7 +112,8 @@ or the self-hosted server in this compose file; the profile is not started by
 a plain `docker compose up`.
 
 ```bash
-# in deploy/.env: replace every LANGFUSE_* placeholder (`openssl rand -hex 32`)
+cp deploy/langfuse.env.example deploy/langfuse.env   # once; replace EVERY placeholder
+openssl rand -hex 32                                 # one per secret
 docker compose -f deploy/docker-compose.yml --profile observability up -d
 docker compose -f deploy/docker-compose.yml --profile observability ps   # all "healthy"
 # Langfuse UI: http://localhost:3000
@@ -127,18 +128,29 @@ docker compose -f deploy/docker-compose.yml --profile observability ps   # all "
   `langfuse-minio` (S3, `127.0.0.1:${LANGFUSE_MINIO_PORT:-9090}` for media
   uploads). ClickHouse, Redis and Postgres are not published on the host.
   Usage telemetry to Langfuse is turned off.
-- Secrets: `LANGFUSE_NEXTAUTH_SECRET`, `LANGFUSE_SALT`,
-  `LANGFUSE_ENCRYPTION_KEY` (exactly 64 hex characters),
-  `LANGFUSE_DB_PASSWORD`, `LANGFUSE_CLICKHOUSE_PASSWORD`,
-  `LANGFUSE_REDIS_PASSWORD`, `LANGFUSE_MINIO_PASSWORD`. Compose interpolates
-  the whole file whatever the active profile, so these must be present in
-  `deploy/.env` even when the profile is not used (any placeholder value is
-  enough then). Use hex values: the database password is embedded in a URL.
+- Secrets live in `deploy/langfuse.env` (gitignored; template
+  `deploy/langfuse.env.example`), not in `deploy/.env`: `NEXTAUTH_SECRET`,
+  `SALT`, `ENCRYPTION_KEY` (exactly 64 hex characters),
+  `LANGFUSE_POSTGRES_PASSWORD`, `CLICKHOUSE_PASSWORD`, `REDIS_AUTH`,
+  `LANGFUSE_MINIO_ROOT_PASSWORD`. The Langfuse services load the file with
+  `env_file: required: false`, so the base stack (`docker compose up`
+  without the profile) and `docker compose config` need neither the file nor
+  any Langfuse secret. Without the file, the Langfuse services fail at their
+  own start: Postgres, web and worker reject the missing values themselves;
+  ClickHouse, Redis and MinIO exit with `... is not set: create
+  deploy/langfuse.env ...`. Use hex values: the database password is
+  embedded in a URL. Each value is visible to all six Langfuse containers
+  (one shared file), never to `postgres`/`openviking`.
+- The file's `${...}` lines (`DATABASE_URL`, `POSTGRES_PASSWORD`,
+  `MINIO_ROOT_PASSWORD`, the S3 secret keys) are derived from the two
+  `LANGFUSE_*_PASSWORD` values in it; Compose resolves `${...}` from
+  `deploy/.env` and the shell first, so don't define those two names there.
 - First user and API keys: either sign up in the UI and create project keys
   under Project settings > API keys, or set `LANGFUSE_INIT_ORG_ID`,
   `LANGFUSE_INIT_PROJECT_ID`, `LANGFUSE_INIT_USER_EMAIL` and
-  `LANGFUSE_INIT_USER_PASSWORD` before the first start; the project is then
-  created with `ROOTCAUSE_LANGFUSE_PUBLIC_KEY` / `_SECRET_KEY` as its keys.
+  `LANGFUSE_INIT_USER_PASSWORD` in `deploy/langfuse.env` before the first
+  start; the project is then created with `ROOTCAUSE_LANGFUSE_PUBLIC_KEY` /
+  `_SECRET_KEY` (from `deploy/.env`) as its keys.
 
 Point RootCause at it (the API's `.env` or process environment):
 
