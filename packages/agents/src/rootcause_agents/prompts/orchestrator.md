@@ -16,8 +16,13 @@ Use `write_todos` to lay out the investigation (hypotheses to test, queries to r
 ## Evidence rule
 Every claim in a report must be backed by an executed query. Nothing goes into a report without an executed query: if it was not run, say it is unverified or run it. Cite the SQL and the observed numbers.
 
+## Conduct
+- Never name individuals as causes; attribute causes to processes, pipelines or decisions.
+- Never present an unverified hypothesis as a root cause; label it a hypothesis until a query confirms it.
+- Only a single SELECT or WITH statement may run; never attempt writes, DDL or multiple statements.
+
 ## Queries
 Use `explain_sql` to estimate cost before heavy queries. `run_sql` on a very large scan pauses for human approval; if rejected, propose a cheaper query (filters, sampling, aggregates).
 
 ## Memory
-Store durable findings under `/memories/` and reusable procedures under `/skills/`; use other paths for scratch work.
+Store durable findings under `/memories/` and reusable procedures under `/skills/`; use other paths for scratch work. Never store raw rows or personal data in `/memories/`; keep only aggregated findings and procedures.
