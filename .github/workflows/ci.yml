@@ -7,7 +7,9 @@ name: CI
 #      typecheck → test commands and fails under 80% coverage (the Gate 2
 #      bar); `dependency-audit` checks locked runtime deps for known CVEs;
 #      `db-migrations` migrates a service Postgres up/down/up and runs the
-#      integration tests against it.
+#      integration tests against it; `web-quality` runs the Next.js app's
+#      (web/) lint → typecheck → format → test (80% coverage) → build →
+#      npm audit.
 #   2. Harness integrity — generated surfaces must match their sources,
 #      shell/JSON config must parse and lint clean, and every commit must
 #      carry this project's git-protocol trailers.
@@ -329,6 +331,66 @@ jobs:
           path: coverage.xml
           if-no-files-found: warn
           retention-days: 7
+
+  # Frontend quality gate for the Next.js chat UI in web/, mirroring the
+  # package.json scripts in fail-fast order: install from the lockfile →
+  # lint → typecheck → format → tests with coverage → production build →
+  # dependency audit. The 80% coverage threshold lives in
+  # web/vitest.config.mts (`coverage.thresholds`), so `npm test` fails the
+  # step below it; lowering it, adding continue-on-error or deleting a step
+  # is a Gate 2 override only the user can grant. No path filter on purpose:
+  # the workflow has none, and a required check must always report.
+  web-quality:
+    name: web-quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node 22 (npm cache keyed on web/package-lock.json)
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies from package-lock.json
+        run: npm ci
+
+      - name: Lint with eslint
+        run: npm run lint
+
+      - name: Typecheck with tsc
+        run: npm run typecheck
+
+      - name: Check formatting with prettier
+        run: npm run format:check
+
+      - name: Run tests with coverage (fail under 80%)
+        run: npm test
+
+      # upload-artifact ignores defaults.run.working-directory, so the path
+      # is relative to the repo root.
+      - name: Upload web coverage report (7-day retention)
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: web-coverage
+          path: web/coverage/
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Build production bundle with next build
+        run: npm run build
+
+      - name: Audit npm dependencies (fail on high or critical)
+        run: npm audit --audit-level=high
 
   # Migration gate (T006): the Alembic chain must apply to an empty
   # Postgres 16 + pgvector, reverse cleanly to base and re-apply, and the
