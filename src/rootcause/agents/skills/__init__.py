@@ -1,6 +1,7 @@
 """Agent skills shipped as package data (DeepAgents SKILL.md directories)."""
 
 import re
+from functools import cache
 from pathlib import Path
 
 SKILL_FILE = "SKILL.md"
@@ -10,6 +11,7 @@ _SKILLS_DIR = Path(__file__).resolve().parent
 _FRONTMATTER = re.compile(r"\A---\r?\n.*?\r?\n---\r?\n", flags=re.DOTALL)
 
 
+@cache
 def skill_paths() -> tuple[Path, ...]:
     """Return every packaged skill directory (one holding a SKILL.md), sorted by name."""
     return tuple(
@@ -21,12 +23,16 @@ def skill_paths() -> tuple[Path, ...]:
     )
 
 
+@cache
 def load_skill_body(name: str) -> str:
     """Return the SKILL.md text of the packaged skill ``name`` as a system prompt.
 
     The frontmatter is dropped and every ``references/*.md`` file is appended, so
     an agent that has the body as its prompt (and no file access to the skill
     directory) still gets the references the body points to.
+
+    Packaged files do not change at runtime, so the result is cached per process
+    (the graph factory runs inside the server event loop, where file I/O is blocked).
 
     Raises:
         FileNotFoundError: no packaged skill has that name.

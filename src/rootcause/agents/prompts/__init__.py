@@ -1,6 +1,6 @@
 """System prompts shipped as package data, resolved through the prompt registry."""
 
-from functools import lru_cache
+from functools import cache, lru_cache
 from importlib import resources
 
 from rootcause.errors import ConfigurationError
@@ -12,8 +12,9 @@ ORCHESTRATOR_PROMPT = "orchestrator"
 PROMPT_NAMES: tuple[str, ...] = (ORCHESTRATOR_PROMPT,)
 
 
+@cache
 def load_packaged_prompt(name: str) -> str:
-    """Return the text of the packaged prompt file ``<name>.md``.
+    """Return the text of the packaged prompt file ``<name>.md``, cached per process.
 
     Raises:
         FileNotFoundError: no such prompt is packaged.
