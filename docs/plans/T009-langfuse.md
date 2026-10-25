@@ -1,0 +1,58 @@
+# Plan: T009 Langfuse observability and prompt management for agents
+
+Backlog T009 (#109, epic EP0). Branch `feat/langfuse` off `dev`. Gate 1 approved by the project owner on 2026-10-25 ("include langfuse into project for debugging our agents and if needed prompt management"). PROJECT.md section 6 "Observability". Depends on T008 and T030 (merged). Agents stay on LangChain DeepAgents.
+
+## Goal
+Every agent run is traced in Langfuse (orchestrator, subagents, model calls, tool calls) as one trace per thread, and prompts can be managed in Langfuse with a safe fallback to the versioned files.
+
+## Design
+- **Settings:** `langfuse_enabled: bool = False`, `langfuse_host: AnyHttpUrl | None`, `langfuse_public_key: SecretStr | None`, `langfuse_secret_key: SecretStr | None`, `langfuse_release: str | None`, `langfuse_sample_rate: float = 1.0` (0..1), `prompt_source: Literal["files", "langfuse"] = "files"`, `prompt_label: str = "production"`, `prompt_cache_ttl_s: int = 300`. When `langfuse_enabled` or `prompt_source == "langfuse"`, host and keys are required (value-free ConfigurationError).
+- **Client (rootcause_core.clients.langfuse):** `langfuse_client(settings=None) -> Langfuse | None` built from settings (None when disabled), cached, `flush_langfuse()` / included in `close_clients()`. Only this module imports the `langfuse` package; the architecture guard gains that rule and the httpx allow-list narrows to `apps/api/src/rootcause_api/routes/health.py` (T008 carry-over).
+- **Tracing (rootcause_core.observability.tracing):** `trace_callbacks(*, session_id: str, user_id: str | None, tags: Sequence[str], metadata: Mapping[str, str]) -> list[BaseCallbackHandler]` returning the Langfuse LangChain `CallbackHandler` (empty list when disabled). `run_config(thread_id, *, user_id=None, tags=()) -> RunnableConfig` merges `configurable.thread_id`, callbacks and Langfuse session/user/tags metadata in the shape the installed Langfuse SDK expects (verify against the SDK version resolved in uv.lock; Langfuse v3 uses `langfuse_session_id`, `langfuse_user_id`, `langfuse_tags` metadata keys with `CallbackHandler()`). The orchestrator handle exposes `config_for(thread_id, ...)` using it. Subagents inherit callbacks through LangGraph config propagation; a test asserts tool and subagent spans appear under the same trace.
+- **Redaction and data minimisation:** a `mask` function passed to the Langfuse client applies the credential redactor from `rootcause_core.logging` to all string fields and truncates SQL result payloads to row counts and column names (no raw rows in traces, PROJECT.md section 7).
+- **Prompts (rootcause_core.prompts):** `PromptRegistry.get(name) -> PromptTemplate` (name, version, text, source) reading Langfuse (`get_prompt(name, label=settings.prompt_label, cache_ttl_seconds=...)`) when `prompt_source == "langfuse"`, otherwise the packaged file; on any Langfuse error falls back to the file and logs a warning once. `rootcause_agents.prompts.load_orchestrator_prompt()` goes through the registry. When the prompt came from Langfuse, its prompt object is attached to the generation metadata so traces link to prompt versions. A `scripts/push_prompts.py` uploads the file prompts to Langfuse as new versions (dry-run by default).
+- **Deploy:** `deploy/docker-compose.yml` gains an optional `observability` profile with self-hosted Langfuse v3 (langfuse-web, langfuse-worker, its Postgres database on the existing postgres service or a dedicated one, ClickHouse, Redis, MinIO) with pinned image tags and localhost-only ports; `deploy/.env.example` documents `ROOTCAUSE_LANGFUSE_*` and the Langfuse server's own required secrets as placeholders; `deploy/README.md` section. CI `compose-config` validates the profile.
+- **ADR-0006:** Langfuse over LangSmith (self-hostable, prompt management, OSS licence, LangChain callback support).
+
+## Tests (tester-owned, RED first; no network)
+Settings defaults and required fields when enabled; `langfuse_client` None when disabled, built with host/keys/release/sample rate when enabled, cached; `trace_callbacks` empty when disabled and a Langfuse `CallbackHandler` when enabled; `run_config` contains thread_id, callbacks and the session/user/tag metadata; orchestrator `config_for` uses it; end-to-end with the scripted fake model and a fake/in-memory Langfuse exporter (or by patching the handler's client to capture events): one trace per invocation with model, todo and tool observations sharing the trace id and session id = thread id; mask function redacts `postgresql://u:secret@h/db` and drops raw rows from run_sql outputs; PromptRegistry returns the file prompt when source is files, the Langfuse prompt (version recorded) when source is langfuse, and falls back to the file on a Langfuse exception; architecture guard: `langfuse` imports only in `rootcause_core/clients/langfuse.py` (and observability module if it needs the handler type — decide in tests), httpx allow-list narrowed; push_prompts dry-run prints names and does not call the API. Coverage >= 80%.
+
+## Acceptance (backlog)
+With Langfuse disabled the system runs unchanged; enabled, a scripted orchestrator run produces one trace containing todo, tool and model spans; prompt fallback to files is tested.
+
+## Amendment 2026-10-25 (after backend and security review)
+
+Both reviews blocked on data leaving the customer database through traces (PROJECT.md section 7). Shape-based masking is replaced by deny-by-default.
+
+- **Tool outputs deny by default.** The mask keeps tool output only for an allowlist with known-safe output (`write_todos`, `explain_sql`) and the reduced `run_sql` summary (`columns`, `row_count`, `truncated`, `sql`); every other tool output, including `read_file`, `grep`, `ls` on `/large_tool_results/`, DeepAgents eviction previews and `task` results, becomes `"<redacted tool output: <tool name>>"`. Generation inputs that echo ToolMessages get the same treatment, so rows never re-enter traces via message history.
+- **`run_sql` never puts rows in message text.** It writes rows to the agent filesystem under `/query_results/<tool_call_id>.json` and returns only the summary plus that path, so DeepAgents eviction never sees rows. The mask also drops anything under `/query_results/` and `/large_tool_results/`.
+- **Exporter-level redaction.** The span exporter passed to Langfuse is wrapped so every exported string attribute, the status description and event attributes run through the redactor and the PII pass before export; this covers SDK paths that bypass `mask` (error status messages).
+- **Secrets.** All `SecretStr` values in Settings (database URLs, LLM, embedding, OpenViking and Langfuse keys) feed both the log redactor and the trace redactor; the URL regex handles `@` in passwords and libpq `password=` pairs.
+- **PII text pass.** Configurable regex pass (email, phone, IBAN, Turkish national id) over generation inputs and outputs, on by default when Langfuse is enabled.
+- **Trace isolation.** Each run starts from an empty OpenTelemetry context so the Langfuse root is never a child of a FastAPI span; traces carry opaque `tenant_id` and `connection_id` metadata.
+- **Transport.** `langfuse_host` must be https unless loopback or a compose service name.
+- **Lifecycle.** `close_clients()` runs Langfuse shutdown in a worker thread and shuts each client down independently; using a shut-down client logs a warning.
+- **API cleanup.** `trace_callbacks` loses the unused session/user/tags/metadata parameters (run_config owns metadata).
+- **Compose.** Redis runs as the redis user; placeholder `change-me` secrets refuse to start; `LANGFUSE_INIT_PROJECT_SECRET_KEY` moves to `langfuse.env`.
+- **Docs (ADR-0006 and README).** Langfuse UI access exposes all tenants' questions and SQL, so membership is admin-only; prompt source defaults to files in prod and `push_prompts --apply` uses an operator key; Langfuse Cloud needs customer data-residency sign-off; `LANGFUSE_DEBUG` never in prod; prompts resolve at orchestrator build time; paraphrased personal data in model text cannot be fully masked.
+- **Follow-ups (backlog).** Per-service compose env files and a bucket-scoped MinIO key; catalog-driven column masking feeding the PII pass; review of rows persisted in checkpoint state (T035).
+
+## Amendment 2026-10-25 (second security pass)
+
+- **Bounded PII pass.** Every pattern has an upper bound (no quadratic backtracking on long runs without `@`); e-mail matching is Unicode-aware (Turkish addresses); IBANs must pass the mod-97 check (minimum 15 characters); Turkish phone numbers only take a balanced `(5xx)`. Strings over 32 KiB become `<redacted long text: N chars>` in the mask. National ids stay checksum-free on purpose.
+- **Keys-only model-written content.** Tool-call arguments keep only `file_path`, `path`, `subagent_type`, `offset`, `limit` (generation inputs/outputs in every provider shape, and tool span inputs via the handler guard); `write_todos` keeps each todo's `status`; `files` state keeps paths, `todos` state keeps statuses; `write_todos` output leaves the allowlist; the subagent's human message (the `task` description) becomes a marker inside subagent runs.
+- **Tool-name spoofing.** A call id claimed by two names, a message name disagreeing with its call id, or a tool returning a message under another tool's name is redacted.
+- **SDK contract.** `langfuse==5.0.4` exact pin; the private detach helper and `langfuse.langchain` are imported lazily, so `rootcause_core.clients` always imports; without the SDK's LangChain module tracing is off with an error log.
+- **Async.** `ainvoke` runs go through the same guarded callbacks (tested for isolation and leaks).
+
+### Follow-ups (backlog candidates, not in T009)
+
+- **Per-service compose env files and a bucket-scoped MinIO key.** Every Langfuse container currently reads the one shared `deploy/langfuse.env`, and Langfuse uses the MinIO root credentials for S3. Split the file per service and give Langfuse an access key scoped to the `langfuse` bucket.
+- **Catalog-driven column masking feeding the PII pass.** Use the schema catalog (sensitive-column tags) to mask values the regex PII pass cannot recognise (names, addresses) wherever they appear in trace text.
+- **Rows persisted in checkpoint state (T035).** `run_sql` rows now live in the agent filesystem (`/query_results/...`), which the Postgres checkpointer persists per thread. Review retention, encryption and deletion of those rows together with the T035 lifespan/checkpointer work.
+- ~~**Tool-call arguments.**~~ Done in the second security pass (keys-only arguments and state).
+- **Verbatim values in the model's answer.** Final answers and reasoning are kept for usefulness; evaluate catalog-driven masking (above) or an opt-in "redact assistant text" mode for tenants that need it.
+- **Single-label http hosts.** Restrict the http exception to an explicit allowlist of compose service names (or a setting) instead of any single-label host.
+- **Compose least privilege.** Besides per-service env files and a scoped MinIO key: run `langfuse-web`, `langfuse-worker`, `langfuse-postgres` and `langfuse-minio` as non-root where the images allow it (ClickHouse and Redis already do), read-only root filesystems where possible, and no published MinIO ports outside local development.
+- **TCKN checksum.** Deliberately not applied (a mistyped id is still personal data); revisit only if false positives on 11-digit business ids hurt trace usefulness.
+- **Bare 10-digit numbers starting with 5** (epoch seconds, ids) are masked as phone numbers; accepted false positive, revisit with the catalog work.

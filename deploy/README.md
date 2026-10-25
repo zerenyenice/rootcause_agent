@@ -10,6 +10,7 @@ T002 (`docs/plans/T002-docker-compose-stack.md`); owner agent `devops`.
 | `postgres/init.sql` | First-start bootstrap: roles `rootcause_owner`/`rootcause_migrator`/`rootcause_app`, `CREATE EXTENSION vector`, schemas `app`, `catalog`, `audit` owned by `rootcause_owner`, runtime grants |
 | `alembic.ini` | Dev-only config for plain `alembic`; use the `rootcause-db` CLI everywhere else |
 | `openviking/ov.conf` | Secret-free OpenViking config template; `${VAR}` references are expanded by the server from the container environment |
+| `docker-compose.yml` profile `observability` | Optional self-hosted Langfuse v4 (web, worker, Postgres, ClickHouse, Redis, MinIO) for agent traces and prompt management (T009, ADR-0006) |
 
 Both services publish their ports on `127.0.0.1` only, restart
 `unless-stopped`, persist to named volumes (`rootcause_postgres_data`,
@@ -127,6 +128,118 @@ Both are exact tags; the multi-arch manifest digests observed at pin time are
 recorded as comments in `docker-compose.yml`. Bump either via a `chore(deploy):`
 commit after reading the upstream release notes; CI (`compose-config` job)
 re-validates the file on every PR.
+
+## Langfuse (optional `observability` profile)
+
+Agent runs (orchestrator, subagents, model and tool calls) can be traced in
+Langfuse, and prompts can be managed there (T009,
+[ADR-0006](../docs/adr/0006-langfuse-observability.md)). Use Langfuse Cloud
+or the self-hosted server in this compose file; the profile is not started by
+a plain `docker compose up`.
+
+```bash
+cp deploy/langfuse.env.example deploy/langfuse.env   # once; replace EVERY placeholder
+openssl rand -hex 32                                 # one per secret
+docker compose -f deploy/docker-compose.yml --profile observability up -d
+docker compose -f deploy/docker-compose.yml --profile observability ps   # all "healthy"
+# Langfuse UI: http://localhost:3000
+```
+
+- Server **v4** (`langfuse/langfuse:4.70.0`, `langfuse/langfuse-worker:4.70.0`).
+  The Python SDK 5.x pinned in `packages/core` supports self-hosted
+  Langfuse v4.59.0 or later only; v3 servers are not supported.
+- Six services: `langfuse-web` (UI + API, `127.0.0.1:${LANGFUSE_PORT:-3000}`),
+  `langfuse-worker`, `langfuse-postgres` (its own database, separate from
+  the RootCause one), `langfuse-clickhouse`, `langfuse-redis`,
+  `langfuse-minio` (S3, `127.0.0.1:${LANGFUSE_MINIO_PORT:-9090}` for media
+  uploads). ClickHouse, Redis and Postgres are not published on the host.
+  Usage telemetry to Langfuse is turned off.
+- Secrets live in `deploy/langfuse.env` (gitignored; template
+  `deploy/langfuse.env.example`), not in `deploy/.env`: `NEXTAUTH_SECRET`,
+  `SALT`, `ENCRYPTION_KEY` (exactly 64 hex characters),
+  `LANGFUSE_POSTGRES_PASSWORD`, `CLICKHOUSE_PASSWORD`, `REDIS_AUTH`,
+  `LANGFUSE_MINIO_ROOT_PASSWORD`. The Langfuse services load the file with
+  `env_file: required: false`, so the base stack (`docker compose up`
+  without the profile) and `docker compose config` need neither the file nor
+  any Langfuse secret. Without the file, the Langfuse services fail at their
+  own start: Postgres, web and worker reject the missing values themselves;
+  ClickHouse, Redis and MinIO exit with `... is not set: create
+  deploy/langfuse.env ...`. Use hex values: the database password is
+  embedded in a URL. Each value is visible to all six Langfuse containers
+  (one shared file), never to `postgres`/`openviking`.
+- The file's `${...}` lines (`DATABASE_URL`, `POSTGRES_PASSWORD`,
+  `MINIO_ROOT_PASSWORD`, the S3 secret keys) are derived from the two
+  `LANGFUSE_*_PASSWORD` values in it; Compose resolves `${...}` from
+  `deploy/.env` and the shell first, so don't define those two names there.
+- ClickHouse, Redis and MinIO also refuse to start while their secret is
+  still a `change-me...` placeholder from the example file. Redis runs as
+  the image's unprivileged `redis` user (`999:999`).
+- First user and API keys: either sign up in the UI and create project keys
+  under Project settings > API keys, or set `LANGFUSE_INIT_ORG_ID`,
+  `LANGFUSE_INIT_PROJECT_ID`, `LANGFUSE_INIT_PROJECT_PUBLIC_KEY`,
+  `LANGFUSE_INIT_PROJECT_SECRET_KEY`, `LANGFUSE_INIT_USER_EMAIL` and
+  `LANGFUSE_INIT_USER_PASSWORD` in `deploy/langfuse.env` before the first
+  start. The two project keys must equal `ROOTCAUSE_LANGFUSE_PUBLIC_KEY` /
+  `_SECRET_KEY` in `deploy/.env`; they are not interpolated into the
+  compose file, so `docker compose config` never prints the secret key.
+- **UI access.** The Langfuse UI shows every tenant's questions, SQL and
+  model answers. Keep project membership admin-only and the UI on
+  `127.0.0.1` (reach it through an SSH tunnel or an authenticated proxy).
+
+Point RootCause at it (the API's `.env` or process environment):
+
+```bash
+ROOTCAUSE_LANGFUSE_ENABLED=true
+ROOTCAUSE_LANGFUSE_HOST=http://localhost:3000
+ROOTCAUSE_LANGFUSE_PUBLIC_KEY=pk-lf-...
+ROOTCAUSE_LANGFUSE_SECRET_KEY=sk-lf-...
+```
+
+`ROOTCAUSE_LANGFUSE_HOST` must be https, except for loopback addresses
+(`localhost`, `127.0.0.1`, `::1`) and single-label compose service names such
+as `http://langfuse-web:3000`.
+
+Each run is one fresh trace whose session id is the LangGraph thread id, with
+the opaque `tenant_id` / `connection_id` attached (never nested under the
+API's own OpenTelemetry span). What reaches Langfuse (PROJECT.md section 7,
+details in ADR-0006):
+
+- tool outputs are denied by default: only `write_todos`, `explain_sql` and
+  the `run_sql` summary (columns, row count, truncated flag, SQL, result
+  path) are visible; everything else shows `<redacted tool output: NAME>`;
+- `run_sql` rows live in the agent filesystem (`/query_results/...`) and
+  never enter messages or traces;
+- every credential setting is redacted, in traces and logs, and the
+  exporter scrubs span attributes, error messages and events as well;
+- `ROOTCAUSE_LANGFUSE_MASK_PII=true` (default) replaces e-mails, phone
+  numbers, IBANs and Turkish national ids in trace text.
+
+Masking cannot catch personal data the model paraphrases in its own words;
+treat trace access like database access.
+
+Never set `LANGFUSE_DEBUG` (or Langfuse debug logging) in production: SDK
+debug logs print unmasked span contents.
+
+Langfuse Cloud instead of the self-hosted server requires the customer's
+written data-residency sign-off.
+
+Prompts: the source defaults to `files` and stays there in prod unless the
+team decides otherwise. `ROOTCAUSE_PROMPT_SOURCE=langfuse` serves the version
+labelled `ROOTCAUSE_PROMPT_LABEL` (default `production`) and falls back to the
+shipped file on any Langfuse error. Prompts resolve when the orchestrator is
+built (process start), so a newly labelled version takes effect on restart.
+Upload the shipped prompts as new versions with
+`uv run python scripts/push_prompts.py --apply` (dry run without `--apply`;
+add `--label production` to promote the uploaded versions immediately), using
+an operator's API key, never the API's runtime key.
+
+Reset only the Langfuse data:
+
+```bash
+docker compose -f deploy/docker-compose.yml --profile observability down
+docker volume rm rootcause_langfuse_postgres_data rootcause_langfuse_clickhouse_data \
+  rootcause_langfuse_clickhouse_logs rootcause_langfuse_redis_data rootcause_langfuse_minio_data
+```
 
 ## api / web services
 

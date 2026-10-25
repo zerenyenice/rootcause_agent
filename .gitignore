@@ -24,6 +24,8 @@ coverage/
 .env
 .env.*
 !.env.example
+# Langfuse server secrets (deploy/langfuse.env.example is the committed template)
+deploy/langfuse.env
 
 # Machine-local Claude Code settings
 .claude/settings.local.json

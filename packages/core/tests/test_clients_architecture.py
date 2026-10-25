@@ -12,9 +12,11 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 SCAN_ROOTS = ("apps", "packages", "scripts")
 EXCLUDED_PARTS = {".venv", "node_modules", "__pycache__", "tests", "build", "dist"}
 CLIENTS_DIR = ("rootcause_core", "clients")
-HTTPX_ALLOWED_PREFIXES = (("apps", "api"),)
+# The only non-clients file that may construct an httpx client (readiness probes).
+HTTPX_ALLOWED_FILES = (("apps", "api", "src", "rootcause_api", "routes", "health.py"),)
+LANGFUSE_MODULE = ("packages", "core", "src", "rootcause_core", "clients", "langfuse.py")
 
-FORBIDDEN_MODULES = {"anthropic", "openai"}
+FORBIDDEN_MODULES = {"anthropic", "openai", "langfuse"}
 PROVIDER_PACKAGE = re.compile(r"^langchain_[a-z0-9_]+$")
 # langchain_* packages that are not model-provider SDKs.
 NON_PROVIDER_PACKAGES = {
@@ -25,6 +27,8 @@ NON_PROVIDER_PACKAGES = {
     "langchain_tests",
 }
 FORBIDDEN_HTTPX_CLASSES = {"AsyncClient", "Client"}
+DYNAMIC_IMPORTERS = {"import_module", "__import__"}
+MODEL_KEYWORD_CALLS = {"create_deep_agent", "SubAgent"}
 
 
 def _is_clients_layer(relative: Path) -> bool:
@@ -64,17 +68,79 @@ def _call_name(node: ast.Call) -> str:
     return ""
 
 
-def _is_httpx_client_call(node: ast.Call) -> bool:
+def _httpx_module_aliases(tree: ast.AST) -> set[str]:
+    """Names bound to the httpx module (``import httpx`` / ``import httpx as h``)."""
+    return {
+        alias.asname or alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+        if alias.name == "httpx"
+    }
+
+
+def _httpx_class_names(tree: ast.AST) -> set[str]:
+    """Local names bound to httpx client classes (``from httpx import Client as C``)."""
+    return {
+        alias.asname or alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module == "httpx"
+        for alias in node.names
+        if alias.name in FORBIDDEN_HTTPX_CLASSES
+    }
+
+
+def _is_httpx_client_call(node: ast.Call, modules: set[str], classes: set[str]) -> bool:
     func = node.func
-    if isinstance(func, ast.Attribute) and func.attr in FORBIDDEN_HTTPX_CLASSES:
-        return isinstance(func.value, ast.Name) and func.value.id == "httpx"
-    return False
+    if isinstance(func, ast.Name):
+        return func.id in classes
+    return (
+        isinstance(func, ast.Attribute)
+        and func.attr in FORBIDDEN_HTTPX_CLASSES
+        and isinstance(func.value, ast.Name)
+        and func.value.id in modules
+    )
+
+
+def _dynamic_import_target(node: ast.Call) -> str | None:
+    """The module string passed to ``import_module``/``__import__`` when it is a literal."""
+    if _call_name(node) not in DYNAMIC_IMPORTERS:
+        return None
+    candidates = [*node.args[:1], *(kw.value for kw in node.keywords if kw.arg == "name")]
+    for candidate in candidates:
+        if isinstance(candidate, ast.Constant) and isinstance(candidate.value, str):
+            return candidate.value
+    return None
+
+
+def _model_literal_violations(node: ast.Call) -> list[str]:
+    name = _call_name(node)
+    if name not in MODEL_KEYWORD_CALLS:
+        return []
+    return [
+        f"{name}(model=<str literal>)"
+        for kw in node.keywords
+        if kw.arg == "model" and _is_str_constant(kw.value)
+    ]
+
+
+def _call_violations(
+    node: ast.Call, *, allow_httpx: bool, modules: set[str], classes: set[str]
+) -> list[str]:
+    found = _model_literal_violations(node)
+    target = _dynamic_import_target(node)
+    if target is not None and _is_forbidden_module(target):
+        found.append(f"dynamic import of {target}")
+    if not allow_httpx and _is_httpx_client_call(node, modules, classes):
+        found.append("httpx client constructed outside clients layer")
+    return found
 
 
 def find_violations(tree: ast.AST, *, allow_httpx: bool = False) -> list[str]:
     """Return human-readable violations found in a parsed module."""
     found: list[str] = []
-    httpx_names: set[str] = set()
+    modules = _httpx_module_aliases(tree)
+    classes = _httpx_class_names(tree)
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             found.extend(f"import {a.name}" for a in node.names if _is_forbidden_module(a.name))
@@ -82,10 +148,6 @@ def find_violations(tree: ast.AST, *, allow_httpx: bool = False) -> list[str]:
             module = node.module or ""
             if node.level == 0 and _is_forbidden_module(module):
                 found.append(f"from {module} import ...")
-            if module == "httpx":
-                httpx_names.update(
-                    a.asname or a.name for a in node.names if a.name in FORBIDDEN_HTTPX_CLASSES
-                )
             if any(a.name == "init_chat_model" for a in node.names):
                 found.append("init_chat_model import")
         elif (isinstance(node, ast.Name) and node.id == "init_chat_model") or (
@@ -93,17 +155,9 @@ def find_violations(tree: ast.AST, *, allow_httpx: bool = False) -> list[str]:
         ):
             found.append("init_chat_model")
         elif isinstance(node, ast.Call):
-            if _call_name(node) == "create_deep_agent":
-                found.extend(
-                    "create_deep_agent(model=<str literal>)"
-                    for kw in node.keywords
-                    if kw.arg == "model" and _is_str_constant(kw.value)
-                )
-            if not allow_httpx and (
-                _is_httpx_client_call(node)
-                or (isinstance(node.func, ast.Name) and node.func.id in httpx_names)
-            ):
-                found.append("httpx client constructed outside clients layer")
+            found.extend(
+                _call_violations(node, allow_httpx=allow_httpx, modules=modules, classes=classes)
+            )
         elif isinstance(node, ast.Dict):
             found.extend(
                 'subagent dict "model": <str literal>'
@@ -121,7 +175,7 @@ def _parse(source: str) -> ast.AST:
 
 
 def _is_httpx_allowed(relative: Path) -> bool:
-    return any(relative.parts[: len(prefix)] == prefix for prefix in HTTPX_ALLOWED_PREFIXES)
+    return relative.parts in HTTPX_ALLOWED_FILES
 
 
 def test_scan_covers_the_source_tree() -> None:
@@ -176,6 +230,32 @@ def test_no_provider_sdk_or_raw_http_client_outside_clients_layer() -> None:
         "import httpx\nhttpx.AsyncClient()",
         "import httpx\nhttpx.Client(timeout=1)",
         "from httpx import AsyncClient\nAsyncClient()",
+        # T008 carry-over: httpx import aliases
+        "import httpx as h\nh.AsyncClient()",
+        "import httpx as h\nh.Client(timeout=1)",
+        "from httpx import AsyncClient as AC\nAC()",
+        "from httpx import Client as C\nC()",
+        "def f():\n    import httpx as h\n    return h.Client()",
+        "x = h.Client()\nimport httpx as h",
+        # T008 carry-over: dynamic imports with a forbidden module string
+        "import importlib\nimportlib.import_module('anthropic')",
+        "import importlib\nimportlib.import_module('openai.types')",
+        "import importlib as il\nil.import_module('langchain_openai')",
+        "from importlib import import_module\nimport_module('langchain_anthropic.chat_models')",
+        "__import__('anthropic')",
+        "__import__('openai')",
+        "import importlib\nimportlib.import_module(name='openai')",
+        # T008 carry-over: SubAgent keyword model
+        "SubAgent(name='a', description='d', system_prompt='p', model='openai:gpt')",
+        "SubAgent(model='anthropic:claude')",
+        "agents.SubAgent(model='x')",
+        # T009: the langfuse SDK is only imported by the clients layer
+        "import langfuse",
+        "import langfuse.langchain",
+        "from langfuse import Langfuse, get_client",
+        "from langfuse.langchain import CallbackHandler",
+        "import importlib\nimportlib.import_module('langfuse')",
+        "__import__('langfuse.langchain')",
     ],
 )
 def test_guard_detects_violation(source: str) -> None:
@@ -192,15 +272,79 @@ def test_guard_detects_violation(source: str) -> None:
         "agent = {'name': 'a', 'model': model}",
         "x = 'ChatAnthropic is mentioned only in a string'  # import anthropic",
         "import httpx\nhttpx.get('http://x')",
+        "import httpx as h\nh.get('http://x')\nh.Timeout(1)",
+        "from httpx import Timeout, Response",
+        "import importlib\nimportlib.import_module('json')",
+        "import importlib\nimportlib.import_module(name)",
+        "import importlib\nimportlib.import_module('rootcause_core.clients')",
+        "__import__(name)",
+        "SubAgent(name='a', model=model)",
+        "SubAgent(name='a', model=chat_model('fast'))",
+        "SubAgent(name='a', description='openai:gpt')",
+        "from langfuse_tools import helper",
+        "x = 'langfuse'  # import langfuse",
+        "from rootcause_core.clients.langfuse import langfuse_client",
     ],
 )
 def test_guard_allows_legitimate_code(source: str) -> None:
     assert find_violations(_parse(source)) == []
 
 
-def test_httpx_client_allowed_only_in_api_health_probes() -> None:
+def test_httpx_client_allowed_only_in_api_health_route() -> None:
     tree = _parse("import httpx\nhttpx.AsyncClient()")
 
     assert find_violations(tree, allow_httpx=True) == []
-    assert _is_httpx_allowed(Path("apps/api/src/rootcause_api/health.py"))
-    assert not _is_httpx_allowed(Path("packages/agents/src/rootcause_agents/x.py"))
+    assert _is_httpx_allowed(Path("apps/api/src/rootcause_api/routes/health.py"))
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "apps/api/src/rootcause_api/main.py",
+        "apps/api/src/rootcause_api/health.py",
+        "apps/api/src/rootcause_api/routes/other.py",
+        "apps/api/src/rootcause_api/routes/health_extra.py",
+        "apps/worker/src/rootcause_worker/routes/health.py",
+        "packages/agents/src/rootcause_agents/x.py",
+        "scripts/probe.py",
+    ],
+)
+def test_httpx_is_not_allowed_elsewhere_in_apps(path: str) -> None:
+    assert not _is_httpx_allowed(Path(path))
+
+
+def test_allowed_httpx_file_exists() -> None:
+    assert (REPO_ROOT.joinpath(*HTTPX_ALLOWED_FILES[0])).is_file()
+
+
+def _imports_langfuse(path: Path) -> bool:
+    tree = _parse(path.read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import) and any(
+            a.name.split(".")[0] == "langfuse" for a in node.names
+        ):
+            return True
+        if (
+            isinstance(node, ast.ImportFrom)
+            and node.level == 0
+            and (node.module or "").split(".")[0] == "langfuse"
+        ):
+            return True
+    return False
+
+
+def test_only_the_langfuse_client_module_imports_the_langfuse_sdk() -> None:
+    importers = {
+        path.relative_to(REPO_ROOT).parts
+        for root in SCAN_ROOTS
+        for path in (REPO_ROOT / root).rglob("*.py")
+        if not EXCLUDED_PARTS & set(path.relative_to(REPO_ROOT).parts)
+        and not path.name.startswith("test_")
+        and _imports_langfuse(path)
+    }
+
+    assert importers == {LANGFUSE_MODULE}
+
+
+def test_langfuse_client_module_exists() -> None:
+    assert REPO_ROOT.joinpath(*LANGFUSE_MODULE).is_file()

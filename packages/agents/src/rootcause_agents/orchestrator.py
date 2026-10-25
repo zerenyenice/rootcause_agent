@@ -8,6 +8,7 @@ from deepagents import create_deep_agent
 from langchain.agents.middleware import TodoListMiddleware
 from langchain.agents.middleware.human_in_the_loop import InterruptOnConfig
 from langchain_core.language_models import BaseChatModel
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph.state import CompiledStateGraph
@@ -24,6 +25,7 @@ from rootcause_agents.tools.sql import (
 )
 from rootcause_core.clients import chat_model
 from rootcause_core.errors import ConfigurationError
+from rootcause_core.observability.tracing import run_config
 from rootcause_core.settings import Environment, Settings, get_settings
 
 
@@ -34,6 +36,26 @@ class OrchestratorHandle:
     graph: CompiledStateGraph[Any, Any, Any, Any]
     store: BaseStore | None
     checkpointer: BaseCheckpointSaver[Any]
+    settings: Settings
+
+    def config_for(
+        self,
+        thread_id: str,
+        *,
+        user_id: str | None = None,
+        tags: Sequence[str] = (),
+        tenant_id: str | None = None,
+        connection_id: str | None = None,
+    ) -> RunnableConfig:
+        """Run config for ``thread_id``, traced in Langfuse when the settings enable it."""
+        return run_config(
+            thread_id,
+            user_id=user_id,
+            tags=tags,
+            tenant_id=tenant_id,
+            connection_id=connection_id,
+            settings=self.settings,
+        )
 
 
 def _approval_config(
@@ -87,11 +109,11 @@ def build_orchestrator(
     graph = create_deep_agent(
         model=agent_model,
         tools=[*tools, *extra_tools],
-        system_prompt=load_orchestrator_prompt(),
+        system_prompt=load_orchestrator_prompt(resolved),
         middleware=[TodoListMiddleware()],
         backend=build_backend(store),
         interrupt_on=interrupt_on,
         checkpointer=saver,
         store=store,
     )
-    return OrchestratorHandle(graph=graph, store=store, checkpointer=saver)
+    return OrchestratorHandle(graph=graph, store=store, checkpointer=saver, settings=resolved)

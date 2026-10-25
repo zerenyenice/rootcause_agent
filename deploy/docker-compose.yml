@@ -14,9 +14,60 @@
 #   - no secret lives in this file or in any tracked file; values come from
 #     deploy/.env (gitignored) and the `:?` required-variable markers make
 #     the stack refuse to start without them
+#   - exception: the optional Langfuse server (profile `observability`) reads
+#     its secrets from deploy/langfuse.env (gitignored, optional) via
+#     `env_file:`, so the base stack needs nothing Langfuse-specific in
+#     deploy/.env; without that file the Langfuse services fail at their own
+#     start, not at `compose config`
 #   - `restart: unless-stopped` + healthchecks on every service
 
 name: rootcause
+
+# Langfuse server secrets (observability profile) come from this optional file,
+# NOT from `${VAR:?}` interpolation: interpolation covers the whole compose
+# file whatever the active profile, which would force them into deploy/.env
+# for a plain `docker compose up`. See deploy/langfuse.env.example. Keys set
+# under `environment:` override the file, so secrets must not appear there.
+x-langfuse-env-file: &langfuse-env-file
+  - path: ./langfuse.env
+    required: false
+
+# Non-secret environment shared by langfuse-web and langfuse-worker
+# (DATABASE_URL, SALT, ENCRYPTION_KEY, CLICKHOUSE_PASSWORD, REDIS_AUTH and the
+# S3 secret keys come from deploy/langfuse.env).
+x-langfuse-env: &langfuse-env
+  NEXTAUTH_URL: http://localhost:${LANGFUSE_PORT:-3000}
+  # No usage telemetry to Langfuse GmbH from a self-hosted install.
+  TELEMETRY_ENABLED: "false"
+  CLICKHOUSE_MIGRATION_URL: clickhouse://langfuse-clickhouse:9000
+  CLICKHOUSE_URL: http://langfuse-clickhouse:8123
+  CLICKHOUSE_USER: clickhouse
+  CLICKHOUSE_CLUSTER_ENABLED: "false"
+  REDIS_HOST: langfuse-redis
+  REDIS_PORT: "6379"
+  LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+  LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
+  LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: minio
+  LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://langfuse-minio:9000
+  LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+  LANGFUSE_S3_EVENT_UPLOAD_PREFIX: events/
+  LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: langfuse
+  LANGFUSE_S3_MEDIA_UPLOAD_REGION: auto
+  LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: minio
+  LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://langfuse-minio:9000
+  LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
+  LANGFUSE_S3_MEDIA_UPLOAD_PREFIX: media/
+
+# Healthy-dependency set shared by langfuse-web and langfuse-worker.
+x-langfuse-depends-on: &langfuse-depends-on
+  langfuse-postgres:
+    condition: service_healthy
+  langfuse-clickhouse:
+    condition: service_healthy
+  langfuse-redis:
+    condition: service_healthy
+  langfuse-minio:
+    condition: service_healthy
 
 services:
   # ---------------------------------------------------------------------------
@@ -117,6 +168,162 @@ services:
       start_period: 60s
 
   # ---------------------------------------------------------------------------
+  # Self-hosted Langfuse (T009, ADR-0006): agent traces and prompt management.
+  # Optional profile `observability`; a plain `docker compose up` does not
+  # start it:
+  #   docker compose -f deploy/docker-compose.yml --profile observability up -d
+  # Layout follows the upstream single-host compose file
+  # (https://github.com/langfuse/langfuse/blob/v4.70.0/docker-compose.yml):
+  # web + worker, Postgres (dedicated, not the RootCause database), ClickHouse,
+  # Redis and MinIO. Server v4 is required: the Python SDK 5.x pinned in
+  # packages/core supports self-hosted Langfuse v4.59.0+ only (v3 is not
+  # supported). Only the UI/API and MinIO's S3 port are published, on
+  # 127.0.0.1. Digests observed 2026-10-25 are recorded next to each image.
+  # Secrets: deploy/langfuse.env (copy deploy/langfuse.env.example). Postgres,
+  # web and worker reject a missing secret themselves; ClickHouse, Redis and
+  # MinIO would start without one, so their start command checks it first and
+  # also refuses the `change-me` placeholders copied from the example file.
+  # ---------------------------------------------------------------------------
+  # sha256:932a46dfab770f89ecb2ec35258b6b80d3be8773403981a64d271ff0a408deef
+  langfuse-web:
+    image: langfuse/langfuse:4.70.0
+    profiles: [observability]
+    restart: unless-stopped
+    depends_on: *langfuse-depends-on
+    ports:
+      - "127.0.0.1:${LANGFUSE_PORT:-3000}:3000"
+    # NEXTAUTH_SECRET and the optional LANGFUSE_INIT_ORG_ID, _PROJECT_ID,
+    # _USER_EMAIL and _USER_PASSWORD also come from deploy/langfuse.env.
+    env_file: *langfuse-env-file
+    environment:
+      <<: *langfuse-env
+      # Browsers and SDKs upload media through the published MinIO port; the
+      # server itself talks to MinIO inside the network.
+      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://localhost:${LANGFUSE_MINIO_PORT:-9090}
+      LANGFUSE_S3_MEDIA_UPLOAD_INTERNAL_ENDPOINT: http://langfuse-minio:9000
+      # Optional headless first-start setup; it runs only when
+      # LANGFUSE_INIT_ORG_ID (deploy/langfuse.env) is set. The project's API
+      # keys (public and secret) also come from deploy/langfuse.env, so no
+      # secret is interpolated into this file.
+      LANGFUSE_INIT_ORG_NAME: RootCause
+      LANGFUSE_INIT_PROJECT_NAME: rootcause
+      LANGFUSE_INIT_USER_NAME: admin
+    healthcheck:
+      # The runtime image has no curl/wget; Next.js binds to the container
+      # hostname, so probe that rather than 127.0.0.1.
+      test: ["CMD", "node", "-e", "fetch('http://'+require('os').hostname()+':3000/api/public/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+
+  # sha256:3b3b204fa72fd02d010ab90c667d07281e4b9ec3b5b0b1d21470ac2624b8a564
+  langfuse-worker:
+    image: langfuse/langfuse-worker:4.70.0
+    profiles: [observability]
+    restart: unless-stopped
+    depends_on: *langfuse-depends-on
+    env_file: *langfuse-env-file
+    environment:
+      <<: *langfuse-env
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://'+require('os').hostname()+':3030/api/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+
+  # Dedicated Postgres for Langfuse metadata; keeps trace tooling out of the
+  # RootCause database. Not published on the host.
+  # sha256:b8faeff7712663c2773a190181e1246e37e364b887611c04658c28b44e2408fe
+  langfuse-postgres:
+    image: postgres:17.11
+    profiles: [observability]
+    restart: unless-stopped
+    # POSTGRES_PASSWORD from deploy/langfuse.env; the image refuses to
+    # initialise without it.
+    env_file: *langfuse-env-file
+    environment:
+      POSTGRES_USER: langfuse
+      POSTGRES_DB: langfuse
+      TZ: UTC
+      PGTZ: UTC
+    volumes:
+      - langfuse_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U langfuse -d langfuse"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  # sha256:8a790dd3468db22b1d4e7b18a176f378ff5ff6053b9c48dd4ea1fa71a24c5ba6
+  langfuse-clickhouse:
+    image: clickhouse/clickhouse-server:25.12.11
+    profiles: [observability]
+    restart: unless-stopped
+    user: "101:101"
+    # CLICKHOUSE_PASSWORD from deploy/langfuse.env. The image would create the
+    # user without a password, so refuse to start instead, then hand over to
+    # the image's own entrypoint.
+    entrypoint: ["sh", "-c", ": \"$${CLICKHOUSE_PASSWORD:?is not set: create deploy/langfuse.env from deploy/langfuse.env.example}\" && case \"$$CLICKHOUSE_PASSWORD\" in change-me*) echo 'CLICKHOUSE_PASSWORD is still the placeholder: replace it in deploy/langfuse.env' >&2; exit 1;; esac && exec /entrypoint.sh"]
+    env_file: *langfuse-env-file
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: clickhouse
+    volumes:
+      - langfuse_clickhouse_data:/var/lib/clickhouse
+      - langfuse_clickhouse_logs:/var/log/clickhouse-server
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  # sha256:44960b3100c48159a66d28c18b0588c193492e25f7551d60e51dd464fc3eca5b
+  langfuse-redis:
+    image: redis:7.4.11
+    profiles: [observability]
+    restart: unless-stopped
+    # Runs as the image's unprivileged `redis` user (uid/gid 999), which owns
+    # /data in the image, so the entrypoint never needs root to chown it.
+    user: "999:999"
+    # Langfuse's queues need noeviction. REDIS_AUTH (the variable Langfuse
+    # reads) from deploy/langfuse.env; an empty --requirepass would disable
+    # auth, so refuse to start without it (or with the example placeholder).
+    command: ["sh", "-c", ": \"$${REDIS_AUTH:?is not set: create deploy/langfuse.env from deploy/langfuse.env.example}\" && case \"$$REDIS_AUTH\" in change-me*) echo 'REDIS_AUTH is still the placeholder: replace it in deploy/langfuse.env' >&2; exit 1;; esac && exec redis-server --requirepass \"$$REDIS_AUTH\" --maxmemory-policy noeviction"]
+    env_file: *langfuse-env-file
+    volumes:
+      - langfuse_redis_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_AUTH\" --no-auth-warning ping | grep -q PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  # Upstream's MinIO build (Chainguard publishes only `latest` publicly, so it
+  # is pinned by digest). The `langfuse` bucket is created before start.
+  langfuse-minio:
+    image: cgr.dev/chainguard/minio:latest@sha256:87896cb33f93ecfcca4e883c3fb2f86a0a1a600c003a104011ed30631c1869c3
+    profiles: [observability]
+    restart: unless-stopped
+    entrypoint: sh
+    # MINIO_ROOT_PASSWORD from deploy/langfuse.env; checked (set, and not the
+    # example placeholder) before start.
+    command: ["-c", ": \"$${MINIO_ROOT_PASSWORD:?is not set: create deploy/langfuse.env from deploy/langfuse.env.example}\" && case \"$$MINIO_ROOT_PASSWORD\" in change-me*) echo 'MINIO_ROOT_PASSWORD is still the placeholder: replace it in deploy/langfuse.env' >&2; exit 1;; esac && mkdir -p /data/langfuse && exec minio server --address :9000 --console-address :9001 /data"]
+    env_file: *langfuse-env-file
+    environment:
+      MINIO_ROOT_USER: minio
+    ports:
+      - "127.0.0.1:${LANGFUSE_MINIO_PORT:-9090}:9000"
+    volumes:
+      - langfuse_minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  # ---------------------------------------------------------------------------
   # Application services (profile `app`) are added to this file by later tasks
   # and are NOT started by a plain `docker compose up`; use
   # `docker compose --profile app up` once they exist.
@@ -131,3 +338,8 @@ services:
 volumes:
   postgres_data:
   openviking_data:
+  langfuse_postgres_data:
+  langfuse_clickhouse_data:
+  langfuse_clickhouse_logs:
+  langfuse_redis_data:
+  langfuse_minio_data:
