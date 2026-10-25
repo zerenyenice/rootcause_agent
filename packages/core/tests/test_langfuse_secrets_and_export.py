@@ -25,6 +25,8 @@ SECRET_VALUES = {
     "openviking_api_key": "OPENVIKINGSENTINEL0123456789",
     "langfuse_secret_key": "sk-lf-LFSECRETSENTINEL",
 }
+MIGRATION_PASSWORD = "MIGPW-SENTINEL-5821"  # gitleaks:allow
+ADMIN_PASSWORD = "ADMPW-SENTINEL-9937"  # gitleaks:allow
 EMAIL = "export.sentinel@example.com"
 
 
@@ -39,6 +41,12 @@ def _secret_fields() -> list[str]:
 def _all_secrets_settings(**overrides: Any) -> tuple[Settings, dict[str, str]]:
     values: dict[str, str] = {
         "database_url": f"postgresql://svc:{DB_PASSWORD}@db.internal:5432/rc",
+        "migration_database_url": (  # gitleaks:allow
+            f"postgresql://migrator:{MIGRATION_PASSWORD}@db.internal:5432/rc"  # gitleaks:allow
+        ),
+        "admin_database_url": (  # gitleaks:allow
+            f"postgresql://admin:{ADMIN_PASSWORD}@db.internal:5432/rc"  # gitleaks:allow
+        ),
         "langfuse_public_key": f"pk-lf-PUBSENTINEL-{uuid.uuid4().hex[:8]}",
         **SECRET_VALUES,
     }
@@ -64,6 +72,8 @@ def _raw(settings: Settings, name: str) -> str:
 def test_the_secret_field_discovery_covers_the_known_credentials() -> None:
     assert set(_secret_fields()) >= {
         "database_url",
+        "migration_database_url",
+        "admin_database_url",
         "anthropic_api_key",
         "azure_openai_api_key",
         "embedding_api_key",
@@ -90,6 +100,11 @@ def test_every_secret_setting_is_redacted_by_the_trace_mask(
         assert raw not in masked, name
     url_masked = mask(data=f"dsn {_raw(settings, 'database_url')}")
     assert DB_PASSWORD not in url_masked
+    for name, password in (
+        ("migration_database_url", MIGRATION_PASSWORD),
+        ("admin_database_url", ADMIN_PASSWORD),
+    ):
+        assert password not in mask(data=f"dsn {_raw(settings, name)}"), name
 
 
 def test_every_secret_setting_is_redacted_from_exported_spans(langfuse_capture: Any) -> None:
@@ -98,7 +113,11 @@ def test_every_secret_setting_is_redacted_from_exported_spans(langfuse_capture: 
     settings, _ = _all_secrets_settings()
     client = langfuse_client(settings)
     assert client is not None
-    raws = [_raw(settings, name) for name in _secret_fields()] + [DB_PASSWORD]
+    raws = [_raw(settings, name) for name in _secret_fields()] + [
+        DB_PASSWORD,
+        MIGRATION_PASSWORD,
+        ADMIN_PASSWORD,
+    ]
     with client.start_as_current_observation(name="probe") as span:
         for index, raw in enumerate(raws):
             span._otel_span.set_attribute(f"custom.attr{index}", f"value {raw} tail")  # noqa: SLF001
@@ -118,7 +137,11 @@ def test_every_secret_setting_is_redacted_from_logs(capsys: pytest.CaptureFixtur
 
     settings, _ = _all_secrets_settings()
     configure_logging(settings)
-    raws = [_raw(settings, name) for name in _secret_fields()] + [DB_PASSWORD]
+    raws = [_raw(settings, name) for name in _secret_fields()] + [
+        DB_PASSWORD,
+        MIGRATION_PASSWORD,
+        ADMIN_PASSWORD,
+    ]
 
     for raw in raws:
         get_logger("x").error("boom", detail=f"value {raw} tail")
