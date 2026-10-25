@@ -28,6 +28,16 @@ TABLES_SQL: Final = (
     "AND has_table_privilege(c.oid, 'SELECT') "
     "ORDER BY n.nspname, c.relname"
 )
+# Every relation a query can name outside the system schemas, readable or not, partitions
+# included: bare-name uniqueness checks must see every schema a search_path may reach.
+RELATIONS_SQL: Final = (
+    "SELECT n.nspname, c.relname "
+    "FROM pg_catalog.pg_class AS c "
+    "JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace "
+    "WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f', 'S') "
+    "AND left(n.nspname, 3) <> 'pg_' AND n.nspname <> 'information_schema' "
+    "ORDER BY n.nspname, c.relname"
+)
 TABLE_LOOKUP_SQL: Final = (
     "SELECT c.oid, n.nspname, c.relname "
     "FROM pg_catalog.pg_class AS c "

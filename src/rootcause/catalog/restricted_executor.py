@@ -9,8 +9,16 @@ columns is rejected too, since it would expand to them. The inner executor then
 validates again against the full source catalog and runs only its own
 regenerated SQL. The schema tools (``list_tables``/``describe_table``/
 ``distinct_values``) see only the selection. The selection is fixed at build time.
+
+That lenient existence check is followed by the strict selection check of
+:mod:`rootcause.catalog.selection_check`: every column must resolve to a selected
+column of a selected table (opaque sources such as ``LATERAL``/``VALUES`` cannot
+hide a reference to a hidden column), ``NATURAL``/``USING`` joins over a table with
+hidden columns are refused, and a bare table name must be unique across every
+schema of the source. The source's relation names are read once, on first use.
 """
 
+import threading
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal, Protocol
@@ -20,7 +28,14 @@ from sqlglot import exp
 from sqlglot.errors import SqlglotError
 
 from rootcause.agents.tools.sql import QueryEstimate, QueryResult
-from rootcause.connections.duckdb_executor import ColumnInfo, QueryRejected, TableInfo, UnknownTable
+from rootcause.catalog.selection_check import SelectionPolicy, SelectionRejected, check_selection
+from rootcause.connections.duckdb_executor import (
+    ColumnInfo,
+    QueryRejected,
+    RelationName,
+    TableInfo,
+    UnknownTable,
+)
 from rootcause.connections.validation import CatalogSnapshot, validate_sql
 
 Dialect = Literal["duckdb", "postgres"]
@@ -37,6 +52,8 @@ class SourceExecutor(Protocol):
     def explain(self, sql: str) -> QueryEstimate: ...
 
     def list_tables(self) -> tuple[TableInfo, ...]: ...
+
+    def list_relations(self) -> tuple[RelationName, ...]: ...
 
     def describe_table(self, name: str) -> tuple[ColumnInfo, ...]: ...
 
@@ -87,9 +104,8 @@ class SelectionExecutor:
         self._dialect: Dialect = dialect
         self._tables = tuple(tables)
         self._snapshot = CatalogSnapshot({f"{t.schema}.{t.name}": t.columns for t in tables})
-        self._restricted = frozenset(
-            f"{t.schema}.{t.name}".lower() for t in tables if t.hides_columns
-        )
+        self._policy: SelectionPolicy | None = None
+        self._policy_lock = threading.Lock()
 
     @property
     def tables(self) -> tuple[SelectedTable, ...]:
@@ -110,16 +126,26 @@ class SelectionExecutor:
         return self._inner.explain(sql)
 
     def _check(self, sql: str) -> None:
+        """Lenient existence check, then the strict selection check; both fail closed."""
         result = validate_sql(sql, self._dialect, catalog=self._snapshot)
         if not result.ok:
             raise QueryRejected([issue.code.value for issue in result.errors])
-        touches_hidden = any(
-            key in self._restricted
-            for table in result.referenced_tables
-            for key in self._snapshot.resolve(table)
-        )
+        policy = self._selection_policy()
+        try:
+            read = check_selection(result.sql, policy)
+        except SelectionRejected as rejected:
+            raise QueryRejected([rejected.code]) from None
+        touches_hidden = bool(read & policy.restricted)
         if touches_hidden and _has_expanding_star(result.sql, self._dialect):
             raise QueryRejected([HIDDEN_COLUMNS_CODE])
+
+    def _selection_policy(self) -> SelectionPolicy:
+        """The strict policy, built on first use from the source's relation names."""
+        with self._policy_lock:
+            if self._policy is None:
+                relations = self._inner.list_relations()
+                self._policy = SelectionPolicy.build(self._dialect, self._tables, relations)
+            return self._policy
 
     # --- schema tools ---------------------------------------------------------------
 
