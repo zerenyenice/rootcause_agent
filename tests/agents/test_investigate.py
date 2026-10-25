@@ -17,6 +17,7 @@ import pytest
 from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.store.memory import InMemoryStore
+from langgraph.types import Command
 from pydantic import ValidationError
 
 from rootcause.errors import ConfigurationError
@@ -156,6 +157,57 @@ def test_parallel_interrupts_are_all_rejected(
 
     assert executor.run_calls == []
     assert chain is not None
+
+
+class _ResumeSpy:
+    """Delegates to the real graph and records every ``Command(resume=...)`` payload."""
+
+    def __init__(self, graph: Any) -> None:
+        self._graph = graph
+        self.resumes: list[Any] = []
+
+    def invoke(self, payload: Any, config: Any = None, **kwargs: Any) -> Any:
+        if isinstance(payload, Command):
+            self.resumes.append(payload.resume)
+        return self._graph.invoke(payload, config, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._graph, name)
+
+
+@pytest.mark.unit
+def test_auto_rejection_message_asks_for_approval_without_claiming_a_large_scan(
+    scripted_model: Callable[..., Any],
+    tool_call_message: Callable[..., Any],
+    make_executor: Callable[..., Any],
+) -> None:
+    """The interrupt also fires for un-estimable queries, so "large" must not be asserted."""
+    investigate = _investigate()
+
+    model = scripted_model(
+        tool_call_message("task", TASK, "t1"),
+        tool_call_message("run_sql", {"sql": "select * from huge", "purpose": "p"}, "q1"),
+        tool_call_message("WhyChain", CHAIN, "s1"),
+        AIMessage(content="final report"),
+    )
+    real = _handle(model, make_executor(estimated_rows=BIG))
+    handle = dataclasses.replace(real, graph=_ResumeSpy(real.graph))
+
+    investigate(QUESTION, handle=handle)
+
+    messages = [
+        decision["message"]
+        for resume in handle.graph.resumes
+        for decision in resume["decisions"]
+        if decision["type"] == "reject"
+    ]
+    assert messages, "the approval interrupt was not auto-rejected"
+    for message in messages:
+        lowered = message.lower()
+        assert "cannot approve large scans" not in lowered
+        assert "large scans" not in lowered
+        assert "approval" in lowered
+        assert "cheaper" in lowered or "correct" in lowered
 
 
 class _SpyGraph:
