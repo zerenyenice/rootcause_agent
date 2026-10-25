@@ -597,3 +597,176 @@ def test_new_issue_codes_exist(v) -> None:
     names = {m.name for m in v.IssueCode}
 
     assert {"LIMIT_CAPPED", "AMBIGUOUS_COLUMN", "AMBIGUOUS_TABLE", "INPUT_TOO_LARGE"} <= names
+
+
+# ---------------------------------------------------------------- D. class-level allow list
+
+CLASS_LEVEL_REJECTS = _cases(
+    [
+        ("tsql", "SELECT IF(1=1) EXEC xp_cmdshell 'dir'"),
+        ("tsql", "SELECT IF(1=1) EXECUTE('DROP TABLE t')"),
+        ("tsql", "SELECT IF(1=1) SHUTDOWN"),
+        ("tsql", "SELECT IF(1=1) sp_configure 'x'"),
+        ("tsql", "SELECT IF(1=1) DBCC CHECKDB"),
+        ("tsql", "SELECT IF(1=1) WAITFOR DELAY '00:00:05'"),
+        ("postgres", "SELECT a OPERATOR(myschema.===) b FROM t"),
+        ("postgres", "SELECT CAST(a AS myschema.evil_type) FROM t"),
+        ("snowflake", "SELECT * FROM TABLE('other_db.secret.t')"),
+        ("snowflake", "SELECT * FROM TABLE($tbl)"),
+        ("snowflake", "SELECT * FROM TABLE(DIRECTORY(@stage))"),
+        ("snowflake", "SELECT DIRECTORY(@stage)"),
+        ("snowflake", "SELECT $var"),
+    ]
+)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(("dialect", "sql"), CLASS_LEVEL_REJECTS)
+def test_class_level_allow_list_rejects_unlisted_nodes(v, dialect: str, sql: str) -> None:
+    result = v.validate_sql(sql, dialect)
+
+    assert result.ok is False
+    assert _codes(result.errors) & {"NOT_READ_ONLY", "FORBIDDEN_FUNCTION"}
+
+
+@pytest.mark.unit
+def test_clickhouse_limit_by_is_rejected_or_keeps_by_clause_when_capped(v) -> None:
+    result = v.validate_sql("SELECT a FROM t LIMIT 999999999 BY a", "clickhouse")
+
+    assert result.ok is False or (
+        "BY a" in result.sql and "10000" in result.sql and "999999999" not in result.sql
+    )
+
+
+# ---------------------------------------------------------------- E. duckdb table names
+
+DUCKDB_FILE_LIKE_REJECTS = [
+    "SELECT * FROM 'data.csv.gz'",
+    "SELECT * FROM 'data.ndjson'",
+    "SELECT * FROM 'data.xlsx'",
+    'SELECT * FROM "data.parquet.zst"',
+    'SELECT * FROM "data.arrow"',
+    'SELECT * FROM "data.avro"',
+    'SELECT * FROM "data．csv"',
+]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("sql", DUCKDB_FILE_LIKE_REJECTS)
+def test_duckdb_file_like_table_names_are_rejected(v, sql: str) -> None:
+    result = v.validate_sql(sql, "duckdb")
+
+    assert result.ok is False
+    assert "NOT_READ_ONLY" in _codes(result.errors)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("sql", ["SELECT * FROM orders", "SELECT * FROM main.orders"])
+def test_duckdb_plain_and_schema_qualified_identifiers_stay_accepted(v, sql: str) -> None:
+    result = v.validate_sql(sql, "duckdb")
+
+    assert result.ok is True
+
+
+@pytest.mark.unit
+def test_postgres_schema_qualified_identifier_stays_accepted(v) -> None:
+    assert v.validate_sql("SELECT * FROM public.orders", "postgres").ok is True
+
+
+# ---------------------------------------------------------------- F. correlated subqueries
+
+
+@pytest.fixture
+def correlated_catalog(v):
+    return v.CatalogSnapshot({"orders": ("id", "cid", "total"), "customers": ("id",)})
+
+
+_CORRELATED = (
+    "SELECT id FROM orders o WHERE EXISTS "
+    "(SELECT 1 FROM customers c WHERE c.id = o.cid AND {col} > 0)"
+)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("dialect", PG_DUCK)
+def test_correlated_subquery_bare_column_resolves_to_outer_scope(
+    v, correlated_catalog, dialect: str
+) -> None:
+    result = v.validate_sql(_CORRELATED.format(col="total"), dialect, catalog=correlated_catalog)
+
+    assert result.ok is True
+    assert result.errors == ()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("dialect", PG_DUCK)
+def test_correlated_subquery_unknown_bare_column_is_error(
+    v, correlated_catalog, dialect: str
+) -> None:
+    result = v.validate_sql(_CORRELATED.format(col="nope"), dialect, catalog=correlated_catalog)
+
+    assert result.ok is False
+    assert "UNKNOWN_COLUMN" in _codes(result.errors)
+
+
+# ---------------------------------------------------------------- G. executable comments
+
+
+@pytest.mark.unit
+def test_comment_marker_inside_string_literal_is_not_an_executable_comment(v) -> None:
+    result = v.validate_sql("SELECT note FROM t WHERE note LIKE '%/*+%'", "postgres")
+
+    assert result.ok is True
+    assert "'%/*+%'" in result.sql
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("dialect", "sql"),
+    [("postgres", "/*+ HINT */ SELECT 1"), ("mysql", "/*M! SELECT 1 */ SELECT 1")],
+)
+def test_real_executable_comments_are_still_rejected(v, dialect: str, sql: str) -> None:
+    assert v.validate_sql(sql, dialect).ok is False
+
+
+# ---------------------------------------------------------------- H. immutable allow lists
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("name", ["ALLOWED_ANONYMOUS", "TABLE_FUNCTION_NAMES"])
+def test_allow_list_containers_are_immutable(name: str) -> None:
+    from types import MappingProxyType
+
+    allowlist = importlib.import_module("rootcause_connections.validation.allowlist")
+    container = getattr(allowlist, name)
+
+    assert isinstance(container, MappingProxyType)
+    assert all(isinstance(val, frozenset) for val in container.values())
+    with pytest.raises(TypeError):
+        container["evil"] = frozenset({"x"})  # type: ignore[index]
+
+
+# ---------------------------------------------------------------- I. tsql keyword aliases
+
+TSQL_KEYWORD_ALIASES = [
+    "reconfigure",
+    "checkpoint",
+    "print",
+    "raiserror",
+    "deny",
+    "bulk",
+    "openquery",
+    "throw",
+    "goto",
+    "commit",
+    "rollback",
+    "delete",
+]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("alias", TSQL_KEYWORD_ALIASES)
+def test_tsql_unquoted_statement_keyword_alias_is_rejected(v, alias: str) -> None:
+    result = v.validate_sql(f"SELECT 1 {alias}", "tsql")
+
+    assert result.ok is False
