@@ -111,12 +111,60 @@ def test_no_tools_gives_an_empty_tool_list() -> None:
 
 
 @pytest.mark.unit
-def test_response_format_is_the_why_chain_model(tools: list[BaseTool]) -> None:
+def test_response_format_is_a_tool_strategy_over_the_why_chain_model(
+    tools: list[BaseTool],
+) -> None:
+    from langchain.agents.structured_output import ToolStrategy
+
     from rootcause.agents.reports import WhyChain
 
     root_cause_subagent = _factory()
 
-    assert root_cause_subagent(tools)["response_format"] is WhyChain
+    response_format = root_cause_subagent(tools)["response_format"]
+
+    assert isinstance(response_format, ToolStrategy)
+    assert response_format.schema is WhyChain
+
+
+class _ModelReached(Exception):
+    """Raised instead of an HTTP request: the model was bound and called."""
+
+
+def _offline_azure_model() -> Any:
+    from langchain_openai import AzureChatOpenAI
+
+    class OfflineAzureChatOpenAI(AzureChatOpenAI):
+        """Real Azure binding (bind_tools, response_format), no network on generate."""
+
+        def _generate(self, *args: Any, **kwargs: Any) -> Any:
+            raise _ModelReached
+
+    return OfflineAzureChatOpenAI(
+        azure_endpoint="https://rootcause-test.invalid",
+        azure_deployment="gpt-4o",
+        api_version="2024-10-21",
+        api_key="SENTINEL-azure-openai-key",  # gitleaks:allow
+    )
+
+
+@pytest.mark.unit
+def test_response_format_binds_to_an_azure_openai_model(tools: list[BaseTool]) -> None:
+    # Regression: a bare self-recursive WhyChain made create_agent pick the native
+    # json_schema strategy for OpenAI models, and langchain_openai rejected the schema
+    # ("must either be in OpenAI function format or valid JSON schema with top-level
+    # 'title' key") before any request was sent, so every Azure investigation failed.
+    from langchain.agents import create_agent
+    from langchain_core.messages import HumanMessage
+
+    spec = _factory()(tools)
+    agent = create_agent(
+        _offline_azure_model(),
+        tools=spec["tools"],
+        response_format=spec["response_format"],
+    )
+
+    with pytest.raises(_ModelReached):
+        agent.invoke({"messages": [HumanMessage("Why did OEE drop on line 3?")]})
 
 
 @pytest.mark.unit
