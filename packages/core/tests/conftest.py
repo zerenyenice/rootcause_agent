@@ -1,8 +1,11 @@
 """Shared fixtures: isolate env vars, settings cache, structlog and OTel globals."""
 
 import os
-from collections.abc import Iterator
+import uuid
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -67,3 +70,86 @@ def database_url() -> str:
 @pytest.fixture
 def base_env(monkeypatch: pytest.MonkeyPatch, database_url: str) -> None:
     monkeypatch.setenv("ROOTCAUSE_DATABASE_URL", database_url)
+
+
+@dataclass
+class LangfuseCapture:
+    """Spans exported by every Langfuse client built while the fixture is active."""
+
+    exporter: Any
+    init_kwargs: list[dict[str, Any]] = field(default_factory=list)
+
+
+def _reset_langfuse_state() -> None:
+    try:
+        from langfuse._client.resource_manager import LangfuseResourceManager
+    except ImportError:
+        return
+    LangfuseResourceManager.reset()
+
+
+@pytest.fixture
+def langfuse_capture(monkeypatch: pytest.MonkeyPatch) -> Iterator[LangfuseCapture]:
+    """Route every ``Langfuse(...)`` client to an in-memory span exporter (no network).
+
+    ``Langfuse.__init__`` is wrapped, not replaced: the real client is built, the
+    keyword arguments the code under test passed are recorded, and ``span_exporter``
+    is injected unless the code set one itself.
+    """
+    try:
+        import langfuse
+        from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+    except ImportError:
+        pytest.fail("the 'langfuse' package is not installed (add it as a core dependency)")
+    capture = LangfuseCapture(exporter=InMemorySpanExporter())
+    original = langfuse.Langfuse.__init__
+
+    def init(self: Any, **kwargs: Any) -> None:
+        capture.init_kwargs.append(dict(kwargs))
+        original(self, **{"span_exporter": capture.exporter, **kwargs})
+
+    monkeypatch.setattr(langfuse.Langfuse, "__init__", init)
+    yield capture
+    from rootcause_core.clients import reset_clients
+
+    reset_clients()
+    _reset_langfuse_state()
+    _reset_otel_globals()
+
+
+@pytest.fixture
+def make_langfuse_settings() -> Callable[..., Any]:
+    """Build enabled Langfuse settings with a unique public key (clients are keyed by it)."""
+    from rootcause_core.settings import Settings
+
+    def make(**overrides: Any) -> Any:
+        values: dict[str, Any] = {
+            "database_url": DB_URL,
+            "environment": "test",
+            "langfuse_enabled": True,
+            "langfuse_host": "http://127.0.0.1:9",
+            "langfuse_public_key": f"pk-lf-{uuid.uuid4().hex}",
+            "langfuse_secret_key": "sk-lf-SENTINEL-SECRET",
+        }
+        return Settings(_env_file=None, **{**values, **overrides})
+
+    return make
+
+
+@pytest.fixture
+def langfuse_env(
+    monkeypatch: pytest.MonkeyPatch, make_langfuse_settings: Callable[..., Any]
+) -> Any:
+    """Enabled Langfuse settings exported as ``ROOTCAUSE_*`` variables; returns the Settings."""
+    settings = make_langfuse_settings()
+    monkeypatch.setenv("ROOTCAUSE_DATABASE_URL", DB_URL)
+    monkeypatch.setenv("ROOTCAUSE_ENVIRONMENT", "test")
+    monkeypatch.setenv("ROOTCAUSE_LANGFUSE_ENABLED", "true")
+    monkeypatch.setenv("ROOTCAUSE_LANGFUSE_HOST", str(settings.langfuse_host))
+    monkeypatch.setenv(
+        "ROOTCAUSE_LANGFUSE_PUBLIC_KEY", settings.langfuse_public_key.get_secret_value()
+    )
+    monkeypatch.setenv(
+        "ROOTCAUSE_LANGFUSE_SECRET_KEY", settings.langfuse_secret_key.get_secret_value()
+    )
+    return settings
