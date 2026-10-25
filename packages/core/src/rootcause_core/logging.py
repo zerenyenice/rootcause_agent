@@ -41,7 +41,21 @@ class _StdoutHandler(logging.StreamHandler[TextIO]):
         """Ignore assignments; the stream is always the live ``sys.stdout``."""
 
     def handleError(self, record: logging.LogRecord) -> None:  # noqa: N802
-        """Swallow stream errors; logging failures are not worth crashing a request."""
+        """Drop closed/broken-stream errors; report anything else without raising.
+
+        The notice carries only the exception type, never record contents.
+        """
+        error = sys.exc_info()[1]
+        if isinstance(error, ValueError | OSError):
+            return
+        stderr = sys.__stderr__
+        if stderr is None:
+            return
+        name = type(error).__name__ if error is not None else "UnknownError"
+        try:
+            stderr.write(f"rootcause logging error: {name}\n")
+        except (ValueError, OSError):
+            return
 
 
 def add_trace_context(_logger: WrappedLogger, _method: str, event_dict: EventDict) -> EventDict:

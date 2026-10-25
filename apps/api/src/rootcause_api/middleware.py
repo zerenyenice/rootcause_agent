@@ -16,7 +16,6 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from rootcause_api.envelope import REQUEST_ID_HEADER, fail
 from rootcause_api.security import security_headers
-from rootcause_core.settings import Settings
 
 REQUEST_ID_STATE_KEY = "request_id"
 REQUEST_ID_LOG_KEY = "request_id"
@@ -87,7 +86,7 @@ class SecurityHeadersMiddleware:
         await self.app(scope, receive, send_with_headers)
 
 
-def create_limiter(settings: Settings) -> MovingWindowRateLimiter:
+def create_limiter() -> MovingWindowRateLimiter:
     """Build a limiter owned by a single app so counters never leak across apps."""
     return MovingWindowRateLimiter(MemoryStorage())
 

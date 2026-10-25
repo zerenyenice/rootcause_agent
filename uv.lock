@@ -1895,7 +1895,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "langgraph", specifier = ">=0.4" },
-    { name = "limits", specifier = ">=3.13" },
+    { name = "limits", specifier = ">=3.13,<6" },
     { name = "opentelemetry-instrumentation-fastapi", specifier = ">=0.48b0" },
     { name = "rootcause-core", editable = "packages/core" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0" },

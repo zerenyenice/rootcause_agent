@@ -44,7 +44,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         openapi_url=None if is_prod else "/openapi.json",
     )
     app.state.settings = resolved
-    app.state.limiter = create_limiter(resolved)
+    app.state.limiter = create_limiter()
     app.state.rate_limit_item = parse(resolved.rate_limit)
 
     register_exception_handlers(app)
