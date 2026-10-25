@@ -43,6 +43,17 @@ UPDATABLE_FIELDS = frozenset(
 )
 
 
+class ConnectionNotFound(RootCauseError):
+    """No stored connection has the requested id."""
+
+    code = "connection_not_found"
+    status_code = 404
+    public_message = "Connection not found."
+
+    def __init__(self) -> None:
+        super().__init__("Connection not found.")
+
+
 class ConnectionInUse(RootCauseError):
     """The connection is still referenced (for example by the append-only query audit log)."""
 

@@ -1,13 +1,21 @@
 """HTTP routes: liveness, threads, thread state and streaming runs."""
 
 from dataclasses import dataclass
+from functools import partial
 from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import Response, StreamingResponse
 
-from rootcause.agent_service.runs import Graph, build_run_config, run_input, stream_run
+from rootcause.agent_service.connection_graphs import ConnectionGraphs
+from rootcause.agent_service.runs import (
+    Graph,
+    build_run_config,
+    run_input,
+    stream_connection_run,
+    stream_run,
+)
 from rootcause.agent_service.schemas import RunRequest, ThreadCreated
 from rootcause.agent_service.sse import SSE_MEDIA_TYPE, to_json
 from rootcause.agent_service.threads import ThreadRegistry
@@ -22,11 +30,13 @@ router = APIRouter()
 
 @dataclass(frozen=True)
 class AgentRuntime:
-    """What the lifespan builds once: the compiled graph and the thread registry."""
+    """What the lifespan builds once: the default graph, the per-connection graphs and
+    the thread registry."""
 
     graph: Graph
     threads: ThreadRegistry
     settings: Settings
+    connection_graphs: ConnectionGraphs
 
 
 def get_runtime(request: Request) -> AgentRuntime:
@@ -74,8 +84,17 @@ async def thread_state(thread_id: UUID, runtime: Runtime) -> Response:
 async def stream_thread_run(
     thread_id: UUID, body: RunRequest, runtime: Runtime
 ) -> StreamingResponse:
-    """Run the graph on the thread and stream LangGraph SSE events."""
+    """Run the graph on the thread and stream LangGraph SSE events.
+
+    With ``context.connection_id`` the run uses that connection's graph; a connection
+    that cannot be used is reported in-band (see ``stream_connection_run``).
+    """
     canonical = await _known_thread(runtime, thread_id)
     config = build_run_config(canonical, body, runtime.settings)
-    events = stream_run(runtime.graph, run_input(body), config, thread_id=canonical)
+    connection_id = body.context.connection_id if body.context is not None else None
+    if connection_id is None:
+        events = stream_run(runtime.graph, run_input(body), config, thread_id=canonical)
+    else:
+        resolve = partial(runtime.connection_graphs.graph_for, connection_id)
+        events = stream_connection_run(resolve, run_input(body), config, thread_id=canonical)
     return StreamingResponse(events, media_type=SSE_MEDIA_TYPE, headers=STREAM_HEADERS)

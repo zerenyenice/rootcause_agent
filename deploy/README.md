@@ -308,9 +308,24 @@ Generate the manufacturing demo warehouse on the host, from the repo root:
 uv run python -m rootcause.evals.manufacturing generate --out data/warehouse
 ```
 
-Then add a DuckDB connection in the UI (or `POST /api/v1/connections`) with
-the path `/data/warehouse/warehouse.duckdb` (the container path, not the host
-path). The file must be readable by uid 10001 (the containers' user).
+Then register it, with the stack running (`migrate` done):
+
+```bash
+docker compose run --rm api python -m rootcause.catalog.seed_demo \
+  --path /data/warehouse/warehouse.duckdb
+```
+
+This creates the DuckDB connection "Demo manufacturing warehouse" (the path is
+the container path, not the host path), imports its catalog, selects every
+table and column, copies the column descriptions of the data dictionary and
+marks the connection verified read-only after a successful probe. Re-running it
+is safe: the connection with the same path is reused. Build the search index
+from the catalog page afterwards (it needs the embeddings provider). The file
+must be readable by uid 10001 (the containers' user).
+
+To use your own file instead, add a DuckDB connection in the UI (or
+`POST /api/v1/connections`), test it, import its catalog and select the tables
+the agent may use.
 
 ### Running the API on the host instead
 

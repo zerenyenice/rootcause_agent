@@ -5,6 +5,7 @@ are reported with fixed, generic messages: the host, path, database name, passwo
 driver messages never leave this module, and only exception *types* are logged.
 """
 
+import threading
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,6 +25,8 @@ _logger = get_logger(__name__)
 PROBE_CONNECT_TIMEOUT_SECONDS = 5
 PROBE_QUERY_TIMEOUT_SECONDS = 15.0
 DUCKDB_SCHEMA = "main"
+_FILE_LOCKS: dict[str, threading.Lock] = {}
+_FILE_LOCKS_GUARD = threading.Lock()
 
 UNREACHABLE_MESSAGE = (
     "Could not connect. Check the host, port, database, user, password and SSL mode."
@@ -139,16 +142,30 @@ def probe(record: ConnectionRecord, cipher: SecretCipher | None) -> ProbeOutcome
     return _probe_postgres(record, cipher)
 
 
+def _file_lock(record: ConnectionRecord) -> threading.Lock:
+    """One lock per DuckDB file for the short-lived opens of this module.
+
+    Connections to one file share a DuckDB instance in a process, and a second
+    executor cannot open while the first one holds the instance's locked
+    configuration (``duckdb_lockdown``); concurrent probes and imports of one file
+    therefore take turns instead of failing.
+    """
+    key = str(Path(record.path or "").resolve())
+    with _FILE_LOCKS_GUARD:
+        return _FILE_LOCKS.setdefault(key, threading.Lock())
+
+
 def _probe_duckdb(record: ConnectionRecord) -> ProbeOutcome:
-    try:
-        executor = open_duckdb(record)
-    except ConnectionUnavailable:
-        return _unreachable(FILE_UNREADABLE_MESSAGE)
-    with executor:
-        # Opened read-only with external access, ATTACH and extensions locked out.
-        return ProbeOutcome(
-            reachable=True, read_only=True, server_version=duckdb.__version__, error=None
-        )
+    with _file_lock(record):
+        try:
+            executor = open_duckdb(record)
+        except ConnectionUnavailable:
+            return _unreachable(FILE_UNREADABLE_MESSAGE)
+        with executor:
+            # Opened read-only with external access, ATTACH and extensions locked out.
+            return ProbeOutcome(
+                reachable=True, read_only=True, server_version=duckdb.__version__, error=None
+            )
 
 
 def _probe_postgres(record: ConnectionRecord, cipher: SecretCipher) -> ProbeOutcome:
@@ -185,7 +202,7 @@ def introspect(
     if max_tables < 1:
         raise ValueError("max_tables must be at least 1")
     if record.kind == "duckdb":
-        with open_duckdb(record) as duck:
+        with _file_lock(record), open_duckdb(record) as duck:
             return _duckdb_introspection(duck, max_tables)
     if cipher is None:
         raise ValueError("a cipher is required to introspect a Postgres connection")

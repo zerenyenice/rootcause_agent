@@ -122,8 +122,13 @@ def _sql_wiring(
     settings: Settings,
     table_docs: Mapping[str, TableDocLike] | None,
     model: BaseChatModel,
+    extra_tools: Sequence[BaseTool],
 ) -> tuple[list[BaseTool], dict[str, bool | InterruptOnConfig], list[SubAgent]]:
-    """Warehouse tools, the run_sql approval gate and the budgeted root-cause subagent."""
+    """Warehouse tools, the run_sql approval gate and the budgeted root-cause subagent.
+
+    Extra tools the subagent accepts (``ROOT_CAUSE_TOOLS``, e.g. ``search_catalog``)
+    are handed on to it; the returned tool list holds the warehouse tools only.
+    """
     if executor is None:
         return [], {}, []
     threshold = settings.scan_row_threshold
@@ -134,7 +139,7 @@ def _sql_wiring(
     approval = _approval_config(executor, threshold, registry)
     interrupt_on: dict[str, bool | InterruptOnConfig] = {"run_sql": approval}
     subagent = root_cause_subagent(
-        tools,
+        [*tools, *extra_tools],
         max_tool_calls=settings.investigation_max_tool_calls,
         max_steps=settings.investigation_max_steps,
         approval=approval,
@@ -158,7 +163,9 @@ def build_orchestrator(
     An ``executor`` adds the SQL tools (gated by a run_sql approval interrupt) and
     the ``root-cause`` subagent; one that can also introspect the catalog
     (``list_tables``, ``describe_table``, ``distinct_values``) additionally gets
-    the schema tools, annotated with ``table_docs`` when given.
+    the schema tools, annotated with ``table_docs`` when given. ``extra_tools`` go to
+    the orchestrator, and those named in ``ROOT_CAUSE_TOOLS`` (``search_catalog``)
+    also to the root-cause subagent.
 
     ``checkpointer=None`` builds the default saver; ``checkpointer=False`` compiles
     without one, for hosts that inject their own (LangGraph Server, which also
@@ -182,7 +189,9 @@ def build_orchestrator(
         )
     agent_model = model if model is not None else chat_model("orchestrator", resolved)
     saver = _resolve_checkpointer(checkpointer, resolved)
-    tools, interrupt_on, subagents = _sql_wiring(executor, resolved, table_docs, agent_model)
+    tools, interrupt_on, subagents = _sql_wiring(
+        executor, resolved, table_docs, agent_model, extra_tools
+    )
 
     graph = create_deep_agent(
         model=agent_model,

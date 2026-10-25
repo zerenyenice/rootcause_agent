@@ -72,3 +72,29 @@ def embeddings(settings: Settings | None = None) -> Embeddings:
 def reset_embeddings_cache() -> None:
     """Drop cached embeddings clients."""
     _build.cache_clear()
+
+
+class LazyEmbeddings(Embeddings):
+    """Delegates to :func:`embeddings` (``settings``), built on the first call.
+
+    For services that may never embed anything: an unconfigured provider only fails
+    when something is embedded, not at startup.
+    """
+
+    def __init__(self, settings: Settings) -> None:
+        self._settings = settings
+
+    def _client(self) -> Embeddings:
+        return embeddings(self._settings)
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return self._client().embed_documents(texts)
+
+    def embed_query(self, text: str) -> list[float]:
+        return self._client().embed_query(text)
+
+    async def aembed_documents(self, texts: list[str]) -> list[list[float]]:
+        return await self._client().aembed_documents(texts)
+
+    async def aembed_query(self, text: str) -> list[float]:
+        return await self._client().aembed_query(text)

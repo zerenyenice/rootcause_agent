@@ -8,14 +8,17 @@ startup with the checkpointer and store it owns.
 
 import atexit
 import threading
+from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
+from langchain_core.tools import BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.store.base import BaseStore
 
 from rootcause.agents.orchestrator import build_orchestrator
+from rootcause.agents.tools.schema import TableDocLike
 from rootcause.agents.tools.sql import QueryExecutor
 from rootcause.connections.duckdb_executor import executor_from_settings
 from rootcause.evals.manufacturing.table_docs import TABLE_DOCS
@@ -52,22 +55,49 @@ def make_graph() -> CompiledStateGraph[Any, Any, Any, Any]:
     ).graph
 
 
+class ConnectionWiring(Protocol):
+    """A connection's executor, table docs and extra tools
+    (``rootcause.catalog.agent_tools.CatalogWiring``)."""
+
+    @property
+    def executor(self) -> QueryExecutor: ...
+
+    @property
+    def table_docs(self) -> Mapping[str, TableDocLike]: ...
+
+    @property
+    def tools(self) -> Sequence[BaseTool]: ...
+
+
 def make_service_graph(
     *,
     checkpointer: BaseCheckpointSaver[Any],
     store: BaseStore | None = None,
     settings: Settings | None = None,
+    wiring: ConnectionWiring | None = None,
 ) -> CompiledStateGraph[Any, Any, Any, Any]:
     """Build the orchestrator compiled with the caller's ``checkpointer`` and ``store``.
 
-    Same tools and warehouse executor as :func:`make_graph`. Blocking (it may open
-    the warehouse file): call it once, from a worker thread in async code.
+    Without ``wiring``: same tools and warehouse executor as :func:`make_graph`.
+    With ``wiring`` (one connection's selected catalog): its executor, table docs
+    and extra tools (``search_catalog``); the ``ROOTCAUSE_WAREHOUSE_PATH`` warehouse
+    is not opened. Blocking (it may open the warehouse file): call it from a worker
+    thread in async code.
 
     Raises:
         ConfigurationError: the settings are invalid, the warehouse file is missing,
             or ``store`` is missing in prod.
     """
     resolved = settings if settings is not None else get_settings()
+    if wiring is not None:
+        return build_orchestrator(
+            settings=resolved,
+            checkpointer=checkpointer,
+            store=store,
+            executor=wiring.executor,
+            table_docs=wiring.table_docs,
+            extra_tools=tuple(wiring.tools),
+        ).graph
     return build_orchestrator(
         settings=resolved,
         checkpointer=checkpointer,
