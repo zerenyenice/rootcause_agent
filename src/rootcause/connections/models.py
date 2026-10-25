@@ -44,7 +44,11 @@ def _enum_values(enum_class: type[StrEnum]) -> list[str]:
 
 
 class Connection(Base):
-    """A customer data source; the secret is stored encrypted."""
+    """A customer data source; the secret is stored encrypted.
+
+    ``dialect`` is the connection kind (``postgres`` or ``duckdb``). The port check
+    passes for NULL, so file-based connections need no port.
+    """
 
     __tablename__ = "connections"
     __table_args__ = (
@@ -60,11 +64,14 @@ class Connection(Base):
     )
     display_name: Mapped[str] = mapped_column(String)
     dialect: Mapped[str] = mapped_column(String)
-    host: Mapped[str] = mapped_column(String)
-    port: Mapped[int] = mapped_column(Integer)
-    database: Mapped[str] = mapped_column(String)
-    username: Mapped[str] = mapped_column(String)
-    encrypted_secret: Mapped[bytes] = mapped_column(LargeBinary)
+    # Network fields and the secret are NULL for file-based (DuckDB) connections.
+    host: Mapped[str | None] = mapped_column(String, nullable=True)
+    port: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    database: Mapped[str | None] = mapped_column(String, nullable=True)
+    username: Mapped[str | None] = mapped_column(String, nullable=True)
+    sslmode: Mapped[str | None] = mapped_column(String, nullable=True)
+    path: Mapped[str | None] = mapped_column(String, nullable=True)
+    encrypted_secret: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     limits: Mapped[dict[str, Any]] = mapped_column(JSONB, server_default=text("'{}'::jsonb"))
     read_only_verified_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True

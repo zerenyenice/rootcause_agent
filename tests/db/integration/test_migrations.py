@@ -198,6 +198,7 @@ def test_connection_and_audit_rows_round_trip(bootstrapped_url, engine):
         stored = session.get(Connection, connection_id)
         assert stored is not None
         assert stored.display_name == "Warehouse ☃ '; DROP TABLE x;--"
+        assert stored.encrypted_secret is not None
         assert bytes(stored.encrypted_secret) == b"\x00\x01ciphertext"
         assert stored.limits == limits
         log = session.scalars(sa.select(QueryAuditLog)).one()

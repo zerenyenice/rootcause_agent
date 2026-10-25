@@ -90,7 +90,7 @@ _TABLE_LOOKUP_SQL = (
     "AND table_type = 'BASE TABLE' AND table_name = ?"
 )
 _COLUMNS_SQL = (
-    "SELECT column_name, data_type FROM information_schema.columns "
+    "SELECT column_name, data_type, is_nullable FROM information_schema.columns "
     "WHERE table_catalog = current_database() AND table_schema = current_schema() "
     "AND table_name = ? ORDER BY ordinal_position"
 )
@@ -176,10 +176,11 @@ class TableInfo:
 
 @dataclass(frozen=True, slots=True)
 class ColumnInfo:
-    """A column of a warehouse table and its DuckDB type."""
+    """A column of a warehouse table, its DuckDB type and whether it accepts NULL."""
 
     name: str
     data_type: str
+    nullable: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -299,7 +300,10 @@ class DuckDBExecutor:
         """Columns of ``name`` in declaration order; :class:`UnknownTable` if absent."""
         table = self._resolve_table(name)
         fetched = self._execute(_COLUMNS_SQL, (table,), None)
-        return tuple(ColumnInfo(str(col), str(dtype)) for col, dtype in fetched.rows)
+        return tuple(
+            ColumnInfo(str(col), str(dtype), str(nullable).upper() != "NO")
+            for col, dtype, nullable in fetched.rows
+        )
 
     def distinct_values(
         self, table: str, column: str, limit: int = DEFAULT_DISTINCT_LIMIT

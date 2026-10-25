@@ -40,6 +40,8 @@ def test_connection_columns(connections_table):
         "database",
         "username",
         "encrypted_secret",
+        "sslmode",
+        "path",
         "limits",
         "read_only_verified_at",
         "created_at",
@@ -67,10 +69,19 @@ def test_connection_secret_is_binary_and_limits_are_jsonb(connections_table):
 
 @pytest.mark.parametrize(
     "column",
-    ["display_name", "dialect", "host", "port", "database", "username", "encrypted_secret"],
+    ["display_name", "dialect"],
 )
 def test_connection_required_columns_are_not_nullable(connections_table, column):
     assert connections_table.c[column].nullable is False
+
+
+@pytest.mark.parametrize(
+    "column",
+    ["host", "port", "database", "username", "encrypted_secret"],
+)
+def test_connection_network_and_secret_columns_are_nullable(connections_table, column):
+    # DuckDB connections are file-based and carry no network or secret fields.
+    assert connections_table.c[column].nullable is True
 
 
 def test_connection_read_only_verified_at_is_nullable(connections_table):
