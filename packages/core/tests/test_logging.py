@@ -143,3 +143,63 @@ def test_stdlib_logger_extra_fields_are_rendered_in_json(
     record = _last_json_line(_output(capsys))
 
     assert record["request_id"] == "r1"
+
+
+DSN = "postgresql://u:p4ss@h/db"
+
+
+def _redaction_output(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], database_url: str
+) -> None:
+    from rootcause_core.logging import configure_logging
+
+    configure_logging(_settings(monkeypatch, database_url, log_format="json"))
+    capsys.readouterr()
+
+
+def _assert_redacted(output: str) -> None:
+    assert "p4ss" not in output
+    assert "u:***@h" in output
+
+
+def test_structlog_field_with_dsn_password_is_redacted(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], database_url: str
+) -> None:
+    from rootcause_core.logging import get_logger
+
+    _redaction_output(monkeypatch, capsys, database_url)
+
+    get_logger("x").warning("oops", url=DSN)
+
+    _assert_redacted(_output(capsys))
+
+
+def test_stdlib_message_with_dsn_password_is_redacted(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], database_url: str
+) -> None:
+    import logging
+
+    _redaction_output(monkeypatch, capsys, database_url)
+
+    logging.getLogger("y").error("failed %s", DSN)
+    logging.getLogger("y").error(f"failed {DSN}")
+
+    _assert_redacted(_output(capsys))
+
+
+def test_logged_exception_message_with_dsn_password_is_redacted(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], database_url: str
+) -> None:
+    import logging
+
+    from rootcause_core.logging import get_logger
+
+    _redaction_output(monkeypatch, capsys, database_url)
+
+    try:
+        raise ValueError(f"cannot connect to {DSN}")
+    except ValueError:
+        logging.getLogger("y").exception("stdlib failure")
+        get_logger("x").exception("structlog failure")
+
+    _assert_redacted(_output(capsys))
