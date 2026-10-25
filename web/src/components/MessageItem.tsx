@@ -1,8 +1,9 @@
+import { memo } from "react";
 import type { Message } from "@langchain/langgraph-sdk";
 import { messageText } from "@/lib/messages";
 import { Markdown } from "./Markdown";
 
-export function MessageItem({ message }: { message: Message }) {
+function MessageItemImpl({ message }: { message: Message }) {
   if (message.type === "tool") {
     // Tool payloads may contain query summaries: show the tool name only.
     return (
@@ -37,3 +38,5 @@ export function MessageItem({ message }: { message: Message }) {
   }
   return null;
 }
+
+export const MessageItem = memo(MessageItemImpl);

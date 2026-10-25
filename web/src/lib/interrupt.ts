@@ -22,18 +22,27 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-export function parseApprovalRequest(value: unknown): ApprovalRequest | null {
+/**
+ * Parse every action request, in order. HumanInTheLoopMiddleware needs exactly
+ * one decision per request, so malformed items keep their slot (with defaults)
+ * rather than being dropped. Returns null when there is nothing to approve.
+ */
+export function parseApprovalRequests(value: unknown): ApprovalRequest[] | null {
   if (!isRecord(value) || !Array.isArray(value.action_requests)) return null;
-  const first: unknown = value.action_requests[0];
-  if (!isRecord(first)) return null;
-  const args = isRecord(first.args) ? first.args : {};
-  return {
-    toolName: typeof first.name === "string" ? first.name : "tool",
-    description: typeof first.description === "string" ? first.description : "",
-    sql: typeof args.sql === "string" ? args.sql : null,
-  };
+  const items: unknown[] = value.action_requests;
+  if (items.length === 0) return null;
+  return items.map((item) => {
+    const request = isRecord(item) ? item : {};
+    const args = isRecord(request.args) ? request.args : {};
+    return {
+      toolName: typeof request.name === "string" ? request.name : "tool",
+      description: typeof request.description === "string" ? request.description : "",
+      sql: typeof args.sql === "string" ? args.sql : null,
+    };
+  });
 }
 
-export function buildResume(type: DecisionType): ResumePayload {
-  return { decisions: [{ type }] };
+/** One decision per action request, in order. */
+export function buildResume(type: DecisionType, count = 1): ResumePayload {
+  return { decisions: Array.from({ length: count }, () => ({ type })) };
 }

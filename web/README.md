@@ -30,3 +30,14 @@ npm run dev                  # http://localhost:3000
 - Human-in-the-loop approval (`run_sql`) is isolated in `src/lib/interrupt.ts`
   and resumes with `{decisions: [{type: "approve" | "reject"}]}`.
   The approval panel shows `description` and `args.sql` (read-only); no other args.
+
+## Why `.npmrc` sets `legacy-peer-deps=true`
+
+With npm 10.9 and `vitest@4.1.12`, a plain `npm install` crashes with
+`Cannot read properties of null (reading 'edgesOut')` while npm resolves
+vitest's optional peers (`@vitest/browser-playwright`, `@vitest/browser-webdriverio`,
+`@vitest/browser-preview`, `@vitest/ui`). Pinning those via `overrides` did not
+avoid the crash, so the flag stays. Side effect: peers are not auto-installed, so
+`@langchain/core` (peer of `@langchain/langgraph-sdk`) and `@testing-library/dom`
+(peer of `@testing-library/react`) are listed explicitly in `package.json`.
+Drop the flag (and re-check those two) once npm or vitest fixes this.

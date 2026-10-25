@@ -109,7 +109,10 @@ describe("Chat", () => {
       ],
     });
     render(<Chat />);
-    expect(screen.getByLabelText("Conversation")).toHaveAttribute("aria-live", "polite");
+    expect(screen.getByRole("log", { name: "Conversation" })).toHaveAttribute(
+      "aria-relevant",
+      "additions",
+    );
     expect(screen.getByText("answer")).toBeInTheDocument();
   });
 
@@ -140,5 +143,46 @@ describe("Chat", () => {
     setStream({ interrupt: { value: "weird" } });
     render(<Chat />);
     expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
+  });
+
+  it("disables the composer with a hint while an approval is pending", () => {
+    setStream({ interrupt: approvalInterrupt });
+    render(<Chat />);
+    expect(screen.getByLabelText("Message")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+    expect(screen.getByText(/Sending is disabled/)).toBeInTheDocument();
+  });
+
+  it("focuses the approval heading, then the input once resolved", () => {
+    setStream({ interrupt: approvalInterrupt });
+    const { rerender } = render(<Chat />);
+    expect(screen.getByRole("heading", { name: /Approval required/ })).toHaveFocus();
+    setStream({ interrupt: undefined });
+    rerender(<Chat />);
+    expect(screen.getByLabelText("Message")).toHaveFocus();
+  });
+
+  it("shows every statement of a batch and resumes with one decision each", async () => {
+    const stream = setStream({
+      interrupt: {
+        value: {
+          action_requests: [
+            { name: "run_sql", args: { sql: "SELECT 1" }, description: "first" },
+            { name: "run_sql", args: { sql: "SELECT 2" }, description: "second" },
+          ],
+        },
+      },
+    });
+    render(<Chat />);
+    expect(screen.getByText("SELECT 1")).toBeInTheDocument();
+    expect(screen.getByText("SELECT 2")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Approve all" }));
+    expect(stream.submit).toHaveBeenCalledWith(null, {
+      command: { resume: { decisions: [{ type: "approve" }, { type: "approve" }] } },
+    });
+    await userEvent.click(screen.getByRole("button", { name: "Reject all" }));
+    expect(stream.submit).toHaveBeenLastCalledWith(null, {
+      command: { resume: { decisions: [{ type: "reject" }, { type: "reject" }] } },
+    });
   });
 });

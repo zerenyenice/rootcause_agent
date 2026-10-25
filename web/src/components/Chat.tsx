@@ -2,9 +2,9 @@
 
 import { useStream } from "@langchain/langgraph-sdk/react";
 import type { Message } from "@langchain/langgraph-sdk";
-import { useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { API_URL, ASSISTANT_ID } from "@/lib/config";
-import { buildResume, parseApprovalRequest, type DecisionType } from "@/lib/interrupt";
+import { buildResume, parseApprovalRequests, type DecisionType } from "@/lib/interrupt";
 import { friendlyError } from "@/lib/messages";
 import { InterruptPanel } from "./InterruptPanel";
 import { MessageItem } from "./MessageItem";
@@ -22,11 +22,21 @@ export function Chat() {
   const [draft, setDraft] = useState("");
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  const approval = stream.interrupt ? parseApprovalRequest(stream.interrupt.value) : null;
+  const approval = stream.interrupt
+    ? parseApprovalRequests(stream.interrupt.value)
+    : null;
+  const isApprovalPending = approval !== null;
+  const wasPending = useRef(false);
+
+  // Return focus to the composer once an approval has been resolved.
+  useEffect(() => {
+    if (wasPending.current && !isApprovalPending) inputRef.current?.focus();
+    wasPending.current = isApprovalPending;
+  }, [isApprovalPending]);
 
   function send() {
     const content = draft.trim();
-    if (!content || stream.isLoading) return;
+    if (!content || stream.isLoading || isApprovalPending) return;
     setDraft("");
     void stream.submit({ messages: [{ type: "human", content }] });
     inputRef.current?.focus();
@@ -45,7 +55,9 @@ export function Chat() {
   }
 
   function decide(type: DecisionType) {
-    void stream.submit(null, { command: { resume: buildResume(type) } });
+    void stream.submit(null, {
+      command: { resume: buildResume(type, approval?.length ?? 1) },
+    });
   }
 
   function newThread() {
@@ -68,7 +80,8 @@ export function Chat() {
       </header>
 
       <ul
-        aria-live="polite"
+        role="log"
+        aria-relevant="additions"
         aria-label="Conversation"
         className="flex flex-1 flex-col gap-3 overflow-y-auto"
       >
@@ -87,8 +100,13 @@ export function Chat() {
           {friendlyError(stream.error)}
         </p>
       )}
-      {approval && <InterruptPanel request={approval} onDecision={decide} />}
+      {approval && <InterruptPanel requests={approval} onDecision={decide} />}
 
+      {isApprovalPending && (
+        <p className="text-sm text-gray-600">
+          Sending is disabled until you approve or reject the pending query.
+        </p>
+      )}
       <form onSubmit={onSubmit} className="flex items-end gap-2">
         <label htmlFor="chat-input" className="sr-only">
           Message
@@ -99,13 +117,14 @@ export function Chat() {
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={onKeyDown}
+          disabled={isApprovalPending}
           rows={2}
           placeholder="Ask a question (Enter to send, Shift+Enter for a new line)"
           className="flex-1 rounded border border-gray-400 p-2"
         />
         <button
           type="submit"
-          disabled={stream.isLoading}
+          disabled={stream.isLoading || isApprovalPending}
           className="rounded bg-blue-600 px-4 py-2 text-white disabled:opacity-50"
         >
           Send
