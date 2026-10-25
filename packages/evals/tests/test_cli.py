@@ -33,7 +33,7 @@ def test_invalid_days_exits_nonzero(tmp_path: Path) -> None:
     from rootcause_evals.manufacturing.cli import main
 
     try:
-        code = main(["generate", "--out", str(tmp_path), "--days", "0"])
+        code: int | str | None = main(["generate", "--out", str(tmp_path), "--days", "0"])
     except SystemExit as exc:
         code = exc.code
 
