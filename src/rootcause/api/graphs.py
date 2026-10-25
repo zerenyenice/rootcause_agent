@@ -32,7 +32,9 @@ def make_graph() -> CompiledStateGraph[Any, Any, Any, Any]:
     With ``ROOTCAUSE_WAREHOUSE_PATH`` set it gets the SQL and schema tools and the
     root-cause subagent; without it the orchestrator can only frame the problem.
     The warehouse is opened once per path and reused by every graph built here;
-    it stays open for the server process's lifetime and closes at exit.
+    it stays open for the server process's lifetime and closes at exit. Packaged
+    skill and prompt files are cached per process, so once warmed this does no
+    file I/O (the server calls it inside its event loop).
 
     Raises:
         ConfigurationError: the settings are invalid or the warehouse file is missing.
