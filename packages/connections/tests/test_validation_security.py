@@ -770,3 +770,19 @@ def test_tsql_unquoted_statement_keyword_alias_is_rejected(v, alias: str) -> Non
     result = v.validate_sql(f"SELECT 1 {alias}", "tsql")
 
     assert result.ok is False
+
+
+NON_TSQL_ALIAS_DIALECTS = ("postgres", "duckdb", "mysql", "snowflake", "bigquery", "clickhouse")
+STATEMENT_KEYWORD_ALIASES = ("close", "delete", "print", "commit")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("alias", STATEMENT_KEYWORD_ALIASES)
+@pytest.mark.parametrize("dialect", NON_TSQL_ALIAS_DIALECTS)
+def test_unquoted_statement_keyword_alias_is_accepted_outside_tsql(
+    v, dialect: str, alias: str
+) -> None:
+    result = v.validate_sql(f"SELECT a AS {alias} FROM t", dialect)
+
+    assert result.ok is True
+    assert result.errors == ()
