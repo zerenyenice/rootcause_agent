@@ -3,6 +3,7 @@
 import importlib
 import tomllib
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -21,7 +22,7 @@ PACKAGES = [
 MODULE_NAMES = [name for _, name in PACKAGES]
 
 
-def _load_root_pyproject(repo_root: Path) -> dict:
+def _load_root_pyproject(repo_root: Path) -> dict[str, Any]:
     path = repo_root / "pyproject.toml"
     assert path.is_file(), "root pyproject.toml is missing"
     with path.open("rb") as fh:
