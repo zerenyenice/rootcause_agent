@@ -39,6 +39,7 @@ def _auth_values(client: Any) -> list[str]:
 
 def test_base_url_and_auth_header() -> None:
     import httpx
+
     from rootcause_core.clients import openviking_http
 
     async def run() -> None:

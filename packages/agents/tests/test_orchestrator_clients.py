@@ -22,9 +22,8 @@ def _settings() -> Settings:
 def test_default_model_comes_from_clients_chat_model(
     monkeypatch: pytest.MonkeyPatch, scripted_model: Callable[..., Any]
 ) -> None:
-    import rootcause_core.clients as clients
-
     import rootcause_agents.orchestrator as orchestrator_module
+    import rootcause_core.clients as clients
 
     fake = scripted_model(AIMessage(content="hi"))
     calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
@@ -52,9 +51,8 @@ def test_default_model_comes_from_clients_chat_model(
 def test_injected_model_bypasses_clients(
     monkeypatch: pytest.MonkeyPatch, scripted_model: Callable[..., Any]
 ) -> None:
-    import rootcause_core.clients as clients
-
     import rootcause_agents.orchestrator as orchestrator_module
+    import rootcause_core.clients as clients
 
     def fail(*args: Any, **kwargs: Any) -> Any:
         raise AssertionError("chat_model must not be called when a model is injected")
