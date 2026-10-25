@@ -23,3 +23,10 @@ Registry instantiates 6 incidents (3 archetypes × 2 splits) with non-overlappin
 
 ## Acceptance (backlog)
 Generator asserts each planted anomaly has robust z-score above 3; manifest entries contain all PRD fields.
+
+## Amendment 2026-10-25 (after backend review)
+
+- **Visibility statistic.** For an incident with a window of length L days, build the daily metric series; take the 56-day pre-window and compute all rolling L-day aggregates inside it (mean for rates and cycle times, sum-normalised mean for counts). The robust z is `(A_window - median(rolling)) / (1.4826 * MAD(rolling))`, signed by the expected direction, with a floor on the MAD equal to 1% of the median to avoid division by zero. `visible = z >= 3`. This measures noise at the same aggregation level as the window, replacing both the earlier sqrt(L) scaling and the unscaled per-day comparison. E2 keeps weekday normalisation at plant x shift x day grain.
+- **E3 placement.** The registry places E3 only on lines where replacements from the highest-complexity family can reach an achieved window/pre ratio of at least 1.25; if no line qualifies the archetype is skipped for that config with a clear error, never silently weakened. Target ratio 1.3 to 1.35; the 1.2 to 1.4 band in the tests stays.
+- **Manifest types.** Nested manifest fields are tuples and read-only mappings; JSON output is unchanged.
+- **Placement.** Both E2 outages on one plant at opposite ends of the period; E1 and E3 on four distinct lines of the other plant; minimum config 114 days; registry raises on any pre-window overlap.
