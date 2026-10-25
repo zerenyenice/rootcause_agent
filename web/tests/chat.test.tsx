@@ -3,6 +3,14 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Chat } from "@/components/Chat";
 
+const transportSpy = vi.hoisted(() => ({ reset: vi.fn() }));
+
+vi.mock("@/lib/agentTransport", () => ({
+  AgentThreadTransport: class {
+    reset = transportSpy.reset;
+  },
+}));
+
 interface FakeStream {
   messages: Message[];
   isLoading: boolean;
@@ -86,11 +94,18 @@ describe("Chat", () => {
     expect(stream.stop).toHaveBeenCalled();
   });
 
-  it("starts a new thread", async () => {
-    const stream = setStream();
+  // Spec change (deliberate): the old LangGraph Server client was cleaned up via
+  // switchThread(null); with the custom transport "New thread" resets the transport
+  // (next run creates a new server thread) and clears the draft.
+  it("starts a new thread by resetting the transport and clearing the draft", async () => {
+    transportSpy.reset.mockClear();
+    setStream();
     render(<Chat />);
+    await userEvent.type(screen.getByLabelText("Message"), "half-typed");
     await userEvent.click(screen.getByRole("button", { name: "New thread" }));
-    expect(stream.switchThread).toHaveBeenCalledWith(null);
+    expect(transportSpy.reset).toHaveBeenCalledTimes(1);
+    expect(screen.getByLabelText("Message")).toHaveValue("");
+    expect(screen.getByLabelText("Message")).toHaveFocus();
   });
 
   it("shows a friendly error without raw details", () => {
