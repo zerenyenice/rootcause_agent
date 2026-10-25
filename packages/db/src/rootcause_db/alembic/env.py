@@ -5,8 +5,8 @@ The extension, schemas and grants are created by ``rootcause-db bootstrap``
 ``SET LOCAL ROLE <db_owner_role>`` so every object is owned by the NOLOGIN
 owner role, never by a login role (docs/adr/0007). They fail fast with a clear
 message when the database has not been bootstrapped, and in prod they refuse
-to run as a superuser. Concurrent runs are serialised by a transaction-scoped
-advisory lock.
+to run as a superuser or a member of a superuser role. Concurrent runs are
+serialised by a transaction-scoped advisory lock.
 """
 
 from collections.abc import MutableMapping
@@ -85,13 +85,18 @@ def _connect(engine: Engine) -> Connection:
 def _refuse_superuser_in_prod(connection: Connection, settings: Settings) -> None:
     if settings.environment is not Environment.PROD:
         return
+    # pg_has_role(..., 'MEMBER') is true for the role itself, so this covers a
+    # superuser login and a member (direct or indirect) of a superuser role.
     is_superuser = connection.execute(
-        text("SELECT rolsuper FROM pg_roles WHERE rolname = session_user")
+        text(
+            "SELECT EXISTS (SELECT 1 FROM pg_roles r "
+            "WHERE r.rolsuper AND pg_has_role(session_user, r.oid, 'MEMBER'))"
+        )
     ).scalar_one()
     if is_superuser:
         raise ProdRefusalError(
-            "Migrations refuse to run as a superuser in the prod environment; connect as the "
-            f"migrator role via {MIGRATION_URL_VARIABLE}."
+            "Migrations refuse to run as a superuser (or a member of a superuser role) in the "
+            f"prod environment; connect as the migrator role via {MIGRATION_URL_VARIABLE}."
         )
 
 

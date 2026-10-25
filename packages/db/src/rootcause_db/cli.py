@@ -20,6 +20,7 @@ import sys
 from collections.abc import Sequence
 
 from alembic.util import CommandError
+from sqlalchemy.engine import URL
 from sqlalchemy.exc import SQLAlchemyError
 
 from rootcause_core.db.engine import SYNC_DRIVER, normalise_url
@@ -38,6 +39,10 @@ from rootcause_db.names import (
 PROG = "rootcause-db"
 EXIT_FAILURE = 1
 PROD_REFUSED_COMMANDS = frozenset({"downgrade", "revision"})
+# Query keys the admin URL may carry. Anything else (passfile, options, host,
+# user, ...) could redirect the superuser connection or inject server settings.
+ADMIN_URL_QUERY_KEYS = frozenset({"sslmode", "sslrootcert", "connect_timeout", "application_name"})
+PASSWORD_QUERY_KEY = "password"
 SAFE_MESSAGE_ERRORS = (RootCauseError, CommandError)
 
 
@@ -144,15 +149,20 @@ def _bootstrap(settings: Settings, admin_url_option: str | None) -> None:
 
 
 def _admin_url(settings: Settings, option: str | None) -> str:
-    """Superuser URL from ``--admin-url`` (password-free) or ROOTCAUSE_ADMIN_DATABASE_URL."""
+    """Superuser URL from ``--admin-url`` (password-free) or ROOTCAUSE_ADMIN_DATABASE_URL.
+
+    Validated before any connection attempt; messages never contain the URL.
+    """
     if option is not None:
-        if normalise_url(option, SYNC_DRIVER, source=ADMIN_URL_OPTION).password is not None:
+        url = normalise_url(option, SYNC_DRIVER, source=ADMIN_URL_OPTION)
+        if url.password is not None or PASSWORD_QUERY_KEY in url.query:
             raise ConfigurationError(
                 f"{ADMIN_URL_OPTION} must not contain a password (it would be visible in the "
                 f"process list and shell history). Set {ADMIN_URL_VARIABLE} instead, or pass "
                 f"the password via {PASSWORD_VARIABLE} or .pgpass.",
                 variables=(ADMIN_URL_VARIABLE,),
             )
+        _check_admin_query_keys(url, ADMIN_URL_OPTION)
         return option
     if settings.admin_database_url is None:
         raise ConfigurationError(
@@ -160,9 +170,20 @@ def _admin_url(settings: Settings, option: str | None) -> str:
             f"(or {ADMIN_URL_OPTION} without a password plus {PASSWORD_VARIABLE}).",
             variables=(ADMIN_URL_VARIABLE,),
         )
-    url = settings.admin_database_url.get_secret_value()
-    normalise_url(url, SYNC_DRIVER, source=ADMIN_URL_VARIABLE)  # fail before connecting
-    return url
+    raw = settings.admin_database_url.get_secret_value()
+    url = normalise_url(raw, SYNC_DRIVER, source=ADMIN_URL_VARIABLE)  # fail before connecting
+    _check_admin_query_keys(url, ADMIN_URL_VARIABLE)
+    return raw
+
+
+def _check_admin_query_keys(url: URL, source: str) -> None:
+    if set(url.query) - ADMIN_URL_QUERY_KEYS:
+        # Neither the offending key nor its value is echoed: both come from the URL.
+        raise ConfigurationError(
+            f"{source} has an unsupported query parameter; only "
+            f"{', '.join(sorted(ADMIN_URL_QUERY_KEYS))} are allowed.",
+            variables=(ADMIN_URL_VARIABLE,),
+        )
 
 
 def _describe_database_error(error: SQLAlchemyError) -> str:

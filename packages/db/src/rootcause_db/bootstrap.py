@@ -23,8 +23,14 @@ from rootcause_db.names import ADMIN_URL_VARIABLE
 
 VECTOR_EXTENSION = "vector"
 RESERVED_ROLE_PREFIX = "pg_"
-# Predefined roles that would let the runtime role bypass the audit grants.
-FORBIDDEN_APP_MEMBERSHIPS = ("pg_write_all_data",)
+# Predefined roles that bypass table grants or reach the server's files or
+# programs; none of the three roles may be a member of one (directly or not).
+FORBIDDEN_PREDEFINED_MEMBERSHIPS = (
+    "pg_write_all_data",
+    "pg_execute_server_program",
+    "pg_write_server_files",
+    "pg_read_server_files",
+)
 TABLE_PRIVILEGES_BY_SCHEMA = {
     APP_SCHEMA: "SELECT, INSERT, UPDATE, DELETE",
     CATALOG_SCHEMA: "SELECT, INSERT, UPDATE, DELETE",
@@ -45,15 +51,19 @@ class _RoleInfo(NamedTuple):
     is_superuser: bool
     bypasses_rls: bool
     can_login: bool
+    can_create_roles: bool
+    can_create_databases: bool
 
 
 def bootstrap(admin_url: str, *, owner_role: str, migrator_role: str, app_role: str) -> None:
     """Prepare the database: extension, owner-owned schemas and least-privilege grants.
 
     Refuses (before any change) roles that are missing, reserved (``pg_*``),
-    superusers, ``BYPASSRLS``, the admin user itself, an owner that can log in,
-    an app role that is a member of the owner or migrator role, and an app or
-    migrator role that owns the database.
+    superusers, ``BYPASSRLS``, the admin user itself, members of a superuser or
+    ``BYPASSRLS`` role or of a forbidden predefined role, an owner that can log
+    in, an app role with ``CREATEROLE`` or ``CREATEDB`` or that is a member of
+    the owner or migrator role, and an app or migrator role that owns the
+    database.
 
     Raises:
         ConfigurationError: when ``admin_url`` is invalid or a role is refused.
@@ -83,8 +93,11 @@ def _verify_roles(connection: Connection, roles: DbRoles) -> None:
     admin = connection.execute(text("SELECT session_user")).scalar_one()
     for slot, name in roles._asdict().items():
         _verify_role(slot, name, infos.get(name), admin)
+    for slot, name in roles._asdict().items():
+        _verify_privileged_memberships(connection, slot, name)
     if infos[roles.owner].can_login:
         raise _refuse(f"owner role {roles.owner!r} must be NOLOGIN.")
+    _verify_app_attributes(roles.app, infos[roles.app])
     _verify_app_memberships(connection, roles)
     _verify_database_owner(connection, roles)
 
@@ -92,7 +105,8 @@ def _verify_roles(connection: Connection, roles: DbRoles) -> None:
 def _role_infos(connection: Connection, roles: DbRoles) -> dict[str, _RoleInfo]:
     rows = connection.execute(
         text(
-            "SELECT rolname, rolsuper, rolbypassrls, rolcanlogin FROM pg_roles "
+            "SELECT rolname, rolsuper, rolbypassrls, rolcanlogin, rolcreaterole, rolcreatedb "
+            "FROM pg_roles "
             "WHERE rolname = ANY(:names)"
         ),
         {"names": list(roles)},
@@ -113,8 +127,38 @@ def _verify_role(slot: str, name: str, info: _RoleInfo | None, admin: str) -> No
         raise _refuse(f"{slot} role {name!r} has BYPASSRLS.")
 
 
+def _verify_privileged_memberships(connection: Connection, slot: str, name: str) -> None:
+    """Refuse a role that is a member (directly or indirectly) of a privileged role."""
+    privileged = connection.execute(
+        text(
+            "SELECT r.rolname, r.rolsuper, r.rolbypassrls FROM pg_roles r "
+            "WHERE r.rolname <> :role AND pg_has_role(:role, r.oid, 'MEMBER') "
+            "AND (r.rolsuper OR r.rolbypassrls OR r.rolname = ANY(:predefined)) "
+            "ORDER BY r.rolname LIMIT 1"
+        ),
+        {"role": name, "predefined": list(FORBIDDEN_PREDEFINED_MEMBERSHIPS)},
+    ).first()
+    if privileged is None:
+        return
+    group, is_superuser, bypasses_rls = privileged
+    if is_superuser:
+        reason = "a superuser role"
+    elif bypasses_rls:
+        reason = "a BYPASSRLS role"
+    else:
+        reason = "a forbidden predefined role"
+    raise _refuse(f"{slot} role {name!r} is a member of {reason} ({group!r}).")
+
+
+def _verify_app_attributes(name: str, info: _RoleInfo) -> None:
+    if info.can_create_roles:
+        raise _refuse(f"app role {name!r} has CREATEROLE.")
+    if info.can_create_databases:
+        raise _refuse(f"app role {name!r} has CREATEDB.")
+
+
 def _verify_app_memberships(connection: Connection, roles: DbRoles) -> None:
-    for privileged in (roles.owner, roles.migrator, *FORBIDDEN_APP_MEMBERSHIPS):
+    for privileged in (roles.owner, roles.migrator):
         if _is_member(connection, roles.app, privileged):
             raise _refuse(f"app role {roles.app!r} must not be a member of {privileged!r}.")
 
