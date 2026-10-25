@@ -19,3 +19,20 @@ Settings defaults and required fields when enabled; `langfuse_client` None when 
 
 ## Acceptance (backlog)
 With Langfuse disabled the system runs unchanged; enabled, a scripted orchestrator run produces one trace containing todo, tool and model spans; prompt fallback to files is tested.
+
+## Amendment 2026-10-25 (after backend and security review)
+
+Both reviews blocked on data leaving the customer database through traces (PROJECT.md section 7). Shape-based masking is replaced by deny-by-default.
+
+- **Tool outputs deny by default.** The mask keeps tool output only for an allowlist with known-safe output (`write_todos`, `explain_sql`) and the reduced `run_sql` summary (`columns`, `row_count`, `truncated`, `sql`); every other tool output, including `read_file`, `grep`, `ls` on `/large_tool_results/`, DeepAgents eviction previews and `task` results, becomes `"<redacted tool output: <tool name>>"`. Generation inputs that echo ToolMessages get the same treatment, so rows never re-enter traces via message history.
+- **`run_sql` never puts rows in message text.** It writes rows to the agent filesystem under `/query_results/<tool_call_id>.json` and returns only the summary plus that path, so DeepAgents eviction never sees rows. The mask also drops anything under `/query_results/` and `/large_tool_results/`.
+- **Exporter-level redaction.** The span exporter passed to Langfuse is wrapped so every exported string attribute, the status description and event attributes run through the redactor and the PII pass before export; this covers SDK paths that bypass `mask` (error status messages).
+- **Secrets.** All `SecretStr` values in Settings (database URLs, LLM, embedding, OpenViking and Langfuse keys) feed both the log redactor and the trace redactor; the URL regex handles `@` in passwords and libpq `password=` pairs.
+- **PII text pass.** Configurable regex pass (email, phone, IBAN, Turkish national id) over generation inputs and outputs, on by default when Langfuse is enabled.
+- **Trace isolation.** Each run starts from an empty OpenTelemetry context so the Langfuse root is never a child of a FastAPI span; traces carry opaque `tenant_id` and `connection_id` metadata.
+- **Transport.** `langfuse_host` must be https unless loopback or a compose service name.
+- **Lifecycle.** `close_clients()` runs Langfuse shutdown in a worker thread and shuts each client down independently; using a shut-down client logs a warning.
+- **API cleanup.** `trace_callbacks` loses the unused session/user/tags/metadata parameters (run_config owns metadata).
+- **Compose.** Redis runs as the redis user; placeholder `change-me` secrets refuse to start; `LANGFUSE_INIT_PROJECT_SECRET_KEY` moves to `langfuse.env`.
+- **Docs (ADR-0006 and README).** Langfuse UI access exposes all tenants' questions and SQL, so membership is admin-only; prompt source defaults to files in prod and `push_prompts --apply` uses an operator key; Langfuse Cloud needs customer data-residency sign-off; `LANGFUSE_DEBUG` never in prod; prompts resolve at orchestrator build time; paraphrased personal data in model text cannot be fully masked.
+- **Follow-ups (backlog).** Per-service compose env files and a bucket-scoped MinIO key; catalog-driven column masking feeding the PII pass; review of rows persisted in checkpoint state (T035).
