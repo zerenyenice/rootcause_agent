@@ -1,7 +1,7 @@
 # CI/CD
 
 This repo is both the agent-harness template and the RootCause Python
-monorepo — a `uv` workspace (`apps/api` + `packages/*`, see `pyproject.toml`
+package — one `uv` project (`src/rootcause`, see `pyproject.toml`
 and `uv.lock`) with `ruff`, `mypy` and `pytest` configured at the root. CI
 therefore has two concerns:
 
@@ -69,8 +69,8 @@ uv run ruff check . && uv run ruff format --check . && uv run mypy \
 
 ### `dependency-audit`
 
-**What it checks:** the locked *runtime* dependency set of every workspace
-member, audited against the PyPI advisory database with
+**What it checks:** the locked *runtime* dependency set of the `rootcause`
+package, audited against the PyPI advisory database with
 [`pip-audit`](https://github.com/pypa/pip-audit):
 
 ```bash
@@ -79,8 +79,8 @@ uv tool run pip-audit@2.10.1 -r requirements-audit.txt --strict --progress-spinn
 ```
 
 `--no-dev` drops the `dev` tooling group (ruff/mypy/pytest are not shipped),
-`--no-emit-workspace` drops the workspace members themselves (they are
-first-party, not auditable on PyPI) while keeping their transitive
+`--no-emit-workspace` drops the `rootcause` project itself (it is
+first-party, not auditable on PyPI) while keeping its transitive
 third-party dependencies, and `--locked` refuses to run if `uv.lock` is
 stale. Any known vulnerability fails the job (`pip-audit` exits non-zero);
 `--strict` additionally fails the run if a dependency cannot be resolved for
@@ -155,7 +155,7 @@ The job runs, in order:
    ...) is covered by the integration tests; this step checks the CI
    database the CLI built.
 6. `uv run pytest -m integration -q --no-cov -rs --junitxml=integration-junit.xml
-   packages/db packages/core packages/connections packages/catalog`. `--no-cov`
+   tests/db tests/core tests/connections tests/catalog`. `--no-cov`
    because coverage is gated once, over the full suite, in
    `python-quality`, and this subset alone would trip the 80% `addopts`
    gate.
@@ -164,7 +164,7 @@ The job runs, in order:
    (rather than fail) when no usable Postgres/pgvector is reachable. That is
    right on a laptop, but in CI it would turn this job into a vacuous green.
    The only allowed skip is the documented one in
-   `packages/db/tests/integration/test_concurrent_upgrade.py`:
+   `tests/db/integration/test_concurrent_upgrade.py`:
    `test_two_cli_processes_upgrading_at_once_both_succeed` with the reason
    "rootcause-db console script is not installed". Any other skipped test,
    or that test skipped for another reason, fails the job. After
@@ -202,7 +202,7 @@ uv run rootcause-db upgrade head && uv run rootcause-db downgrade base && uv run
 # Expect "permission denied for table query_log":
 docker exec rc-ci-pg psql -U rootcause_app -d rootcause_ci \
   -c "TRUNCATE audit.query_log"
-uv run pytest -m integration -q --no-cov -rs packages/db packages/core packages/connections packages/catalog
+uv run pytest -m integration -q --no-cov -rs tests/db tests/core tests/connections tests/catalog
 docker rm -f rc-ci-pg
 ```
 
@@ -215,7 +215,7 @@ skip with a "pgvector is not installed" reason:
 
 ```bash
 PG_CTL=/opt/homebrew/opt/postgresql@17/bin/pg_ctl \
-  uv run pytest -m integration -q --no-cov -rs packages/db packages/core packages/connections packages/catalog
+  uv run pytest -m integration -q --no-cov -rs tests/db tests/core tests/connections tests/catalog
 ```
 
 Locally a skip is informational. In CI the no-skip guard makes it a failure.

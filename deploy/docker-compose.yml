@@ -176,7 +176,7 @@ services:
   # (https://github.com/langfuse/langfuse/blob/v4.70.0/docker-compose.yml):
   # web + worker, Postgres (dedicated, not the RootCause database), ClickHouse,
   # Redis and MinIO. Server v4 is required: the Python SDK 5.x pinned in
-  # packages/core supports self-hosted Langfuse v4.59.0+ only (v3 is not
+  # pyproject.toml supports self-hosted Langfuse v4.59.0+ only (v3 is not
   # supported). Only the UI/API and MinIO's S3 port are published, on
   # 127.0.0.1. Digests observed 2026-10-25 are recorded next to each image.
   # Secrets: deploy/langfuse.env (copy deploy/langfuse.env.example). Postgres,

@@ -1,7 +1,7 @@
 name: CI
 
 # This repo is both the agent-harness template and the RootCause Python
-# monorepo (a uv workspace: apps/api + packages/*, with ruff/mypy/pytest
+# package (one uv project, src/rootcause, with ruff/mypy/pytest
 # configured in pyproject.toml). CI therefore has two concerns:
 #   1. Product quality — `python-quality` mirrors the local lint → format →
 #      typecheck → test commands and fails under 80% coverage (the Gate 2
@@ -457,7 +457,7 @@ jobs:
         run: >
           uv run pytest -m integration -q --no-cov -rs
           --junitxml=integration-junit.xml
-          packages/db packages/core packages/connections packages/catalog
+          tests/db tests/core tests/connections tests/catalog
 
       # The integration fixtures skip (rather than fail) when no usable
       # Postgres/pgvector is reachable, which is right on a laptop but would
