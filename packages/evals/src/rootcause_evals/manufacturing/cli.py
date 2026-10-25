@@ -26,6 +26,7 @@ CSV_DIRNAME = "csv"
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """Build the argument parser with the ``generate`` subcommand."""
     parser = argparse.ArgumentParser(
         prog="python -m rootcause_evals.manufacturing",
         description="Generate the synthetic manufacturing warehouse (PRD section 11).",
@@ -52,6 +53,7 @@ def write_outputs(tables: dict[str, pd.DataFrame], out_dir: Path) -> None:
 
 
 def run_generate(config: GeneratorConfig, out_dir: Path) -> int:
+    """Generate the warehouse, write all outputs and print a per-table summary."""
     from rootcause_evals.manufacturing import generate
 
     started = time.perf_counter()

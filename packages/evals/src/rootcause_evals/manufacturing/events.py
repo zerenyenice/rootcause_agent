@@ -40,6 +40,7 @@ CALIBRATION_OFFSET_SD = 0.015
 CLAIMS_PER_UNIT = 0.0018
 CLAIM_LAG_MIN_DAYS = 30
 CLAIM_LAG_MAX_DAYS = 90
+CLAIM_BURN_IN_DAYS = 90
 MONTHLY_MAINTENANCE_EVENT = "planned_maintenance"
 HOLIDAY_EVENT = "holiday"
 
@@ -84,7 +85,7 @@ def build_quality_inspections(
             "gauge_id": gauge,
             "measured_value": np.round(measured, 4),
             "passed": passed,
-            "defect_type": pd.Series(defects, dtype="str").mask(passed),
+            "defect_type": pd.Series(defects, dtype="string").mask(passed),
             "source_system": SOURCE_SYSTEM,
         }
     )
@@ -117,17 +118,23 @@ def build_downtime_events(
     )
 
 
+def _last_window_day(config: GeneratorConfig) -> np.datetime64:
+    return np.datetime64(config.start, "ns") + np.timedelta64(config.days - 1, "D")
+
+
 def _planned_maintenance(
-    rng: np.random.Generator, calendar: Calendar, machines: pd.DataFrame, machines_per_line: int
+    config: GeneratorConfig, rng: np.random.Generator, calendar: Calendar, machines: pd.DataFrame
 ) -> pd.DataFrame:
     schedule = calendar.line_maintenance
-    machine_line = np.arange(len(machines)) // machines_per_line
+    machine_line = np.arange(len(machines)) // config.machines_per_line
     rows = pd.DataFrame({"line_idx": machine_line, "machine_id": machines["machine_id"]}).merge(
         schedule, on="line_idx", how="inner"
     )
     n = len(rows)
     lag = PLANNED_PERFORMED_LAG_DAYS[rng.integers(0, len(PLANNED_PERFORMED_LAG_DAYS), size=n)]
-    performed = pd.Series(_days(rows["scheduled_date"].to_numpy(), lag))
+    performed = pd.Series(
+        np.minimum(_days(rows["scheduled_date"].to_numpy(), lag), _last_window_day(config))
+    )
     skipped = rng.random(n) < PLANNED_SKIPPED_SHARE
     return pd.DataFrame(
         {
@@ -140,7 +147,9 @@ def _planned_maintenance(
     )
 
 
-def _unplanned_maintenance(rng: np.random.Generator, downtime: pd.DataFrame) -> pd.DataFrame:
+def _unplanned_maintenance(
+    config: GeneratorConfig, rng: np.random.Generator, downtime: pd.DataFrame
+) -> pd.DataFrame:
     breakdowns = downtime.loc[downtime["reason_code"] == "breakdown"]
     picked = breakdowns.loc[rng.random(len(breakdowns)) < UNPLANNED_SHARE_OF_BREAKDOWNS]
     n = len(picked)
@@ -151,7 +160,7 @@ def _unplanned_maintenance(rng: np.random.Generator, downtime: pd.DataFrame) -> 
             "machine_id": picked["machine_id"].to_numpy(),
             "kind": "unplanned",
             "scheduled_date": scheduled,
-            "performed_date": _days(scheduled, lag),
+            "performed_date": np.minimum(_days(scheduled, lag), _last_window_day(config)),
             "parts_replaced": UNPLANNED_PARTS[rng.integers(0, len(UNPLANNED_PARTS), size=n)],
         }
     )
@@ -165,12 +174,12 @@ def build_maintenance_events(
     downtime: pd.DataFrame,
 ) -> pd.DataFrame:
     """Monthly planned maintenance per machine plus unplanned work after breakdowns."""
-    planned = _planned_maintenance(rng, calendar, machines, config.machines_per_line)
-    unplanned = _unplanned_maintenance(rng, downtime)
+    planned = _planned_maintenance(config, rng, calendar, machines)
+    unplanned = _unplanned_maintenance(config, rng, downtime)
     combined = pd.concat([planned, unplanned], ignore_index=True)
     ordered = combined.sort_values(["scheduled_date", "machine_id", "kind"], kind="stable")
     ordered = ordered.reset_index(drop=True)
-    ordered = ordered.assign(parts_replaced=ordered["parts_replaced"].astype("str"))
+    ordered = ordered.assign(parts_replaced=ordered["parts_replaced"].astype("string"))
     ids = np.arange(1, len(ordered) + 1, dtype=np.int64)
     return ordered.assign(event_id=ids)[["event_id", *combined.columns]]
 
@@ -199,26 +208,97 @@ def build_gauge_calibrations(config: GeneratorConfig, rng: np.random.Generator) 
     )
 
 
-def build_warranty_claims(
-    rng: np.random.Generator, runs: pd.DataFrame, products: pd.DataFrame
-) -> pd.DataFrame:
-    """Claims arrive 30-90 days after the run; rate scales with units and complexity."""
-    complexity = products.set_index("product_id")["complexity_score"]
+def _claim_counts(
+    rng: np.random.Generator, runs: pd.DataFrame, complexity: pd.Series[float]
+) -> npt.NDArray[np.int64]:
     position = complexity.index.get_indexer(pd.Index(runs["product_id"]))
     run_complexity = complexity.to_numpy(dtype=float)[position]
     expected = CLAIMS_PER_UNIT * runs["units_produced"].to_numpy() * (0.8 + 0.1 * run_complexity)
-    counts = rng.poisson(expected)
+    return np.asarray(rng.poisson(expected), dtype=np.int64)
+
+
+def _burn_in_claims(
+    config: GeneratorConfig,
+    rng: np.random.Generator,
+    runs: pd.DataFrame,
+    complexity: pd.Series[float],
+) -> pd.DataFrame:
+    """Claims from virtual production in the ``CLAIM_BURN_IN_DAYS`` before the window.
+
+    The first in-window days are used as the template for that earlier production
+    (tiled backwards over the burn-in length), so claim arrivals are stationary from
+    day 1. The virtual runs do not exist as rows, so each such claim references
+    the earliest in-window run of the same product; claims that would be dated
+    before the window, or not after their referenced run, are dropped.
+    """
+    window_start = np.datetime64(config.start, "ns")
+    template_days = min(config.days, CLAIM_BURN_IN_DAYS)
+    template = runs.loc[runs["ts"] < window_start + np.timedelta64(template_days, "D")]
+    # Tile the template backwards until the whole burn-in period is covered.
+    n_tiles = -(-CLAIM_BURN_IN_DAYS // template_days)
+    tiles = [_claim_counts(rng, template, complexity) for _ in range(n_tiles)]
+    counts = np.concatenate(tiles)
+    idx = np.repeat(np.tile(np.arange(len(template)), n_tiles), counts)
+    tile_no = np.repeat(np.repeat(np.arange(1, n_tiles + 1), len(template)), counts)
+    virtual_day = template["ts"].to_numpy()[idx].astype("datetime64[D]").astype("datetime64[ns]")
+    virtual_day = virtual_day - (tile_no * template_days).astype("timedelta64[D]")
+    lag = rng.integers(CLAIM_LAG_MIN_DAYS, CLAIM_LAG_MAX_DAYS + 1, size=len(idx))
+    product = template["product_id"].to_numpy()[idx]
+    earliest = runs.sort_values("ts", kind="stable").drop_duplicates("product_id")
+    earliest = earliest.set_index("product_id")
+    return pd.DataFrame(
+        {
+            "product_id": product,
+            "run_id": earliest["run_id"].reindex(product).to_numpy(),
+            "claim_date": _days(virtual_day, lag),
+            "run_ts": earliest["ts"].reindex(product).to_numpy(),
+        }
+    )
+
+
+def build_warranty_claims(
+    config: GeneratorConfig,
+    rng: np.random.Generator,
+    runs: pd.DataFrame,
+    products: pd.DataFrame,
+) -> pd.DataFrame:
+    """Claims arrive 30-90 days after the run; rate scales with units and complexity.
+
+    Claims from in-window runs are combined with burn-in claims (see
+    ``_burn_in_claims``) and clipped to the window, so there are no future-dated
+    rows and the daily claim rate is stationary from the first day.
+    """
+    complexity = products.set_index("product_id")["complexity_score"]
+    counts = _claim_counts(rng, runs, complexity)
     run_idx = np.repeat(np.arange(len(runs)), counts)
-    n = len(run_idx)
     run_day = runs["ts"].to_numpy()[run_idx].astype("datetime64[D]").astype("datetime64[ns]")
-    lag = rng.integers(CLAIM_LAG_MIN_DAYS, CLAIM_LAG_MAX_DAYS + 1, size=n)
+    lag = rng.integers(CLAIM_LAG_MIN_DAYS, CLAIM_LAG_MAX_DAYS + 1, size=len(run_idx))
+    in_window = pd.DataFrame(
+        {
+            "product_id": runs["product_id"].to_numpy()[run_idx],
+            "run_id": runs["run_id"].to_numpy()[run_idx],
+            "claim_date": _days(run_day, lag),
+            "run_ts": runs["ts"].to_numpy()[run_idx],
+        }
+    )
+    burn_in = _burn_in_claims(config, rng, runs, complexity)
+    combined = pd.concat([burn_in, in_window], ignore_index=True)
+    window_end = np.datetime64(config.start, "ns") + np.timedelta64(config.days, "D")
+    window_start = np.datetime64(config.start, "ns")
+    keep = (
+        (combined["claim_date"] >= window_start)
+        & (combined["claim_date"] < window_end)
+        & (combined["claim_date"] > combined["run_ts"])
+    )
+    kept = combined.loc[keep].sort_values("claim_date", kind="stable").reset_index(drop=True)
+    n = len(kept)
     defects = np.array(WARRANTY_DEFECT_TYPES, dtype=str)
     return pd.DataFrame(
         {
             "claim_id": np.arange(1, n + 1, dtype=np.int64),
-            "product_id": runs["product_id"].to_numpy()[run_idx],
-            "run_id": runs["run_id"].to_numpy()[run_idx],
-            "claim_date": _days(run_day, lag),
+            "product_id": kept["product_id"].to_numpy(),
+            "run_id": kept["run_id"].to_numpy().astype(np.int64),
+            "claim_date": kept["claim_date"].to_numpy(),
             "defect_type": defects[rng.integers(0, len(defects), size=n)],
             "claim_cost": np.round(rng.uniform(40.0, 600.0, size=n), 2),
         }
@@ -255,7 +335,7 @@ def build_business_events(
     ordered = combined.sort_values(["event_date", "event_type"], kind="stable").reset_index(
         drop=True
     )
-    ordered = ordered.assign(plant_id=ordered["plant_id"].astype("str"))
+    ordered = ordered.assign(plant_id=ordered["plant_id"].astype("string"))
     ids = np.arange(1, len(ordered) + 1, dtype=np.int64)
     return ordered.assign(event_id=ids)[["event_id", *combined.columns]]
 
@@ -272,7 +352,7 @@ def build_event_tables(
     downtime = build_downtime_events(config, rng, calendar, dims["machines"])
     maintenance = build_maintenance_events(config, rng, calendar, dims["machines"], downtime)
     calibrations = build_gauge_calibrations(config, rng)
-    claims = build_warranty_claims(rng, runs, dims["products"])
+    claims = build_warranty_claims(config, rng, runs, dims["products"])
     business = build_business_events(config, calendar, dims["plants"])
     return {
         "quality_inspections": inspections,

@@ -168,7 +168,7 @@ def assign_material_lots(
         chosen[run_mask] = lot_ids_all[lot_mask][np.clip(eligible - 1 - back, 0, None)]
     blank = rng.choice(len(run_ts), size=int(MATERIAL_LOT_NULL_SHARE * len(run_ts)), replace=False)
     chosen[blank] = None
-    return pd.Series(chosen, dtype="str")
+    return pd.Series(chosen, dtype="string")
 
 
 def build_production_runs(
@@ -178,6 +178,7 @@ def build_production_runs(
     grid: RunGrid,
     dims: dict[str, pd.DataFrame],
 ) -> pd.DataFrame:
+    """One production run per line per period with product, units, cycle time and lot."""
     products = dims["products"]
     line_ids = dims["production_lines"]["line_id"].to_numpy()
     n = config.lines * config.periods
@@ -203,6 +204,7 @@ def build_production_runs(
 def build_work_orders(
     config: GeneratorConfig, grid: RunGrid, runs: pd.DataFrame, products: pd.DataFrame
 ) -> pd.DataFrame:
+    """Work orders summarised from their runs (span, line, planned quantity)."""
     span = runs.groupby("work_order_id", sort=True)["ts"].agg(["min", "max"])
     line = runs.groupby("work_order_id", sort=True)["line_id"].first()
     std_cycle = products["standard_cycle_time_s"].to_numpy(dtype=float)[grid.work_order_product]
@@ -262,6 +264,7 @@ def build_energy_meter_readings(
     machine_power: npt.NDArray[np.float64],
     lines: pd.DataFrame,
 ) -> pd.DataFrame:
+    """Per-line energy readings: summed machine power plus overhead and noise."""
     per_line = machine_power.reshape(config.lines, config.machines_per_line, config.periods).sum(1)
     kwh = per_line + LINE_OVERHEAD_KWH + rng.normal(0.0, ENERGY_NOISE_SD, size=per_line.shape)
     return pd.DataFrame(

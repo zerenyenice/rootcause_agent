@@ -1191,7 +1191,7 @@ dependencies = [
 requires-dist = [
     { name = "duckdb", specifier = ">=1.1" },
     { name = "numpy", specifier = ">=2" },
-    { name = "pandas", specifier = ">=2.2" },
+    { name = "pandas", specifier = ">=3.0" },
     { name = "pyarrow", specifier = ">=17" },
 ]
 
@@ -1236,7 +1236,7 @@ workspace = [
 [package.metadata.requires-dev]
 dev = [
     { name = "mypy", specifier = ">=2.4" },
-    { name = "pandas-stubs", specifier = ">=2.2" },
+    { name = "pandas-stubs", specifier = ">=3.0" },
     { name = "pytest", specifier = ">=9.1" },
     { name = "pytest-cov", specifier = ">=7.1" },
     { name = "ruff", specifier = ">=0.17" },

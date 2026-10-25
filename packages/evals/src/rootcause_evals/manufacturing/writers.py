@@ -27,25 +27,81 @@ __all__ = [
 
 DATA_DICTIONARY_FILENAME = "DATA_DICTIONARY.md"
 POSTGRES_NULL = r"\N"
-PRIMARY_KEYS: Mapping[str, str] = {
-    "plants": "plant_id",
-    "production_lines": "line_id",
-    "machines": "machine_id",
-    "product_families": "family_id",
-    "products": "product_id",
-    "suppliers": "supplier_id",
-    "materials": "material_id",
-    "material_lots": "lot_id",
-    "operators": "operator_id",
-    "work_orders": "work_order_id",
-    "production_runs": "run_id",
-    "quality_inspections": "inspection_id",
-    "downtime_events": "event_id",
-    "maintenance_events": "event_id",
-    "gauge_calibrations": "calibration_id",
-    "warranty_claims": "claim_id",
-    "business_events": "event_id",
+# Parent tables first, so CREATE TABLE foreign keys and COPY blocks load in order.
+TABLE_ORDER: tuple[str, ...] = (
+    "plants",
+    "production_lines",
+    "machines",
+    "product_families",
+    "products",
+    "suppliers",
+    "materials",
+    "material_lots",
+    "operators",
+    "shift_assignments",
+    "work_orders",
+    "production_runs",
+    "quality_inspections",
+    "machine_telemetry",
+    "downtime_events",
+    "maintenance_events",
+    "gauge_calibrations",
+    "energy_meter_readings",
+    "warranty_claims",
+    "business_events",
+)
+PRIMARY_KEYS: Mapping[str, tuple[str, ...]] = {
+    "plants": ("plant_id",),
+    "production_lines": ("line_id",),
+    "machines": ("machine_id",),
+    "product_families": ("family_id",),
+    "products": ("product_id",),
+    "suppliers": ("supplier_id",),
+    "materials": ("material_id",),
+    "material_lots": ("lot_id",),
+    "operators": ("operator_id",),
+    "shift_assignments": ("date", "operator_id"),
+    "work_orders": ("work_order_id",),
+    "production_runs": ("run_id",),
+    "quality_inspections": ("inspection_id",),
+    "machine_telemetry": ("ts", "machine_id"),
+    "downtime_events": ("event_id",),
+    "maintenance_events": ("event_id",),
+    "gauge_calibrations": ("calibration_id",),
+    "energy_meter_readings": ("ts", "line_id"),
+    "warranty_claims": ("claim_id",),
+    "business_events": ("event_id",),
 }
+# table -> ((column, parent table, parent column), ...)
+FOREIGN_KEYS: Mapping[str, tuple[tuple[str, str, str], ...]] = {
+    "production_lines": (("plant_id", "plants", "plant_id"),),
+    "machines": (("line_id", "production_lines", "line_id"),),
+    "material_lots": (
+        ("supplier_id", "suppliers", "supplier_id"),
+        ("material_id", "materials", "material_id"),
+    ),
+    "shift_assignments": (
+        ("operator_id", "operators", "operator_id"),
+        ("line_id", "production_lines", "line_id"),
+    ),
+    "work_orders": (("line_id", "production_lines", "line_id"),),
+    "production_runs": (
+        ("line_id", "production_lines", "line_id"),
+        ("work_order_id", "work_orders", "work_order_id"),
+    ),
+    "quality_inspections": (("run_id", "production_runs", "run_id"),),
+    "machine_telemetry": (("machine_id", "machines", "machine_id"),),
+    "warranty_claims": (
+        ("run_id", "production_runs", "run_id"),
+        ("product_id", "products", "product_id"),
+    ),
+}
+
+
+def _in_load_order(tables: Mapping[str, pd.DataFrame]) -> list[tuple[str, pd.DataFrame]]:
+    known = [(name, tables[name]) for name in TABLE_ORDER if name in tables]
+    extra = [(name, frame) for name, frame in tables.items() if name not in TABLE_ORDER]
+    return known + extra
 
 
 @dataclass(frozen=True)
@@ -78,6 +134,7 @@ def column_spec(name: str, dtype: np.dtype[Any] | ExtensionDtype) -> ColumnSpec:
 
 
 def table_specs(frame: pd.DataFrame) -> list[ColumnSpec]:
+    """Column specs for every column of ``frame`` in order."""
     return [column_spec(str(name), dtype) for name, dtype in frame.dtypes.items()]
 
 
@@ -88,6 +145,14 @@ def write_csv(tables: Mapping[str, pd.DataFrame], out_dir: Path) -> None:
         frame.to_csv(out_dir / f"{name}.csv", index=False)
 
 
+def _duckdb_select(spec: ColumnSpec) -> str:
+    if spec.is_date:
+        return f'CAST("{spec.name}" AS DATE) AS "{spec.name}"'
+    if spec.is_timestamp:
+        return f'CAST("{spec.name}" AS TIMESTAMP) AS "{spec.name}"'
+    return f'"{spec.name}"'
+
+
 def write_duckdb(tables: Mapping[str, pd.DataFrame], path: Path) -> None:
     """Write every table into a fresh DuckDB database file at ``path``."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -96,12 +161,7 @@ def write_duckdb(tables: Mapping[str, pd.DataFrame], path: Path) -> None:
     connection = duckdb.connect(str(path))
     try:
         for name, frame in tables.items():
-            selected = ", ".join(
-                f'CAST("{spec.name}" AS DATE) AS "{spec.name}"'
-                if spec.is_date
-                else f'"{spec.name}"'
-                for spec in table_specs(frame)
-            )
+            selected = ", ".join(_duckdb_select(spec) for spec in table_specs(frame))
             connection.register("source_frame", frame)
             connection.execute(f'CREATE TABLE "{name}" AS SELECT {selected} FROM source_frame')
             connection.unregister("source_frame")
@@ -113,8 +173,11 @@ def create_table_sql(name: str, frame: pd.DataFrame) -> str:
     """``CREATE TABLE`` statement with typed columns and a primary key when known."""
     lines = [f"    {spec.name} {spec.sql_type}" for spec in table_specs(frame)]
     key = PRIMARY_KEYS.get(name)
-    if key is not None and key in frame.columns:
-        lines.append(f"    PRIMARY KEY ({key})")
+    if key is not None and all(column in frame.columns for column in key):
+        lines.append(f"    PRIMARY KEY ({', '.join(key)})")
+    for column, parent, parent_column in FOREIGN_KEYS.get(name, ()):
+        if column in frame.columns:
+            lines.append(f"    FOREIGN KEY ({column}) REFERENCES {parent} ({parent_column})")
     body = ",\n".join(lines)
     return f"CREATE TABLE {name} (\n{body}\n);\n"
 
@@ -131,9 +194,10 @@ def _copy_ready(frame: pd.DataFrame) -> pd.DataFrame:
         elif spec.sql_type == "BOOLEAN":
             series = series.map({True: "t", False: "f"})
         elif spec.sql_type == "TEXT":
-            series = series.astype("str").str.replace("\\", "\\\\", regex=False)
+            series = series.astype("string").str.replace("\\", "\\\\", regex=False)
             series = series.str.replace("\t", "\\t", regex=False)
             series = series.str.replace("\n", "\\n", regex=False)
+            series = series.str.replace("\r", "\\r", regex=False)
         columns[spec.name] = series
     return pd.DataFrame(columns)
 
@@ -159,10 +223,11 @@ def write_postgres_sql(tables: Mapping[str, pd.DataFrame], path: Path) -> None:
     with path.open("w", encoding="utf-8", newline="\n") as handle:
         handle.write("-- RootCause synthetic manufacturing warehouse (generated; do not edit)\n")
         handle.write("BEGIN;\n\n")
-        for name, frame in tables.items():
+        ordered = _in_load_order(tables)
+        for name, frame in ordered:
             handle.write(create_table_sql(name, frame))
             handle.write("\n")
-        for name, frame in tables.items():
+        for name, frame in ordered:
             _write_copy_block(handle, name, frame)
         handle.write("COMMIT;\n")
 

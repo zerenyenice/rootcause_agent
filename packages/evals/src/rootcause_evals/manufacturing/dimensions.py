@@ -58,6 +58,7 @@ def _dates(start: str, offsets_days: npt.NDArray[np.int64]) -> npt.NDArray[np.da
 
 
 def build_plants(config: GeneratorConfig) -> pd.DataFrame:
+    """Plants with city and timezone."""
     cities = [CITIES[i % len(CITIES)] for i in range(config.plants)]
     return pd.DataFrame(
         {
@@ -70,6 +71,7 @@ def build_plants(config: GeneratorConfig) -> pd.DataFrame:
 
 
 def build_lines(config: GeneratorConfig, rng: np.random.Generator) -> pd.DataFrame:
+    """Production lines per plant with commissioning dates."""
     plant_idx = np.arange(config.lines) // config.lines_per_plant
     years_ago = rng.integers(2, 15, size=config.lines)
     return pd.DataFrame(
@@ -85,10 +87,14 @@ def build_lines(config: GeneratorConfig, rng: np.random.Generator) -> pd.DataFra
 def build_machines(
     config: GeneratorConfig, rng: np.random.Generator, lines: pd.DataFrame
 ) -> pd.DataFrame:
+    """Machines per line, installed strictly before the window start."""
     line_idx = np.arange(config.machines) // config.machines_per_line
     position = np.arange(config.machines) % config.machines_per_line
     commissioned = lines["commissioned_date"].to_numpy()[line_idx]
-    install_lag = rng.integers(0, 4 * DAYS_PER_YEAR, size=config.machines)
+    start = pd.Timestamp(config.start)
+    line_age_days = (start - pd.DatetimeIndex(commissioned)).days.to_numpy(dtype=np.int64)
+    # Strictly below the line's age, so install_date is always before the window start.
+    install_lag = (rng.random(config.machines) * line_age_days).astype(np.int64)
     return pd.DataFrame(
         {
             "machine_id": make_ids("M", config.machines, 3),
@@ -103,11 +109,13 @@ def build_machines(
 
 
 def build_product_families(config: GeneratorConfig) -> pd.DataFrame:
+    """Product families."""
     names = [FAMILY_NAMES[i % len(FAMILY_NAMES)] for i in range(config.families)]
     return pd.DataFrame({"family_id": make_ids("F", config.families, 2), "family_name": names})
 
 
 def build_products(config: GeneratorConfig, rng: np.random.Generator) -> pd.DataFrame:
+    """Products with family, cycle time, complexity, spec and material."""
     complexity = np.round(rng.uniform(1.0, 5.0, size=config.products), 1)
     cycle = np.round(25.0 + 12.0 * complexity + rng.normal(0.0, 3.0, size=config.products), 1)
     target = np.round(rng.uniform(10.0, 120.0, size=config.products), 2)
@@ -131,6 +139,7 @@ def build_products(config: GeneratorConfig, rng: np.random.Generator) -> pd.Data
 
 
 def build_suppliers(config: GeneratorConfig, rng: np.random.Generator) -> pd.DataFrame:
+    """Suppliers with country and onboarding date."""
     countries = np.array(SUPPLIER_COUNTRIES, dtype=str)
     return pd.DataFrame(
         {
@@ -146,6 +155,7 @@ def build_suppliers(config: GeneratorConfig, rng: np.random.Generator) -> pd.Dat
 
 
 def build_materials(config: GeneratorConfig, rng: np.random.Generator) -> pd.DataFrame:
+    """Materials with spec target, tolerance and primary supplier."""
     idx = np.arange(config.materials)
     target = np.round(rng.uniform(1.0, 50.0, size=config.materials), 3)
     return pd.DataFrame(
@@ -201,6 +211,7 @@ def build_material_lots(
 
 
 def build_operators(config: GeneratorConfig, rng: np.random.Generator) -> pd.DataFrame:
+    """Operators with role, home line and shift, hire and certification dates."""
     n = config.operators
     hire_offset = -rng.integers(30, 10 * DAYS_PER_YEAR, size=n)
     training_lag = rng.integers(14, 120, size=n)

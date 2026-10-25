@@ -100,7 +100,12 @@ def line_maintenance_schedule(config: GeneratorConfig) -> pd.DataFrame:
     month_starts = months.to_timestamp(how="start")
     line_idx = np.arange(config.lines)
     day_of_month = MAINTENANCE_FIRST_DAY_OF_MONTH + MAINTENANCE_DAY_STAGGER * (
-        line_idx % ((MAINTENANCE_MAX_DAY_OF_MONTH - MAINTENANCE_FIRST_DAY_OF_MONTH) // 3 + 1)
+        line_idx
+        % (
+            (MAINTENANCE_MAX_DAY_OF_MONTH - MAINTENANCE_FIRST_DAY_OF_MONTH)
+            // MAINTENANCE_DAY_STAGGER
+            + 1
+        )
     )
     grid_line = np.repeat(line_idx, len(month_starts))
     grid_month = np.tile(month_starts.to_numpy(), config.lines)
