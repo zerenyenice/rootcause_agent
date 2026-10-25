@@ -37,9 +37,22 @@ Both reviews blocked on data leaving the customer database through traces (PROJE
 - **Docs (ADR-0006 and README).** Langfuse UI access exposes all tenants' questions and SQL, so membership is admin-only; prompt source defaults to files in prod and `push_prompts --apply` uses an operator key; Langfuse Cloud needs customer data-residency sign-off; `LANGFUSE_DEBUG` never in prod; prompts resolve at orchestrator build time; paraphrased personal data in model text cannot be fully masked.
 - **Follow-ups (backlog).** Per-service compose env files and a bucket-scoped MinIO key; catalog-driven column masking feeding the PII pass; review of rows persisted in checkpoint state (T035).
 
+## Amendment 2026-10-25 (second security pass)
+
+- **Bounded PII pass.** Every pattern has an upper bound (no quadratic backtracking on long runs without `@`); e-mail matching is Unicode-aware (Turkish addresses); IBANs must pass the mod-97 check (minimum 15 characters); Turkish phone numbers only take a balanced `(5xx)`. Strings over 32 KiB become `<redacted long text: N chars>` in the mask. National ids stay checksum-free on purpose.
+- **Keys-only model-written content.** Tool-call arguments keep only `file_path`, `path`, `subagent_type`, `offset`, `limit` (generation inputs/outputs in every provider shape, and tool span inputs via the handler guard); `write_todos` keeps each todo's `status`; `files` state keeps paths, `todos` state keeps statuses; `write_todos` output leaves the allowlist; the subagent's human message (the `task` description) becomes a marker inside subagent runs.
+- **Tool-name spoofing.** A call id claimed by two names, a message name disagreeing with its call id, or a tool returning a message under another tool's name is redacted.
+- **SDK contract.** `langfuse==5.0.4` exact pin; the private detach helper and `langfuse.langchain` are imported lazily, so `rootcause_core.clients` always imports; without the SDK's LangChain module tracing is off with an error log.
+- **Async.** `ainvoke` runs go through the same guarded callbacks (tested for isolation and leaks).
+
 ### Follow-ups (backlog candidates, not in T009)
 
 - **Per-service compose env files and a bucket-scoped MinIO key.** Every Langfuse container currently reads the one shared `deploy/langfuse.env`, and Langfuse uses the MinIO root credentials for S3. Split the file per service and give Langfuse an access key scoped to the `langfuse` bucket.
 - **Catalog-driven column masking feeding the PII pass.** Use the schema catalog (sensitive-column tags) to mask values the regex PII pass cannot recognise (names, addresses) wherever they appear in trace text.
 - **Rows persisted in checkpoint state (T035).** `run_sql` rows now live in the agent filesystem (`/query_results/...`), which the Postgres checkpointer persists per thread. Review retention, encryption and deletion of those rows together with the T035 lifespan/checkpointer work.
-- **Tool-call arguments.** Arguments the model writes (for example `write_file` content copied from query results) are traced as tool input and only covered by the credential and PII passes; consider denying `write_file`/`edit_file` arguments under result paths.
+- ~~**Tool-call arguments.**~~ Done in the second security pass (keys-only arguments and state).
+- **Verbatim values in the model's answer.** Final answers and reasoning are kept for usefulness; evaluate catalog-driven masking (above) or an opt-in "redact assistant text" mode for tenants that need it.
+- **Single-label http hosts.** Restrict the http exception to an explicit allowlist of compose service names (or a setting) instead of any single-label host.
+- **Compose least privilege.** Besides per-service env files and a scoped MinIO key: run `langfuse-web`, `langfuse-worker`, `langfuse-postgres` and `langfuse-minio` as non-root where the images allow it (ClickHouse and Redis already do), read-only root filesystems where possible, and no published MinIO ports outside local development.
+- **TCKN checksum.** Deliberately not applied (a mistyped id is still personal data); revisit only if false positives on 11-digit business ids hurt trace usefulness.
+- **Bare 10-digit numbers starting with 5** (epoch seconds, ids) are masked as phone numbers; accepted false positive, revisit with the catalog work.

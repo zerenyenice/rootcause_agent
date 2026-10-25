@@ -45,11 +45,20 @@ management.
 - Trace data protection (amended 2026-10-25 after backend and security
   review; PROJECT.md section 7):
   - **Tool outputs are denied by default.** The mask keeps tool output only
-    for `write_todos`, `explain_sql` and the `run_sql` summary (columns, row
-    count, truncation flag, SQL, result path); every other tool output,
-    including `read_file`/`grep`/`ls` and subagent `task` results, is
+    for `explain_sql` and the `run_sql` summary (columns, row count,
+    truncation flag, SQL, result path); every other tool output, including
+    `write_todos`, `read_file`/`grep`/`ls` and subagent `task` results, is
     replaced by `<redacted tool output: NAME>`, also where generation inputs
-    echo it.
+    echo it. A tool call id claimed by two tool names, a message name that
+    disagrees with its call id, or a tool returning a message under another
+    tool's name is redacted, so a spoofed `explain_sql` unlocks nothing.
+  - **Model-written content is keys-only.** Tool-call arguments (in
+    generation inputs and outputs and in tool span inputs) keep only
+    `file_path`, `path`, `subagent_type`, `offset` and `limit`; `write_todos`
+    keeps each todo's `status`. The traced `files` state keeps paths only and
+    `todos` state keeps statuses. Inside a subagent run the human message (the
+    model-written `task` description) becomes a marker.
+  - **Long text.** Strings over 32 KiB become `<redacted long text: N chars>`.
   - **`run_sql` never puts rows in message text.** Rows go to the agent
     filesystem under `/query_results/<tool_call_id>.json`; the mask drops
     anything under `/query_results/` and `/large_tool_results/`.
@@ -59,9 +68,16 @@ management.
   - **Secrets.** Every `SecretStr` setting (and the database password inside
     the DSN) feeds both the log and the trace redactor; URL passwords
     containing `@` and libpq `password=` pairs are redacted by pattern.
-  - **PII pass** (`ROOTCAUSE_LANGFUSE_MASK_PII`, on by default): e-mails,
-    Turkish and US phone numbers, IBANs and 11-digit Turkish national ids in
-    trace text become markers.
+  - **PII pass** (`ROOTCAUSE_LANGFUSE_MASK_PII`, on by default): e-mails
+    (Unicode-aware, so `şule.öztürk@firma.com.tr` is caught), Turkish and US
+    phone numbers, mod-97-valid IBANs and 11-digit Turkish national ids (no
+    checksum: a mistyped id is still personal data) in trace text become
+    markers. Every pattern is bounded, so the pass is linear in text length.
+  - **SDK contract.** `langfuse` is pinned exactly (`==5.0.4`) because the
+    client patches two private SDK internals; a test asserts both still exist,
+    and the private detach helper is imported lazily with a fallback to
+    OpenTelemetry's `detach`, so `rootcause_core.clients` imports even if a
+    release drops it (tracing then turns off with an error log).
   - **Isolation.** Each run is a fresh trace started from an empty
     OpenTelemetry context (never a child of a FastAPI span) and carries the
     opaque `tenant_id` / `connection_id`.
@@ -102,6 +118,20 @@ management.
   customer value in its own words (a name, an address) in its reasoning or
   answer; no regex catches that. Trace access control (above) is the
   remaining control.
+- **Residual risk: verbatim values in the model's text.** The model's own
+  answer and reasoning (assistant message content, generation outputs and the
+  graph output) are kept so traces stay useful; a row value the model quotes
+  verbatim (an id, a name) appears there unless it matches a PII pattern.
+  Only tool-call arguments, tool outputs and agent state are denied.
+- **Residual risk: plaintext transport to compose service names.** An `http`
+  Langfuse host is accepted for single-label hosts so the compose profile
+  (`http://langfuse-web:3000`) works; this is meant only for service names on
+  a private compose network. Any host reachable over a shared network must
+  use https.
+- **Residual risk: compose least privilege.** The self-hosted profile still
+  shares one env file across Langfuse containers and gives Langfuse the MinIO
+  root credentials (see the T009 plan follow-ups); production deployments
+  must not reuse the compose profile as is.
 - Follow-ups: link prompt versions to generations in traces; evaluation runs
   (EP4) may report scores to Langfuse; see the T009 plan for the
   data-protection follow-ups.

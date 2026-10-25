@@ -2636,7 +2636,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.27" },
     { name = "langchain-anthropic", specifier = ">=0.3" },
     { name = "langchain-openai", specifier = ">=0.3" },
-    { name = "langfuse", specifier = ">=5,<6" },
+    { name = "langfuse", specifier = "==5.0.4" },
     { name = "opentelemetry-exporter-otlp-proto-http", specifier = ">=1.27" },
     { name = "opentelemetry-sdk", specifier = ">=1.27" },
     { name = "pydantic-settings", specifier = ">=2.6" },
