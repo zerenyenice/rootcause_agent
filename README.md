@@ -209,6 +209,7 @@ demand if it is missing.
 ```bash
 uv sync                 # create .venv and install every workspace package (editable) + dev tools
 uv run pytest           # run all tests with coverage (fails under 80%)
+uv run pytest --no-cov -k <expr>   # focused run; the 80% coverage gate applies to full runs only
 uv run ruff check .     # lint
 uv run ruff format --check .
 uv run mypy             # strict type-check of every src/ tree
