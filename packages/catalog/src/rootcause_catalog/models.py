@@ -16,6 +16,9 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
+# Registers app.connections on Base.metadata so the foreign key below resolves
+# when only the catalog models are imported.
+import rootcause_connections.models  # noqa: F401
 from rootcause_core.db.base import Base
 from rootcause_core.db.schemas import APP_SCHEMA, CATALOG_SCHEMA
 
@@ -23,8 +26,7 @@ from rootcause_core.db.schemas import APP_SCHEMA, CATALOG_SCHEMA
 class CatalogVersion(Base):
     """A numbered catalog snapshot for one connection; unpublished while ``published_at`` is null.
 
-    The foreign key targets ``app.connections``; load ``rootcause_connections.models``
-    before creating a session so the referenced table is registered.
+    The foreign key targets ``app.connections`` (owned by ``rootcause_connections``).
     """
 
     __tablename__ = "versions"

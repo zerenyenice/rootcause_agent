@@ -24,7 +24,12 @@ query_status = postgresql.ENUM(
 def upgrade() -> None:
     op.create_table(
         "connections",
-        sa.Column("id", postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column(
+            "id",
+            postgresql.UUID(as_uuid=True),
+            server_default=sa.text("gen_random_uuid()"),
+            nullable=False,
+        ),
         sa.Column("display_name", sa.String(), nullable=False),
         sa.Column("dialect", sa.String(), nullable=False),
         sa.Column("host", sa.String(), nullable=False),
@@ -52,6 +57,7 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.Column("tenant_id", sa.String(), nullable=True),
+        sa.CheckConstraint("port >= 1 AND port <= 65535", name=op.f("ck_connections_port_range")),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_connections")),
         schema="app",
     )

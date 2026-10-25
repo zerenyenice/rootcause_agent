@@ -28,6 +28,7 @@ workspace = [
     "rootcause-anomaly",
     "rootcause-memory",
     "rootcause-evals",
+    "rootcause-db",
 ]
 
 [tool.uv]
@@ -47,6 +48,7 @@ rootcause-connections = { workspace = true }
 rootcause-anomaly = { workspace = true }
 rootcause-memory = { workspace = true }
 rootcause-evals = { workspace = true }
+rootcause-db = { workspace = true }
 
 [tool.ruff]
 line-length = 100
@@ -77,6 +79,7 @@ mypy_path = [
     "packages/catalog/src",
     "packages/connections/src",
     "packages/core/src",
+    "packages/db/src",
     "packages/evals/src",
     "packages/memory/src",
     "packages/tools/src",

@@ -2,10 +2,12 @@
 
 import uuid
 from datetime import datetime
+from enum import StrEnum
 from typing import Any
 
 from sqlalchemy import (
     BigInteger,
+    CheckConstraint,
     DateTime,
     Enum,
     ForeignKey,
@@ -24,16 +26,38 @@ from sqlalchemy.orm import Mapped, mapped_column
 from rootcause_core.db.base import Base
 from rootcause_core.db.schemas import APP_SCHEMA, AUDIT_SCHEMA
 
-QUERY_STATUSES = ("ok", "error", "rejected")
+MIN_PORT = 1
+MAX_PORT = 65535
+
+
+class QueryStatus(StrEnum):
+    """Outcome of an audited query; stored as the ``audit.query_status`` enum."""
+
+    OK = "ok"
+    ERROR = "error"
+    REJECTED = "rejected"
+
+
+def _enum_values(enum_class: type[StrEnum]) -> list[str]:
+    """Persist enum *values* (``ok``), not member names (``OK``)."""
+    return [member.value for member in enum_class]
 
 
 class Connection(Base):
     """A customer data source; the secret is stored encrypted."""
 
     __tablename__ = "connections"
-    __table_args__ = {"schema": APP_SCHEMA}
+    __table_args__ = (
+        CheckConstraint(f"port >= {MIN_PORT} AND port <= {MAX_PORT}", name="port_range"),
+        {"schema": APP_SCHEMA},
+    )
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
     display_name: Mapped[str] = mapped_column(String)
     dialect: Mapped[str] = mapped_column(String)
     host: Mapped[str] = mapped_column(String)
@@ -46,12 +70,17 @@ class Connection(Base):
         DateTime(timezone=True), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
     tenant_id: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 class QueryAuditLog(Base):
-    """Append-only record of every query executed against a customer database."""
+    """Append-only record of every query executed against a customer database.
+
+    Migration ``0002`` installs a trigger that rejects UPDATE and DELETE.
+    """
 
     __tablename__ = "query_log"
     __table_args__ = (
@@ -70,8 +99,13 @@ class QueryAuditLog(Base):
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     row_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    status: Mapped[str] = mapped_column(
-        Enum(*QUERY_STATUSES, name="query_status", schema=AUDIT_SCHEMA)
+    status: Mapped[QueryStatus] = mapped_column(
+        Enum(
+            QueryStatus,
+            name="query_status",
+            schema=AUDIT_SCHEMA,
+            values_callable=_enum_values,
+        )
     )
     error_code: Mapped[str | None] = mapped_column(String, nullable=True)
     request_id: Mapped[str | None] = mapped_column(String, nullable=True)

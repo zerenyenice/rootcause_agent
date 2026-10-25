@@ -3,7 +3,7 @@ name = "rootcause-catalog"
 version = "0.1.0"
 description = "RootCause data catalog and metadata access."
 requires-python = ">=3.12"
-dependencies = ["rootcause-core", "sqlalchemy>=2.0"]
+dependencies = ["rootcause-core", "rootcause-connections", "sqlalchemy>=2.0"]
 
 [build-system]
 requires = ["hatchling>=1.25"]
@@ -14,3 +14,4 @@ packages = ["src/rootcause_catalog"]
 
 [tool.uv.sources]
 rootcause-core = { workspace = true }
+rootcause-connections = { workspace = true }

@@ -85,6 +85,10 @@ class Settings(BaseSettings):
     fast_model: str = Field(default="anthropic:claude-sonnet-5", min_length=1)
     reasoning_model: str = Field(default="anthropic:claude-opus-5", min_length=1)
     scan_row_threshold: int = Field(default=5_000_000, gt=0)
+    db_pool_size: int = Field(default=5, gt=0)
+    db_max_overflow: int = Field(default=10, ge=0)
+    db_pool_recycle_s: int = Field(default=1800, gt=0)
+    db_connect_timeout_s: int = Field(default=5, gt=0)
 
     @field_validator("environment", mode="before")
     @classmethod

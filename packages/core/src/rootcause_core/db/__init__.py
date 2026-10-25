@@ -1,1 +1,1 @@
-"""Database foundation: declarative base, engines, schemas and migrations."""
+"""Database foundation: declarative base, schema names and engine factories."""

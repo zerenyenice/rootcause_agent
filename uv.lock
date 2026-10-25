@@ -21,6 +21,7 @@ members = [
     "rootcause-catalog",
     "rootcause-connections",
     "rootcause-core",
+    "rootcause-db",
     "rootcause-evals",
     "rootcause-memory",
     "rootcause-tools",
@@ -2646,12 +2647,14 @@ name = "rootcause-catalog"
 version = "0.1.0"
 source = { editable = "packages/catalog" }
 dependencies = [
+    { name = "rootcause-connections" },
     { name = "rootcause-core" },
     { name = "sqlalchemy" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "rootcause-connections", editable = "packages/connections" },
     { name = "rootcause-core", editable = "packages/core" },
     { name = "sqlalchemy", specifier = ">=2.0" },
 ]
@@ -2678,7 +2681,6 @@ name = "rootcause-core"
 version = "0.1.0"
 source = { editable = "packages/core" }
 dependencies = [
-    { name = "alembic" },
     { name = "asyncpg" },
     { name = "opentelemetry-exporter-otlp-proto-http" },
     { name = "opentelemetry-sdk" },
@@ -2690,7 +2692,6 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "alembic", specifier = ">=1.14" },
     { name = "asyncpg", specifier = ">=0.30" },
     { name = "opentelemetry-exporter-otlp-proto-http", specifier = ">=1.27" },
     { name = "opentelemetry-sdk", specifier = ">=1.27" },
@@ -2698,6 +2699,29 @@ requires-dist = [
     { name = "pydantic-settings", specifier = ">=2.6" },
     { name = "sqlalchemy", specifier = ">=2.0" },
     { name = "structlog", specifier = ">=24" },
+]
+
+[[package]]
+name = "rootcause-db"
+version = "0.1.0"
+source = { editable = "packages/db" }
+dependencies = [
+    { name = "alembic" },
+    { name = "psycopg", extra = ["binary"] },
+    { name = "rootcause-catalog" },
+    { name = "rootcause-connections" },
+    { name = "rootcause-core" },
+    { name = "sqlalchemy" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "alembic", specifier = ">=1.14" },
+    { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
+    { name = "rootcause-catalog", editable = "packages/catalog" },
+    { name = "rootcause-connections", editable = "packages/connections" },
+    { name = "rootcause-core", editable = "packages/core" },
+    { name = "sqlalchemy", specifier = ">=2.0" },
 ]
 
 [[package]]
@@ -2752,6 +2776,7 @@ workspace = [
     { name = "rootcause-catalog" },
     { name = "rootcause-connections" },
     { name = "rootcause-core" },
+    { name = "rootcause-db" },
     { name = "rootcause-evals" },
     { name = "rootcause-memory" },
     { name = "rootcause-tools" },
@@ -2776,6 +2801,7 @@ workspace = [
     { name = "rootcause-catalog", editable = "packages/catalog" },
     { name = "rootcause-connections", editable = "packages/connections" },
     { name = "rootcause-core", editable = "packages/core" },
+    { name = "rootcause-db", editable = "packages/db" },
     { name = "rootcause-evals", editable = "packages/evals" },
     { name = "rootcause-memory", editable = "packages/memory" },
     { name = "rootcause-tools", editable = "packages/tools" },
