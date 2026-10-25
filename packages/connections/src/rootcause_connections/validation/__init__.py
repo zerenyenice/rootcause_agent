@@ -1,10 +1,16 @@
 """Read-only SQL validation gate: the single check every agent query passes before execution.
 
 :func:`validate_sql` parses one statement with sqlglot, enforces a read-only allow list
-(statement shape, allow-listed functions, no hints or file/URL sources), guarantees a
-capped ``LIMIT`` on the outermost query, regenerates the SQL for the target dialect,
-extracts referenced tables and columns, and optionally checks them against a
-:class:`CatalogSnapshot`. It is a pure function: no I/O, inputs are never mutated.
+(statement shape, a class-level allow list of syntax nodes, allow-listed functions, no
+hints or file/URL sources), guarantees a capped ``LIMIT`` on the outermost query,
+regenerates the SQL for the target dialect, extracts referenced tables and columns, and
+optionally checks them against a :class:`CatalogSnapshot`. It is a pure function: no I/O,
+inputs are never mutated.
+
+Importing this package installs one process-wide side effect: a filter on the ``sqlglot``
+logger (``logfilter.install_sqlglot_log_filter``, idempotent) that drops sqlglot's
+"Falling back to parsing as a 'Command'" warning, because that record embeds raw SQL text
+that must not reach logs. No other sqlglot log record is touched.
 """
 
 from __future__ import annotations
@@ -15,8 +21,9 @@ from sqlglot import exp
 from sqlglot.errors import OptimizeError
 
 from rootcause_connections.validation.catalog import CatalogSnapshot, catalog_issues
-from rootcause_connections.validation.functions import function_issues, source_issues
+from rootcause_connections.validation.functions import function_issues
 from rootcause_connections.validation.limits import apply_limit
+from rootcause_connections.validation.logfilter import install_sqlglot_log_filter
 from rootcause_connections.validation.references import extract_references
 from rootcause_connections.validation.result import (
     IssueCode,
@@ -33,6 +40,7 @@ from rootcause_connections.validation.rules import (
     statement_count_issue,
     statement_keyword_alias_issues,
 )
+from rootcause_connections.validation.sources import source_issues
 
 __all__ = [
     "MAX_SQL_CHARS",
@@ -48,6 +56,7 @@ DEFAULT_LIMIT = 10_000
 MAX_SQL_CHARS = 20_000
 
 _logger = logging.getLogger(__name__)
+install_sqlglot_log_filter()
 
 
 def validate_sql(
@@ -78,9 +87,14 @@ def validate_sql(
         return failure(sql, _analysis_failure(str(error)))
     except RecursionError:
         return failure(sql, _analysis_failure("SQL is nested too deeply to analyse."))
-    except Exception as error:  # sqlglot may raise anything on hostile input
-        _logger.warning("SQL validation aborted: %s", type(error).__name__)
+    except Exception as error:  # the single catch-all: sqlglot may raise anything
+        _logger.debug("SQL validation aborted: %s", type(error).__name__, exc_info=_redacted(error))
         return failure(sql, _analysis_failure("Unable to analyse SQL."))
+
+
+def _redacted(error: Exception) -> BaseException:
+    """Same traceback, message dropped: sqlglot exception messages embed SQL text."""
+    return RuntimeError(type(error).__name__).with_traceback(error.__traceback__)
 
 
 def _analysis_failure(message: str) -> ValidationIssue:
@@ -93,7 +107,7 @@ def _validate(
     catalog: CatalogSnapshot | None,
     default_limit: int,
 ) -> ValidationResult:
-    if issue := executable_comment_issue(sql):
+    if issue := executable_comment_issue(sql, dialect):
         return failure(sql, issue)
     statements = parse_statements(sql, dialect)
     if isinstance(statements, ValidationIssue):
@@ -114,7 +128,7 @@ def _policy_errors(statement: exp.Expr, dialect: str) -> tuple[ValidationIssue, 
         *read_only_issues(statement),
         *statement_keyword_alias_issues(statement),
         *function_issues(statement, dialect),
-        *source_issues(statement),
+        *source_issues(statement, dialect),
     )
 
 

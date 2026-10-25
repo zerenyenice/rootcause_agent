@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Iterator, Sequence
 from typing import Final
 
 import sqlglot
 from sqlglot import exp
+from sqlglot.dialects.dialect import Dialect
 from sqlglot.errors import ParseError, TokenError
+from sqlglot.tokenizer_core import Token, TokenType
 
+from rootcause_connections.validation.nodes import node_description
 from rootcause_connections.validation.result import IssueCode, ValidationIssue
-
-_logger = logging.getLogger(__name__)
 
 SUPPORTED_DIALECTS: Final[frozenset[str]] = frozenset(
     {"postgres", "duckdb", "mysql", "tsql", "snowflake", "bigquery", "clickhouse"}
@@ -79,11 +79,33 @@ STATEMENT_KEYWORD_ALIASES: Final[frozenset[str]] = frozenset(
         "restore",
         "dbcc",
         "declare",
+        "reconfigure",
+        "checkpoint",
+        "use",
+        "print",
+        "raiserror",
+        "deny",
+        "bulk",
+        "setuser",
+        "openquery",
+        "openrowset",
+        "revert",
+        "throw",
+        "goto",
+        "begin",
+        "commit",
+        "rollback",
+        "save",
+        "close",
+        "open",
+        "deallocate",
+        "fetch",
     }
 )
 
-#: Comment openers that dialects execute (MySQL ``/*! */``) or treat as hints (``/*+ */``).
-EXECUTABLE_COMMENT_OPENERS: Final[tuple[str, ...]] = ("/*!", "/*+")
+#: Comment openers that dialects execute (MySQL ``/*! */``, MariaDB ``/*M! */``) or treat
+#: as hints (``/*+ */``).
+EXECUTABLE_COMMENT_OPENERS: Final[tuple[str, ...]] = ("/*!", "/*+", "/*M!")
 
 #: Top-level expression classes accepted as a read-only query.
 READ_ONLY_ROOTS: Final[tuple[type[exp.Expr], ...]] = (
@@ -105,24 +127,39 @@ def dialect_issue(dialect: str) -> ValidationIssue | None:
     )
 
 
-class _CommandFallbackFilter(logging.Filter):
-    """Drop sqlglot's Command-fallback warning, which embeds raw SQL text."""
+def executable_comment_issue(sql: str, dialect: str) -> ValidationIssue | None:
+    """Reject executable comments and optimizer hints before sqlglot discards them.
 
-    def filter(self, record: logging.LogRecord) -> bool:
-        return "Falling back to parsing as a 'Command'" not in record.getMessage()
-
-
-logging.getLogger("sqlglot").addFilter(_CommandFallbackFilter())
-
-
-def executable_comment_issue(sql: str) -> ValidationIssue | None:
-    """Reject executable comments and optimizer hints before sqlglot discards them."""
-    if any(opener in sql for opener in EXECUTABLE_COMMENT_OPENERS):
+    The text between consecutive tokens is only whitespace and comments (string literals,
+    quoted names and dollar-quoted bodies are tokens), so searching those gaps finds real
+    comments and never ``'%/*+%'`` inside a literal. Dialect HINT tokens are rejected too.
+    A tokenizer failure is reported as ``PARSE_ERROR`` (fail closed); any other exception
+    propagates to the single catch-all in ``validate_sql``.
+    """
+    try:
+        tokens = Dialect.get_or_raise(dialect).tokenize(sql)
+    except TokenError as error:
+        return ValidationIssue(IssueCode.PARSE_ERROR, _first_line(str(error)))
+    except RecursionError:
+        return ValidationIssue(IssueCode.PARSE_ERROR, "SQL is nested too deeply to parse.")
+    if any(token.token_type is TokenType.HINT for token in tokens) or any(
+        opener in gap for gap in _comment_gaps(sql, tokens) for opener in EXECUTABLE_COMMENT_OPENERS
+    ):
         return ValidationIssue(
             IssueCode.NOT_READ_ONLY,
-            "Executable comments and optimizer hints (/*! ... */, /*+ ... */) are not permitted.",
+            "Executable comments and optimizer hints (/*! ... */, /*+ ... */, /*M! ... */) "
+            "are not permitted.",
         )
     return None
+
+
+def _comment_gaps(sql: str, tokens: Sequence[Token]) -> Iterator[str]:
+    """Yield the raw text before each token and after the last one."""
+    previous_end = -1
+    for token in tokens:
+        yield sql[previous_end + 1 : token.start]
+        previous_end = token.end
+    yield sql[previous_end + 1 :]
 
 
 def parse_statements(sql: str, dialect: str) -> tuple[exp.Expr, ...] | ValidationIssue:
@@ -131,7 +168,8 @@ def parse_statements(sql: str, dialect: str) -> tuple[exp.Expr, ...] | Validatio
     sqlglot's tokenizer discards comments before statements are split, so a comment
     can never hide a trailing statement; a comment left after a ``;`` surfaces as an
     empty ``Semicolon`` pseudo-statement, which is not counted. Every failure mode of
-    the parser, including pathological nesting, is reported as ``PARSE_ERROR``.
+    the parser's own errors, including pathological nesting, are reported as
+    ``PARSE_ERROR``; anything else propagates to the catch-all in ``validate_sql``.
     """
     try:
         parsed = sqlglot.parse(sql, read=dialect)
@@ -139,9 +177,6 @@ def parse_statements(sql: str, dialect: str) -> tuple[exp.Expr, ...] | Validatio
         return ValidationIssue(IssueCode.PARSE_ERROR, _first_line(str(error)))
     except RecursionError:
         return ValidationIssue(IssueCode.PARSE_ERROR, "SQL is nested too deeply to parse.")
-    except Exception as error:  # sqlglot may raise anything on hostile input
-        _logger.warning("sqlglot failed to parse input: %s", type(error).__name__)
-        return ValidationIssue(IssueCode.PARSE_ERROR, "Unable to parse SQL.")
     return tuple(
         statement
         for statement in parsed
@@ -170,7 +205,7 @@ def read_only_issues(statement: exp.Expr) -> Iterator[ValidationIssue]:
         )
     seen: set[str] = set()
     for node in statement.walk():
-        description = _forbidden_description(node)
+        description = _forbidden_description(node) or node_description(node)
         if description is not None and description not in seen:
             seen.add(description)
             yield ValidationIssue(
@@ -200,6 +235,8 @@ def _forbidden_description(node: exp.Expr) -> str | None:
         return _describe(node)
     if isinstance(node, exp.PropertyEQ) and isinstance(node.this, exp.Parameter):
         return "User-variable assignment"
+    if isinstance(node, (exp.Limit, exp.Offset)) and node.expressions:
+        return "LIMIT ... BY clause"
     if isinstance(node, exp.Select):
         return _select_clause_description(node)
     return None

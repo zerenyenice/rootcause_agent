@@ -17,13 +17,17 @@ class CatalogSnapshot:
 
     Keys may be bare (``orders``) or schema-qualified (``sales.orders``). A bare query
     name resolves against every key whose last part matches; a qualified query name
-    matches only the exact key, or a bare key when the snapshot has no qualified keys.
+    matches only the exact key, or a bare key when the snapshot has no qualified keys. A
+    three-part name (``db.schema.table``) matches its exact key; the database part is
+    ignored (``schema.table`` or bare keys are tried) only when the snapshot has no
+    three-part keys, since otherwise a table of another database could be mistaken for it.
     """
 
     tables: tuple[tuple[str, tuple[str, ...]], ...]
     _columns: Mapping[str, frozenset[str]] = field(repr=False, compare=False)
     _by_bare: Mapping[str, tuple[str, ...]] = field(repr=False, compare=False)
     _has_qualified: bool = field(repr=False, compare=False)
+    _has_three_part: bool = field(repr=False, compare=False)
 
     def __init__(self, tables: Mapping[str, Iterable[str]]) -> None:
         merged: dict[str, frozenset[str]] = {}
@@ -41,6 +45,7 @@ class CatalogSnapshot:
             self, "_by_bare", MappingProxyType({k: tuple(v) for k, v in by_bare.items()})
         )
         object.__setattr__(self, "_has_qualified", any("." in key for key in merged))
+        object.__setattr__(self, "_has_three_part", any(key.count(".") >= 2 for key in merged))
 
     def resolve(self, table: str) -> tuple[str, ...]:
         """Return the catalog keys ``table`` may refer to: none, one, or several (ambiguous)."""
@@ -50,7 +55,11 @@ class CatalogSnapshot:
         parts = name.split(".")
         if len(parts) == 1:
             return self._by_bare.get(name, ())
-        if len(parts) > 2 and (schema_table := ".".join(parts[-2:])) in self._columns:
+        if (
+            len(parts) > 2
+            and not self._has_three_part
+            and (schema_table := ".".join(parts[-2:])) in self._columns
+        ):
             return (schema_table,)
         return () if self._has_qualified else self._by_bare.get(parts[-1], ())
 
@@ -151,11 +160,28 @@ def _bare_issue(
     if len(owners) > 1:
         message = f"Column {column.name!r} is ambiguous; found in {', '.join(owners)}."
         return ValidationIssue(IssueCode.AMBIGUOUS_COLUMN, message)
-    if owners or scope.opaque:
+    if owners or scope.opaque or _resolves_in_outer_scope(catalog, name, scope, resolved):
         return None
     return ValidationIssue(
         IssueCode.UNKNOWN_COLUMN, f"Unknown column {column.name!r} in referenced tables."
     )
+
+
+def _resolves_in_outer_scope(
+    catalog: CatalogSnapshot,
+    name: str,
+    scope: ScopeRefs,
+    resolved: Mapping[str, tuple[str, ...]],
+) -> bool:
+    """Correlated subqueries may use bare columns of any enclosing query's sources."""
+    for outer in scope.outer:
+        table_keys = tuple(resolved.get(table.name, ()) for table in outer.tables)
+        unverifiable = outer.opaque or any(not keys for keys in table_keys)
+        if unverifiable or name in outer.derived_columns:
+            return True
+        if any(name in catalog.columns_of(keys) for keys in table_keys):
+            return True
+    return False
 
 
 def _is_struct_column(

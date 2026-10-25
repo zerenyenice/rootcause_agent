@@ -4,7 +4,7 @@ Every function call must be an allow-listed typed sqlglot class (see ``allowlist
 an unknown (``exp.Anonymous``) name explicitly listed for the dialect. Anything else fails
 closed with ``FORBIDDEN_FUNCTION``. Table-position calls (``FROM f(...)``,
 ``LATERAL f(...)``, ``TABLE(f(...))``) are limited to the generate_series /
-unnest families, and file, URL or stage style table names are rejected.
+unnest families. Table *names* are judged by ``sources``.
 """
 
 from __future__ import annotations
@@ -23,7 +23,6 @@ from rootcause_connections.validation.allowlist import (
 )
 from rootcause_connections.validation.result import IssueCode, ValidationIssue
 
-_PATH_SUFFIXES: Final[tuple[str, ...]] = (".csv", ".parquet", ".json", ".jsonl", ".tsv")
 _ANONYMOUS_TYPES: Final[tuple[type[exp.Expr], ...]] = (exp.Anonymous, exp.AnonymousAggFunc)
 
 
@@ -40,20 +39,6 @@ def function_issues(statement: exp.Expr, dialect: str) -> Iterator[ValidationIss
         if isinstance(dot.expression, exp.Func):
             name = f"{dot.this.sql()}.{_function_name(dot.expression)}"
             yield from _once(seen, _forbidden(name, False, qualified=True))
-
-
-def source_issues(statement: exp.Expr) -> Iterator[ValidationIssue]:
-    """Yield ``NOT_READ_ONLY`` for table names that are files, URLs, stages or placeholders."""
-    for table in statement.find_all(exp.Table):
-        source = table.this
-        if isinstance(source, (exp.Func, exp.Dot)):
-            continue  # calls are judged by function_issues
-        if not isinstance(source, exp.Identifier):
-            yield _not_read_only("Table source is not a plain table name.")
-        elif any(_looks_like_path(part) for part in (table.catalog, table.db, table.name)):
-            yield _not_read_only(
-                f"Table name {table.name!r} looks like a file, URL or stage reference."
-            )
 
 
 def _call_allowed(node: exp.Func, dialect: str) -> bool:
@@ -93,21 +78,7 @@ def _forbidden(name: str, in_table: bool, *, qualified: bool = False) -> Validat
     return ValidationIssue(IssueCode.FORBIDDEN_FUNCTION, detail)
 
 
-def _not_read_only(message: str) -> ValidationIssue:
-    return ValidationIssue(IssueCode.NOT_READ_ONLY, message)
-
-
 def _once(seen: set[str], issue: ValidationIssue) -> Iterator[ValidationIssue]:
     if issue.message not in seen:
         seen.add(issue.message)
         yield issue
-
-
-def _looks_like_path(part: str) -> bool:
-    lowered = part.lower()
-    return (
-        "/" in lowered
-        or "\\" in lowered
-        or lowered.startswith("@")
-        or lowered.endswith(_PATH_SUFFIXES)
-    )

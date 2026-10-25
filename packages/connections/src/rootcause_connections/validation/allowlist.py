@@ -7,6 +7,8 @@ name for the dialect in ``ALLOWED_ANONYMOUS``.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from types import MappingProxyType
 from typing import Final
 
 from sqlglot import exp
@@ -366,16 +368,20 @@ ALLOWED_TYPE_SET: Final[frozenset[type[exp.Expr]]] = frozenset(ALLOWED_FUNCTION_
 TABLE_FUNCTION_TYPES: Final[frozenset[type[exp.Expr]]] = frozenset(
     {exp.Unnest, exp.Explode, exp.GenerateSeries, exp.ExplodingGenerateSeries}
 )
-TABLE_FUNCTION_NAMES: Final[dict[str, frozenset[str]]] = {
-    "duckdb": frozenset({"generate_series", "unnest", "range"}),
-}
+TABLE_FUNCTION_NAMES: Final[Mapping[str, frozenset[str]]] = MappingProxyType(
+    {"duckdb": frozenset({"generate_series", "unnest", "range"})}
+)
 DEFAULT_TABLE_FUNCTION_NAMES: Final[frozenset[str]] = frozenset({"generate_series", "unnest"})
 
 #: Lower-cased names of functions sqlglot has no typed class for, per dialect. Keep small.
-ALLOWED_ANONYMOUS: Final[dict[str, frozenset[str]]] = {
-    "mysql": frozenset({"now"}),
-    "postgres": frozenset(
-        {"string_agg", "percentile_cont", "percentile_disc", "date_part", "age", "cardinality"}
-    ),
-    "duckdb": frozenset({"date_part", "list_aggregate", "strftime", "strptime", "epoch", "now"}),
-}
+ALLOWED_ANONYMOUS: Final[Mapping[str, frozenset[str]]] = MappingProxyType(
+    {
+        "mysql": frozenset({"now"}),
+        "postgres": frozenset(
+            {"string_agg", "percentile_cont", "percentile_disc", "date_part", "age", "cardinality"}
+        ),
+        "duckdb": frozenset(
+            {"date_part", "list_aggregate", "strftime", "strptime", "epoch", "now"}
+        ),
+    }
+)

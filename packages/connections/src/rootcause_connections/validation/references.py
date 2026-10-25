@@ -53,6 +53,8 @@ class ScopeRefs(NamedTuple):
     derived_columns: frozenset[str]
     #: True when a source's columns cannot be determined (star, table function, ...)
     opaque: bool
+    #: enclosing SELECT scopes, nearest first, for correlated-subquery column lookup
+    outer: tuple[ScopeRefs, ...] = ()
 
 
 class References(NamedTuple):
@@ -108,11 +110,24 @@ def _scope_refs(statement: exp.Expr, scopes: list[Scope]) -> tuple[ScopeRefs, ..
     for column, owner in _owned_columns(statement, scopes, by_expression):
         owned.setdefault(owner, []).append(_column_ref(column))
     qualifiers: dict[int, Mapping[str, TableRef | None]] = {}
-    return tuple(
-        _build_scope(scope, tuple(owned.get(index, ())), qualifiers)
+    built = {
+        id(scope): _build_scope(scope, tuple(owned.get(index, ())), qualifiers)
         for index, scope in enumerate(scopes)
         if isinstance(scope.expression, exp.Select)
+    }
+    return tuple(
+        ref._replace(outer=tuple(built[id(a)] for a in _ancestors(scope) if id(a) in built))
+        for scope in scopes
+        if (ref := built.get(id(scope))) is not None
     )
+
+
+def _ancestors(scope: Scope) -> Iterable[Scope]:
+    """Enclosing scopes of ``scope``, nearest first."""
+    parent = scope.parent
+    while parent is not None:
+        yield parent
+        parent = parent.parent
 
 
 def _owned_columns(
