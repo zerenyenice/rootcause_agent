@@ -40,6 +40,9 @@ LlmProvider = Literal["anthropic", "azure_openai"]
 LlmRole = Literal["orchestrator", "fast", "reasoning"]
 LLM_ROLES: tuple[LlmRole, ...] = ("orchestrator", "fast", "reasoning")
 EmbeddingProvider = Literal["azure_openai", "openai_compatible"]
+PromptSource = Literal["files", "langfuse"]
+# Settings fields Langfuse needs whenever tracing or remote prompts are switched on.
+LANGFUSE_CREDENTIAL_FIELDS = ("langfuse_host", "langfuse_public_key", "langfuse_secret_key")
 
 
 class MissingVariablesError(ValueError):
@@ -125,6 +128,15 @@ class Settings(BaseSettings):
     embedding_api_key: SecretStr | None = None
     embedding_batch_size: int = Field(default=64, gt=0)
     openviking_api_key: SecretStr | None = None
+    langfuse_enabled: bool = False
+    langfuse_host: AnyHttpUrl | None = None
+    langfuse_public_key: SecretStr | None = None
+    langfuse_secret_key: SecretStr | None = None
+    langfuse_release: str | None = None
+    langfuse_sample_rate: float = Field(default=1.0, ge=0.0, le=1.0)
+    prompt_source: PromptSource = "files"
+    prompt_label: str = Field(default="production", min_length=1)
+    prompt_cache_ttl_s: int = Field(default=300, ge=0)
 
     @field_validator("environment", mode="before")
     @classmethod
@@ -154,6 +166,25 @@ class Settings(BaseSettings):
         missing = tuple(
             f"{ENV_PREFIX}{name.upper()}"
             for name in ("azure_openai_endpoint", "azure_openai_api_key")
+            if getattr(self, name) is None
+        )
+        if missing:
+            raise MissingVariablesError(missing)
+        return self
+
+    @property
+    def uses_langfuse(self) -> bool:
+        """True when tracing or prompt management talks to Langfuse."""
+        return self.langfuse_enabled or self.prompt_source == "langfuse"
+
+    @model_validator(mode="after")
+    def _require_langfuse_fields(self) -> Self:
+        """Tracing or Langfuse-managed prompts need the host and both keys."""
+        if not self.uses_langfuse:
+            return self
+        missing = tuple(
+            f"{ENV_PREFIX}{name.upper()}"
+            for name in LANGFUSE_CREDENTIAL_FIELDS
             if getattr(self, name) is None
         )
         if missing:

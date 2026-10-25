@@ -9,6 +9,7 @@ T002 (`docs/plans/T002-docker-compose-stack.md`); owner agent `devops`.
 | `.env.example` | Every variable the stack needs, placeholder values only. Copy to `deploy/.env` (gitignored) |
 | `postgres/init.sql` | First-start bootstrap: `CREATE EXTENSION vector`, schemas `app`, `catalog`, `audit` |
 | `openviking/ov.conf` | Secret-free OpenViking config template; `${VAR}` references are expanded by the server from the container environment |
+| `docker-compose.yml` profile `observability` | Optional self-hosted Langfuse v4 (web, worker, Postgres, ClickHouse, Redis, MinIO) for agent traces and prompt management (T009, ADR-0006) |
 
 Both services publish their ports on `127.0.0.1` only, restart
 `unless-stopped`, persist to named volumes (`rootcause_postgres_data`,
@@ -101,6 +102,70 @@ Both are exact tags; the multi-arch manifest digests observed at pin time are
 recorded as comments in `docker-compose.yml`. Bump either via a `chore(deploy):`
 commit after reading the upstream release notes; CI (`compose-config` job)
 re-validates the file on every PR.
+
+## Langfuse (optional `observability` profile)
+
+Agent runs (orchestrator, subagents, model and tool calls) can be traced in
+Langfuse, and prompts can be managed there (T009,
+[ADR-0006](../docs/adr/0006-langfuse-observability.md)). Use Langfuse Cloud
+or the self-hosted server in this compose file; the profile is not started by
+a plain `docker compose up`.
+
+```bash
+# in deploy/.env: replace every LANGFUSE_* placeholder (`openssl rand -hex 32`)
+docker compose -f deploy/docker-compose.yml --profile observability up -d
+docker compose -f deploy/docker-compose.yml --profile observability ps   # all "healthy"
+# Langfuse UI: http://localhost:3000
+```
+
+- Server **v4** (`langfuse/langfuse:4.70.0`, `langfuse/langfuse-worker:4.70.0`).
+  The Python SDK 5.x pinned in `packages/core` supports self-hosted
+  Langfuse v4.59.0 or later only; v3 servers are not supported.
+- Six services: `langfuse-web` (UI + API, `127.0.0.1:${LANGFUSE_PORT:-3000}`),
+  `langfuse-worker`, `langfuse-postgres` (its own database, separate from
+  the RootCause one), `langfuse-clickhouse`, `langfuse-redis`,
+  `langfuse-minio` (S3, `127.0.0.1:${LANGFUSE_MINIO_PORT:-9090}` for media
+  uploads). ClickHouse, Redis and Postgres are not published on the host.
+  Usage telemetry to Langfuse is turned off.
+- Secrets: `LANGFUSE_NEXTAUTH_SECRET`, `LANGFUSE_SALT`,
+  `LANGFUSE_ENCRYPTION_KEY` (exactly 64 hex characters),
+  `LANGFUSE_DB_PASSWORD`, `LANGFUSE_CLICKHOUSE_PASSWORD`,
+  `LANGFUSE_REDIS_PASSWORD`, `LANGFUSE_MINIO_PASSWORD`. Compose interpolates
+  the whole file whatever the active profile, so these must be present in
+  `deploy/.env` even when the profile is not used (any placeholder value is
+  enough then). Use hex values: the database password is embedded in a URL.
+- First user and API keys: either sign up in the UI and create project keys
+  under Project settings > API keys, or set `LANGFUSE_INIT_ORG_ID`,
+  `LANGFUSE_INIT_PROJECT_ID`, `LANGFUSE_INIT_USER_EMAIL` and
+  `LANGFUSE_INIT_USER_PASSWORD` before the first start; the project is then
+  created with `ROOTCAUSE_LANGFUSE_PUBLIC_KEY` / `_SECRET_KEY` as its keys.
+
+Point RootCause at it (the API's `.env` or process environment):
+
+```bash
+ROOTCAUSE_LANGFUSE_ENABLED=true
+ROOTCAUSE_LANGFUSE_HOST=http://localhost:3000
+ROOTCAUSE_LANGFUSE_PUBLIC_KEY=pk-lf-...
+ROOTCAUSE_LANGFUSE_SECRET_KEY=sk-lf-...
+```
+
+Each run is one trace whose session id is the LangGraph thread id. Before
+export, URL passwords are redacted and SQL result rows are dropped (column
+names, row counts and the SQL text are kept), per PROJECT.md section 7.
+
+Prompts: `ROOTCAUSE_PROMPT_SOURCE=langfuse` serves the version labelled
+`ROOTCAUSE_PROMPT_LABEL` (default `production`) and falls back to the shipped
+file on any Langfuse error. Upload the shipped prompts as new versions with
+`uv run python scripts/push_prompts.py --apply` (dry run without `--apply`;
+add `--label production` to promote the uploaded versions immediately).
+
+Reset only the Langfuse data:
+
+```bash
+docker compose -f deploy/docker-compose.yml --profile observability down
+docker volume rm rootcause_langfuse_postgres_data rootcause_langfuse_clickhouse_data \
+  rootcause_langfuse_clickhouse_logs rootcause_langfuse_redis_data rootcause_langfuse_minio_data
+```
 
 ## api / web services
 

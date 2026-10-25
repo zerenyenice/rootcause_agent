@@ -9,6 +9,7 @@ processor chain and renderer, so third-party libraries produce the same JSON
 import logging
 import re
 import sys
+from collections.abc import Callable
 from typing import TextIO
 
 import structlog
@@ -74,8 +75,8 @@ _URL_CREDENTIALS = re.compile(r"(\w+://[^:/@\s]+:)[^@\s]+@")
 REDACTED = "***"
 
 
-def make_redactor(secrets: tuple[str, ...] = ()) -> Processor:
-    """Build a processor masking URL passwords and verbatim ``secrets`` in str values."""
+def make_text_redactor(secrets: tuple[str, ...] = ()) -> Callable[[str], str]:
+    """Build a function masking URL passwords and verbatim ``secrets`` in a string."""
     known = tuple(secret for secret in secrets if secret)
 
     def redact_text(text: str) -> str:
@@ -83,6 +84,13 @@ def make_redactor(secrets: tuple[str, ...] = ()) -> Processor:
         for secret in known:
             cleaned = cleaned.replace(secret, REDACTED)
         return cleaned
+
+    return redact_text
+
+
+def make_redactor(secrets: tuple[str, ...] = ()) -> Processor:
+    """Build a processor masking URL passwords and verbatim ``secrets`` in str values."""
+    redact_text = make_text_redactor(secrets)
 
     def redact(_logger: WrappedLogger, _method: str, event_dict: EventDict) -> EventDict:
         return {

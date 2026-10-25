@@ -18,6 +18,48 @@
 
 name: rootcause
 
+# Environment shared by langfuse-web and langfuse-worker (observability profile).
+x-langfuse-env: &langfuse-env
+  NEXTAUTH_URL: http://localhost:${LANGFUSE_PORT:-3000}
+  DATABASE_URL: postgresql://langfuse:${LANGFUSE_DB_PASSWORD:?set LANGFUSE_DB_PASSWORD in deploy/.env}@langfuse-postgres:5432/langfuse
+  SALT: ${LANGFUSE_SALT:?set LANGFUSE_SALT in deploy/.env}
+  ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY:?set LANGFUSE_ENCRYPTION_KEY in deploy/.env}
+  # No usage telemetry to Langfuse GmbH from a self-hosted install.
+  TELEMETRY_ENABLED: "false"
+  CLICKHOUSE_MIGRATION_URL: clickhouse://langfuse-clickhouse:9000
+  CLICKHOUSE_URL: http://langfuse-clickhouse:8123
+  CLICKHOUSE_USER: clickhouse
+  CLICKHOUSE_PASSWORD: ${LANGFUSE_CLICKHOUSE_PASSWORD:?set LANGFUSE_CLICKHOUSE_PASSWORD in deploy/.env}
+  CLICKHOUSE_CLUSTER_ENABLED: "false"
+  REDIS_HOST: langfuse-redis
+  REDIS_PORT: "6379"
+  REDIS_AUTH: ${LANGFUSE_REDIS_PASSWORD:?set LANGFUSE_REDIS_PASSWORD in deploy/.env}
+  LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+  LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
+  LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: minio
+  LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${LANGFUSE_MINIO_PASSWORD:?set LANGFUSE_MINIO_PASSWORD in deploy/.env}
+  LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://langfuse-minio:9000
+  LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+  LANGFUSE_S3_EVENT_UPLOAD_PREFIX: events/
+  LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: langfuse
+  LANGFUSE_S3_MEDIA_UPLOAD_REGION: auto
+  LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: minio
+  LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: ${LANGFUSE_MINIO_PASSWORD:?set LANGFUSE_MINIO_PASSWORD in deploy/.env}
+  LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://langfuse-minio:9000
+  LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
+  LANGFUSE_S3_MEDIA_UPLOAD_PREFIX: media/
+
+# Healthy-dependency set shared by langfuse-web and langfuse-worker.
+x-langfuse-depends-on: &langfuse-depends-on
+  langfuse-postgres:
+    condition: service_healthy
+  langfuse-clickhouse:
+    condition: service_healthy
+  langfuse-redis:
+    condition: service_healthy
+  langfuse-minio:
+    condition: service_healthy
+
 services:
   # ---------------------------------------------------------------------------
   # Postgres 16 + pgvector (ADR-0003: catalog, audit log, app state, LangGraph
@@ -112,6 +154,146 @@ services:
       start_period: 60s
 
   # ---------------------------------------------------------------------------
+  # Self-hosted Langfuse (T009, ADR-0006): agent traces and prompt management.
+  # Optional profile `observability`; a plain `docker compose up` does not
+  # start it:
+  #   docker compose -f deploy/docker-compose.yml --profile observability up -d
+  # Layout follows the upstream single-host compose file
+  # (https://github.com/langfuse/langfuse/blob/v4.70.0/docker-compose.yml):
+  # web + worker, Postgres (dedicated, not the RootCause database), ClickHouse,
+  # Redis and MinIO. Server v4 is required: the Python SDK 5.x pinned in
+  # packages/core supports self-hosted Langfuse v4.59.0+ only (v3 is not
+  # supported). Only the UI/API and MinIO's S3 port are published, on
+  # 127.0.0.1. Digests observed 2026-10-25 are recorded next to each image.
+  # ---------------------------------------------------------------------------
+  # sha256:932a46dfab770f89ecb2ec35258b6b80d3be8773403981a64d271ff0a408deef
+  langfuse-web:
+    image: langfuse/langfuse:4.70.0
+    profiles: [observability]
+    restart: unless-stopped
+    depends_on: *langfuse-depends-on
+    ports:
+      - "127.0.0.1:${LANGFUSE_PORT:-3000}:3000"
+    environment:
+      <<: *langfuse-env
+      NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:?set LANGFUSE_NEXTAUTH_SECRET in deploy/.env}
+      # Browsers and SDKs upload media through the published MinIO port; the
+      # server itself talks to MinIO inside the network.
+      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://localhost:${LANGFUSE_MINIO_PORT:-9090}
+      LANGFUSE_S3_MEDIA_UPLOAD_INTERNAL_ENDPOINT: http://langfuse-minio:9000
+      # Optional headless first-start setup; empty values skip it.
+      LANGFUSE_INIT_ORG_ID: ${LANGFUSE_INIT_ORG_ID:-}
+      LANGFUSE_INIT_ORG_NAME: RootCause
+      LANGFUSE_INIT_PROJECT_ID: ${LANGFUSE_INIT_PROJECT_ID:-}
+      LANGFUSE_INIT_PROJECT_NAME: rootcause
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: ${ROOTCAUSE_LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: ${ROOTCAUSE_LANGFUSE_SECRET_KEY:-}
+      LANGFUSE_INIT_USER_EMAIL: ${LANGFUSE_INIT_USER_EMAIL:-}
+      LANGFUSE_INIT_USER_NAME: admin
+      LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_INIT_USER_PASSWORD:-}
+    healthcheck:
+      # The runtime image has no curl/wget; Next.js binds to the container
+      # hostname, so probe that rather than 127.0.0.1.
+      test: ["CMD", "node", "-e", "fetch('http://'+require('os').hostname()+':3000/api/public/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+
+  # sha256:3b3b204fa72fd02d010ab90c667d07281e4b9ec3b5b0b1d21470ac2624b8a564
+  langfuse-worker:
+    image: langfuse/langfuse-worker:4.70.0
+    profiles: [observability]
+    restart: unless-stopped
+    depends_on: *langfuse-depends-on
+    environment:
+      <<: *langfuse-env
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://'+require('os').hostname()+':3030/api/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+
+  # Dedicated Postgres for Langfuse metadata; keeps trace tooling out of the
+  # RootCause database. Not published on the host.
+  # sha256:b8faeff7712663c2773a190181e1246e37e364b887611c04658c28b44e2408fe
+  langfuse-postgres:
+    image: postgres:17.11
+    profiles: [observability]
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: langfuse
+      POSTGRES_DB: langfuse
+      POSTGRES_PASSWORD: ${LANGFUSE_DB_PASSWORD:?set LANGFUSE_DB_PASSWORD in deploy/.env}
+      TZ: UTC
+      PGTZ: UTC
+    volumes:
+      - langfuse_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U langfuse -d langfuse"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  # sha256:8a790dd3468db22b1d4e7b18a176f378ff5ff6053b9c48dd4ea1fa71a24c5ba6
+  langfuse-clickhouse:
+    image: clickhouse/clickhouse-server:25.12.11
+    profiles: [observability]
+    restart: unless-stopped
+    user: "101:101"
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: ${LANGFUSE_CLICKHOUSE_PASSWORD:?set LANGFUSE_CLICKHOUSE_PASSWORD in deploy/.env}
+    volumes:
+      - langfuse_clickhouse_data:/var/lib/clickhouse
+      - langfuse_clickhouse_logs:/var/log/clickhouse-server
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  # sha256:44960b3100c48159a66d28c18b0588c193492e25f7551d60e51dd464fc3eca5b
+  langfuse-redis:
+    image: redis:7.4.11
+    profiles: [observability]
+    restart: unless-stopped
+    # Langfuse's queues need noeviction.
+    command: ["sh", "-c", "exec redis-server --requirepass \"$$REDIS_PASSWORD\" --maxmemory-policy noeviction"]
+    environment:
+      REDIS_PASSWORD: ${LANGFUSE_REDIS_PASSWORD:?set LANGFUSE_REDIS_PASSWORD in deploy/.env}
+    volumes:
+      - langfuse_redis_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  # Upstream's MinIO build (Chainguard publishes only `latest` publicly, so it
+  # is pinned by digest). The `langfuse` bucket is created before start.
+  langfuse-minio:
+    image: cgr.dev/chainguard/minio:latest@sha256:87896cb33f93ecfcca4e883c3fb2f86a0a1a600c003a104011ed30631c1869c3
+    profiles: [observability]
+    restart: unless-stopped
+    entrypoint: sh
+    command: ["-c", "mkdir -p /data/langfuse && exec minio server --address :9000 --console-address :9001 /data"]
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: ${LANGFUSE_MINIO_PASSWORD:?set LANGFUSE_MINIO_PASSWORD in deploy/.env}
+    ports:
+      - "127.0.0.1:${LANGFUSE_MINIO_PORT:-9090}:9000"
+    volumes:
+      - langfuse_minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  # ---------------------------------------------------------------------------
   # Application services (profile `app`) are added to this file by later tasks
   # and are NOT started by a plain `docker compose up`; use
   # `docker compose --profile app up` once they exist.
@@ -126,3 +308,8 @@ services:
 volumes:
   postgres_data:
   openviking_data:
+  langfuse_postgres_data:
+  langfuse_clickhouse_data:
+  langfuse_clickhouse_logs:
+  langfuse_redis_data:
+  langfuse_minio_data:

@@ -13,3 +13,4 @@ Template: [0000-template.md](0000-template.md). Index:
 | [0003](0003-pgvector-catalog-openviking-memory.md) | Postgres with pgvector for the catalog, OpenViking for memory, no second vector store | Accepted |
 | [0004](0004-five-whys-method.md) | 5 Whys as the v1 root-cause method; other methods are later skills | Accepted |
 | [0005](0005-evaluation-suite-first.md) | Seeded evaluation suite built in phase 0, before agent tuning | Accepted |
+| [0006](0006-langfuse-observability.md) | Langfuse for agent tracing and prompt management | Accepted |
