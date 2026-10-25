@@ -121,7 +121,7 @@ def _single_node(name: str, node: Callable[..., Any]) -> GraphFactory:
     builder.add_edge(START, name)
     builder.add_edge(name, END)
 
-    def factory(*, checkpointer: Any) -> Any:
+    def factory(*, checkpointer: Any, wiring: Any = None) -> Any:
         return builder.compile(checkpointer=checkpointer)
 
     return factory
@@ -219,3 +219,88 @@ class StubLangfuse:
 
     def shutdown(self) -> None:
         return None
+
+
+# --- per-connection catalog wiring (feat/catalog) ------------------------------------
+
+
+@dataclass(frozen=True)
+class CatalogFixture:
+    """In-memory repositories holding one DuckDB connection with an imported catalog."""
+
+    connections: Any
+    catalog: Any
+    connection_id: str
+    path: Any
+
+
+def make_warehouse(path: Any) -> Any:
+    """``plants`` (3 rows) and ``production`` (5 rows) in a fresh DuckDB file."""
+    import duckdb
+
+    con = duckdb.connect(str(path))
+    try:
+        con.execute("CREATE TABLE plants (plant_id VARCHAR NOT NULL, plant_name VARCHAR)")
+        con.execute("INSERT INTO plants VALUES ('P01','Alpha'),('P02','Beta'),('P03','Gamma')")
+        con.execute("CREATE TABLE production (ts INTEGER, units INTEGER NOT NULL)")
+        con.execute("INSERT INTO production SELECT i, i FROM range(5) t(i)")
+    finally:
+        con.close()
+    return path
+
+
+def catalog_fixture(path: Any, *, verified: bool, selected: tuple[str, ...] = ("plants",)) -> Any:
+    """Register ``path`` as a DuckDB connection, import it and select ``selected`` tables."""
+    import asyncio
+    from datetime import UTC, datetime
+
+    from rootcause.catalog.repository import InMemoryCatalogRepository
+    from rootcause.catalog.service import import_catalog
+    from rootcause.connections.repository import InMemoryConnectionRepository, NewConnection
+
+    connections = InMemoryConnectionRepository()
+    catalog = InMemoryCatalogRepository()
+
+    async def setup() -> str:
+        record = await connections.create(NewConnection(name="demo", kind="duckdb", path=str(path)))
+        await import_catalog(
+            record.id, connections=connections, catalog=catalog, settings=make_settings()
+        )
+        for table in await catalog.list_tables(record.id):
+            if table.name in selected:
+                await catalog.update_table(table.id, {"selected": True})
+        if verified:
+            await connections.update(record.id, {"read_only_verified_at": datetime.now(UTC)})
+        return str(record.id)
+
+    return CatalogFixture(connections, catalog, asyncio.run(setup()), path)
+
+
+@dataclass
+class FactorySpy:
+    """Graph factory recording every call; each graph replies with what it was wired for.
+
+    The reply is ``graph=default`` for the default graph and
+    ``graph=wired:<sorted table_docs keys>`` for a per-connection graph, followed by
+    the run's ``connection_id`` from the config.
+    """
+
+    calls: list[dict[str, Any]]
+
+    def __call__(self, *, checkpointer: Any, wiring: Any = None) -> Any:
+        self.calls.append({"checkpointer": checkpointer, "wiring": wiring})
+        tag = "default" if wiring is None else "wired:" + ",".join(sorted(wiring.table_docs))
+
+        def reply(state: MessagesState, config: RunnableConfig) -> dict[str, Any]:
+            connection_id = config.get("configurable", {}).get("connection_id")
+            return {"messages": [AIMessage(content=f"graph={tag} connection={connection_id}")]}
+
+        return _single_node("reply", reply)(checkpointer=checkpointer)
+
+    @property
+    def wired(self) -> list[Any]:
+        return [call["wiring"] for call in self.calls if call["wiring"] is not None]
+
+
+def with_connection(connection_id: str, text: str = QUESTION) -> dict[str, Any]:
+    return {**human_input(text), "context": {"connection_id": connection_id}}

@@ -1,17 +1,22 @@
 """Run config: Langfuse tracing per run (session = thread) and connection_id passthrough."""
 
+from pathlib import Path
+
 import pytest
 
 from tests.agent_service.conftest import ClientFactory
 from tests.agent_service.support import (
     HandlerSpy,
+    catalog_fixture,
     chat_graph,
     connection_echo_graph,
     create_thread,
     human_input,
     last_messages,
     make_settings,
+    make_warehouse,
     stream_run,
+    with_connection,
 )
 
 pytestmark = pytest.mark.unit
@@ -66,13 +71,20 @@ def test_langfuse_is_not_touched_when_disabled(
     assert langfuse_spy.calls == []
 
 
-def test_context_connection_id_reaches_the_graph_config(make_client: ClientFactory) -> None:
-    client = make_client(connection_echo_graph())
+def test_context_connection_id_reaches_the_graph_config(
+    make_client: ClientFactory, tmp_path: Path
+) -> None:
+    # Spec change (feat/catalog): a connection id must name a verified stored
+    # connection; the per-connection graph still sees it in its config.
+    fixture = catalog_fixture(make_warehouse(tmp_path / "w.duckdb"), verified=True)
+    client = make_client(
+        connection_echo_graph(), connections=fixture.connections, catalog=fixture.catalog
+    )
     thread_id = create_thread(client)
 
-    result = stream_run(client, thread_id, {**human_input(), "context": {"connection_id": "c-42"}})
+    result = stream_run(client, thread_id, with_connection(fixture.connection_id))
 
-    assert last_messages(result)[-1]["content"] == "connection=c-42"
+    assert last_messages(result)[-1]["content"] == f"connection={fixture.connection_id}"
 
 
 def test_connection_id_is_absent_without_context(make_client: ClientFactory) -> None:

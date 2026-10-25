@@ -591,3 +591,40 @@ def test_patch_column_does_not_accept_a_table_id(catalog_client: TestClient, imp
     response = catalog_client.patch(f"{CATALOG}/columns/{table['id']}", json={"selected": True})
 
     assert response.status_code == 404
+
+
+def test_truncated_introspection_does_not_delete_tables_it_did_not_see(
+    make_app: Any,
+    connection_repository: Any,
+    catalog_repository: Any,
+    catalog_embeddings: Any,
+    secret_key: str,
+    imported: str,
+    catalog_client: TestClient,
+) -> None:
+    """With ``ROOTCAUSE_INTROSPECT_MAX_TABLES=1`` only ``plants`` is seen (truncated)."""
+    from rootcause.api.routes.catalog import get_catalog_repository, get_embeddings
+    from rootcause.api.routes.connections import get_connection_repository
+
+    before = _tables(catalog_client, imported)
+    production = _by_name(before, "production")
+    catalog_client.patch(
+        f"{CATALOG}/tables/{production['id']}", json={"selected": True, "description": "Out."}
+    )
+    capped = make_app(secret_key=secret_key, introspect_max_tables="1")
+    capped.dependency_overrides[get_connection_repository] = lambda: connection_repository
+    capped.dependency_overrides[get_catalog_repository] = lambda: catalog_repository
+    capped.dependency_overrides[get_embeddings] = lambda: catalog_embeddings
+
+    with TestClient(capped) as client:
+        data = _import(client, imported)
+        after = _tables(client, imported)
+
+    assert data == {"tables": 2, "columns": 4}
+    assert [t["name"] for t in after] == ["plants", "production"]
+    kept = _by_name(after, "production")
+    assert (kept["id"], kept["selected"], kept["description"]) == (
+        production["id"],
+        True,
+        "Out.",
+    )
