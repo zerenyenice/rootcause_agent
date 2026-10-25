@@ -22,7 +22,26 @@ SPAN_ID_FIELD = "span_id"
 
 
 class _StdoutHandler(logging.StreamHandler[TextIO]):
-    """Marker subclass so reconfiguration replaces only the handler we own."""
+    """Marker subclass so reconfiguration replaces only the handler we own.
+
+    Logging must never take the process down: a write to a closed stream (for
+    example a replaced test stdout) is dropped instead of raising.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(sys.stdout)
+
+    @property
+    def stream(self) -> TextIO:
+        """Resolve ``sys.stdout`` per write so a swapped or closed stream is never held."""
+        return sys.stdout
+
+    @stream.setter
+    def stream(self, value: TextIO) -> None:
+        """Ignore assignments; the stream is always the live ``sys.stdout``."""
+
+    def handleError(self, record: logging.LogRecord) -> None:  # noqa: N802
+        """Swallow stream errors; logging failures are not worth crashing a request."""
 
 
 def add_trace_context(_logger: WrappedLogger, _method: str, event_dict: EventDict) -> EventDict:
@@ -86,7 +105,7 @@ def _install_stdout_handler(formatter: logging.Formatter, level: str) -> None:
     for handler in [h for h in root.handlers if isinstance(h, _StdoutHandler)]:
         root.removeHandler(handler)
         handler.close()
-    handler = _StdoutHandler(sys.stdout)
+    handler = _StdoutHandler()
     handler.setFormatter(formatter)
     root.addHandler(handler)
     root.setLevel(level)

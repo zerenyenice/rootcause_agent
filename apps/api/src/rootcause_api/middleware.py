@@ -15,19 +15,12 @@ from starlette.datastructures import MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from rootcause_api.envelope import REQUEST_ID_HEADER, fail
+from rootcause_api.security import security_headers
 from rootcause_core.settings import Settings
 
 REQUEST_ID_STATE_KEY = "request_id"
 REQUEST_ID_LOG_KEY = "request_id"
 UNKNOWN_CLIENT = "unknown"
-SECURITY_HEADERS = {
-    "X-Content-Type-Options": "nosniff",
-    "Referrer-Policy": "no-referrer",
-    "X-Frame-Options": "DENY",
-    "Cache-Control": "no-store",
-}
-HSTS_HEADER = "Strict-Transport-Security"
-HSTS_VALUE = "max-age=31536000; includeSubDomains"
 _VALID_REQUEST_ID = re.compile(r"^[A-Za-z0-9._\-]{1,128}$")
 
 
@@ -77,7 +70,7 @@ class SecurityHeadersMiddleware:
 
     def __init__(self, app: ASGIApp, *, hsts: bool = False) -> None:
         self.app = app
-        self.headers = {**SECURITY_HEADERS, **({HSTS_HEADER: HSTS_VALUE} if hsts else {})}
+        self.headers = security_headers(hsts=hsts)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
