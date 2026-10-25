@@ -122,9 +122,7 @@ def test_dimension_key_columns_present_and_non_null(
         ("material_lots", "lot_id"),
     ],
 )
-def test_primary_keys_are_unique(
-    tables: dict[str, pd.DataFrame], name: str, key: str
-) -> None:
+def test_primary_keys_are_unique(tables: dict[str, pd.DataFrame], name: str, key: str) -> None:
     assert tables[name][key].is_unique
 
 
