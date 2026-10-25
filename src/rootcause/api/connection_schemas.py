@@ -15,7 +15,7 @@ from typing import Annotated, Any, Literal
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, SecretStr, field_validator
 
 from rootcause.connections.models import MAX_PORT, MIN_PORT
-from rootcause.connections.probe import ProbeOutcome, SchemaInfo
+from rootcause.connections.probe import Introspection, ProbeOutcome
 from rootcause.connections.repository import ConnectionKind, ConnectionRecord
 
 DEFAULT_POSTGRES_PORT = 5432
@@ -169,10 +169,12 @@ class SchemaOut(BaseModel):
 
 class IntrospectionOut(BaseModel):
     schemas: list[SchemaOut]
+    truncated: bool  # more tables exist than ``introspect_max_tables`` lets through
 
     @classmethod
-    def of(cls, schemas: tuple[SchemaInfo, ...]) -> "IntrospectionOut":
+    def of(cls, introspection: Introspection) -> "IntrospectionOut":
         return cls(
+            truncated=introspection.truncated,
             schemas=[
                 SchemaOut(
                     name=schema.name,
@@ -188,6 +190,6 @@ class IntrospectionOut(BaseModel):
                         for table in schema.tables
                     ],
                 )
-                for schema in schemas
-            ]
+                for schema in introspection.schemas
+            ],
         )

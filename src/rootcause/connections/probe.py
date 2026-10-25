@@ -5,14 +5,13 @@ are reported with fixed, generic messages: the host, path, database name, passwo
 driver messages never leave this module, and only exception *types* are logged.
 """
 
-from collections.abc import Sequence
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
 
 import duckdb
 
-from rootcause.connections.duckdb_executor import ColumnInfo, DuckDBExecutor, TableInfo
+from rootcause.connections.duckdb_executor import ColumnInfo, DuckDBExecutor
 from rootcause.connections.postgres_executor import ConnectionFailed, PostgresExecutor
 from rootcause.connections.repository import ConnectionRecord
 from rootcause.connections.secrets import SecretCipher, SecretDecryptionError
@@ -68,14 +67,22 @@ class SchemaInfo:
     tables: tuple[TableSchema, ...]
 
 
-class _Introspectable(Protocol):
-    def list_tables(self) -> Sequence[TableInfo]: ...
+@dataclass(frozen=True, slots=True)
+class Introspection:
+    """Schemas of at most ``max_tables`` tables; ``truncated`` when more tables exist."""
 
-    def describe_table(self, name: str) -> Sequence[ColumnInfo]: ...
+    schemas: tuple[SchemaInfo, ...]
+    truncated: bool
 
 
 def _unreachable(message: str) -> ProbeOutcome:
     return ProbeOutcome(reachable=False, read_only=False, server_version=None, error=message)
+
+
+def _verification_failed() -> ProbeOutcome:
+    return ProbeOutcome(
+        reachable=True, read_only=False, server_version=None, error=VERIFICATION_FAILED_MESSAGE
+    )
 
 
 def _log_failure(event: str, record: ConnectionRecord, error: BaseException) -> None:
@@ -153,30 +160,33 @@ def _probe_postgres(record: ConnectionRecord, cipher: SecretCipher) -> ProbeOutc
     except SecretDecryptionError as error:
         _log_failure("connection_probe_undecryptable", record, error)
         return _unreachable(UNDECRYPTABLE_MESSAGE)
+    except RootCauseError as error:  # logged in, then failed (timeout, permission, ...)
+        _log_failure("connection_probe_open_failed", record, error)
+        return _verification_failed()
     with executor:
         try:
             version = executor.server_version()
             read_only = executor.is_read_only()
         except RootCauseError as error:
             _log_failure("connection_probe_check_failed", record, error)
-            return ProbeOutcome(
-                reachable=True,
-                read_only=False,
-                server_version=None,
-                error=VERIFICATION_FAILED_MESSAGE,
-            )
+            return _verification_failed()
     return ProbeOutcome(reachable=True, read_only=read_only, server_version=version, error=None)
 
 
-def introspect(record: ConnectionRecord, cipher: SecretCipher | None) -> tuple[SchemaInfo, ...]:
-    """Schemas with their tables (sorted by name), row estimates and columns.
+def introspect(
+    record: ConnectionRecord, cipher: SecretCipher | None, *, max_tables: int
+) -> Introspection:
+    """Schemas with the first ``max_tables`` tables in (schema, table) order, their row
+    estimates and columns.
 
     Raises:
         ConnectionUnavailable: the source cannot be opened.
     """
+    if max_tables < 1:
+        raise ValueError("max_tables must be at least 1")
     if record.kind == "duckdb":
         with open_duckdb(record) as duck:
-            return _schemas(duck, qualified=False)
+            return _duckdb_introspection(duck, max_tables)
     if cipher is None:
         raise ValueError("a cipher is required to introspect a Postgres connection")
     try:
@@ -187,19 +197,30 @@ def introspect(record: ConnectionRecord, cipher: SecretCipher | None) -> tuple[S
     if executor is None:
         raise ConnectionUnavailable()
     with executor:
-        return _schemas(executor, qualified=True)
+        page = executor.introspect(max_tables)
+    tables = (
+        (relation.schema, TableSchema(relation.name, relation.row_estimate, relation.columns))
+        for relation in page.relations
+    )
+    return Introspection(schemas=_grouped(tables), truncated=page.truncated)
 
 
-def _schemas(executor: _Introspectable, *, qualified: bool) -> tuple[SchemaInfo, ...]:
-    """Group ``list_tables`` by schema; DuckDB names are bare (schema ``main``)."""
+def _duckdb_introspection(duck: DuckDBExecutor, max_tables: int) -> Introspection:
+    """DuckDB tables are bare names in schema ``main``; one ``describe_table`` per kept table."""
+    listed = sorted(duck.list_tables(), key=lambda table: table.name)
+    tables = (
+        (DUCKDB_SCHEMA, TableSchema(table.name, table.row_count, duck.describe_table(table.name)))
+        for table in listed[:max_tables]
+    )
+    return Introspection(schemas=_grouped(tables), truncated=len(listed) > max_tables)
+
+
+def _grouped(tables: Iterable[tuple[str, TableSchema]]) -> tuple[SchemaInfo, ...]:
+    """Tables grouped by schema; schemas and tables sorted by name."""
     grouped: dict[str, list[TableSchema]] = {}
-    for table in executor.list_tables():
-        schema, _, name = table.name.rpartition(".") if qualified else ("", "", table.name)
-        columns = tuple(executor.describe_table(table.name))
-        grouped.setdefault(schema or DUCKDB_SCHEMA, []).append(
-            TableSchema(name=name, row_estimate=table.row_count, columns=columns)
-        )
+    for schema, table in tables:
+        grouped.setdefault(schema, []).append(table)
     return tuple(
-        SchemaInfo(name=schema, tables=tuple(sorted(tables, key=lambda t: t.name)))
-        for schema, tables in sorted(grouped.items())
+        SchemaInfo(name=schema, tables=tuple(sorted(members, key=lambda t: t.name)))
+        for schema, members in sorted(grouped.items())
     )

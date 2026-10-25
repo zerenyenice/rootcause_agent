@@ -3,11 +3,13 @@
 Passwords are encrypted with ``ROOTCAUSE_SECRET_KEY`` before they are stored and are
 never returned or logged. ``POST /{id}/test`` records the outcome: a reachable,
 read-only connection gets ``read_only_verified_at`` (ADR-0002); anything else clears it,
-and so does any change to where or as whom the connection logs in.
+and so does any change to where or as whom the connection logs in. A probe whose login
+changed while it ran records nothing (the change already cleared the verification).
 """
 
 import uuid
 from datetime import UTC, datetime
+from functools import partial
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Body, Depends, FastAPI, Request
@@ -197,14 +199,13 @@ async def test_connection(
     record = await _require(repository, connection_id)
     outcome = await run_in_threadpool(probe, record, _cipher_for(record, settings))
     verified = outcome.reachable and outcome.read_only
-    await repository.update(
-        connection_id, {VERIFIED_FIELD: datetime.now(UTC) if verified else None}
-    )
+    recorded = await repository.record_verification(record, datetime.now(UTC) if verified else None)
     _logger.info(
         "connection_tested",
         connection_id=str(connection_id),
         reachable=outcome.reachable,
         read_only=outcome.read_only,
+        recorded=recorded,
     )
     return ok(ProbeOut.of(outcome), _meta(request))
 
@@ -213,7 +214,11 @@ async def test_connection(
 async def introspect_connection(
     request: Request, connection_id: ConnectionId, repository: Repository, settings: AppSettings
 ) -> Envelope[IntrospectionOut]:
-    """Schemas, tables (sorted), row estimates and columns; 503 when unreachable."""
+    """Schemas, tables (sorted, capped), row estimates and columns; 503 when unreachable."""
     record = await _require(repository, connection_id)
-    schemas = await run_in_threadpool(introspect, record, _cipher_for(record, settings))
-    return ok(IntrospectionOut.of(schemas), _meta(request))
+    introspection = await run_in_threadpool(
+        partial(introspect, max_tables=settings.introspect_max_tables),
+        record,
+        _cipher_for(record, settings),
+    )
+    return ok(IntrospectionOut.of(introspection), _meta(request))

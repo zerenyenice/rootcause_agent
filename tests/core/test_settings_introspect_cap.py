@@ -1,8 +1,8 @@
 """``introspect_max_tables``: cap on the tables one ``/introspect`` response lists (RED)."""
 
 import pytest
-from pydantic import ValidationError
 
+from rootcause.errors import ConfigurationError
 from rootcause.settings import get_settings
 
 pytestmark = pytest.mark.unit
@@ -31,5 +31,7 @@ def test_introspect_max_tables_rejects_non_positive_or_non_integer_values(
 ) -> None:
     monkeypatch.setenv("ROOTCAUSE_INTROSPECT_MAX_TABLES", value)
 
-    with pytest.raises(ValidationError):
+    with pytest.raises(ConfigurationError) as excinfo:
         get_settings()
+
+    assert "ROOTCAUSE_INTROSPECT_MAX_TABLES" in str(excinfo.value)

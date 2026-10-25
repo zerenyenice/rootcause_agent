@@ -1,21 +1,22 @@
 # web
 
-Minimal Next.js 15 (App Router) chat UI for RootCause. It streams from a
-LangGraph Server with `useStream` and renders the final WhyChain report as
+Minimal Next.js 15 (App Router) chat UI for RootCause. It streams from the
+RootCause agent service (`rootcause.agent_service`) with `useStream` over the
+SDK's `FetchStreamTransport` and renders the final WhyChain report as
 markdown. MVP scope only: no auth, catalog or management screens.
 
 ## Run
 
 ```bash
-cp .env.example .env.local   # optional; defaults match `langgraph dev`
+cp .env.example .env.local   # optional; defaults match the local services
 npm ci
 npm run dev                  # http://localhost:3000
 ```
 
-| Variable                        | Default                 | Meaning                   |
-| ------------------------------- | ----------------------- | ------------------------- |
-| `NEXT_PUBLIC_LANGGRAPH_API_URL` | `http://localhost:2024` | LangGraph Server base URL |
-| `NEXT_PUBLIC_ASSISTANT_ID`      | `rootcause`             | Registered graph name     |
+| Variable                | Default                 | Meaning                           |
+| ----------------------- | ----------------------- | --------------------------------- |
+| `NEXT_PUBLIC_AGENT_URL` | `http://localhost:8100` | Agent service base URL            |
+| `NEXT_PUBLIC_API_URL`   | `http://localhost:8000` | Backend API (connections/catalog) |
 
 ## Scripts
 

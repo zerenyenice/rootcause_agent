@@ -1,18 +1,27 @@
 # deploy
 
-Docker Compose stack for local development and single-host pilots. Task
-T002 (`docs/plans/T002-docker-compose-stack.md`); owner agent `devops`.
+Docker Compose stack for local development and single-host pilots: the
+stateful services (T002, `docs/plans/T002-docker-compose-stack.md`) and the
+MVP application services `web`, `api`, `agent`, `migrate`
+(`docs/plans/MVP.md`). Owner agent `devops`.
+
+> **No authentication in the MVP.** The web UI, the API and the agent service
+> have no login. Every port binds to `127.0.0.1`, so only the local user can
+> reach them; do not publish them on another interface or put them behind a
+> public proxy (auth is a `later` item).
 
 | File | Purpose |
 |------|---------|
-| `docker-compose.yml` | `postgres` (Postgres 16 + pgvector) and `openviking` (OpenViking 0.3.x server); placeholders for `api`/`web` |
+| `docker-compose.yml` | `postgres` (Postgres 16 + pgvector), `openviking` (OpenViking 0.3.x server) and the application services `migrate`, `api`, `agent`, `web` |
+| `../Dockerfile` | One Python image for `api`, `agent` and `migrate` (uv, `uv sync --locked --no-dev`, non-root) |
+| `../web/Dockerfile` | Next.js standalone image for `web` (non-root) |
 | `.env.example` | Every variable the stack needs, placeholder values only. Copy to `deploy/.env` (gitignored) |
 | `postgres/init.sql` | First-start bootstrap: roles `rootcause_owner`/`rootcause_migrator`/`rootcause_app`, `CREATE EXTENSION vector`, schemas `app`, `catalog`, `audit` owned by `rootcause_owner`, runtime grants |
 | `alembic.ini` | Dev-only config for plain `alembic`; use the `rootcause-db` CLI everywhere else |
 | `openviking/ov.conf` | Secret-free OpenViking config template; `${VAR}` references are expanded by the server from the container environment |
-| `docker-compose.yml` profile `observability` | Optional self-hosted Langfuse v4 (web, worker, Postgres, ClickHouse, Redis, MinIO) for agent traces and prompt management (T009, ADR-0006) |
+| `docker-compose.yml` profile `observability` | Optional self-hosted Langfuse v4 (web, worker, Postgres, ClickHouse, Redis, MinIO) for agent traces and prompt management (T009, ADR-0006); `langfuse` is an alias of the same profile |
 
-Both services publish their ports on `127.0.0.1` only, restart
+`postgres` and `openviking` publish their ports on `127.0.0.1` only, restart
 `unless-stopped`, persist to named volumes (`rootcause_postgres_data`,
 `rootcause_openviking_data`) and have healthchecks, so `depends_on:
 condition: service_healthy` works for the application services.
@@ -22,8 +31,12 @@ condition: service_healthy` works for the application services.
 ```bash
 cp deploy/.env.example deploy/.env          # once; then replace EVERY placeholder
 openssl rand -hex 32                         # for POSTGRES_PASSWORD / OPENVIKING_ROOT_API_KEY
-docker compose -f deploy/docker-compose.yml up -d
+docker compose -f deploy/docker-compose.yml up -d --build
 ```
+
+This starts every service except the optional Langfuse profile. To run only
+the stateful services (e.g. while running the API on the host):
+`docker compose -f deploy/docker-compose.yml up -d postgres openviking`.
 
 Compose loads `deploy/.env` automatically (the project directory is the
 directory of the compose file), so `cd deploy && docker compose up -d` is
@@ -142,13 +155,14 @@ cp deploy/langfuse.env.example deploy/langfuse.env   # once; replace EVERY place
 openssl rand -hex 32                                 # one per secret
 docker compose -f deploy/docker-compose.yml --profile observability up -d
 docker compose -f deploy/docker-compose.yml --profile observability ps   # all "healthy"
-# Langfuse UI: http://localhost:3000
+# Langfuse UI: http://localhost:3001
 ```
 
 - Server **v4** (`langfuse/langfuse:4.70.0`, `langfuse/langfuse-worker:4.70.0`).
   The Python SDK 5.x pinned in `pyproject.toml` supports self-hosted
   Langfuse v4.59.0 or later only; v3 servers are not supported.
-- Six services: `langfuse-web` (UI + API, `127.0.0.1:${LANGFUSE_PORT:-3000}`),
+- Six services: `langfuse-web` (UI + API, `127.0.0.1:${LANGFUSE_PORT:-3001}`;
+  3001 because the RootCause web UI owns 3000),
   `langfuse-worker`, `langfuse-postgres` (its own database, separate from
   the RootCause one), `langfuse-clickhouse`, `langfuse-redis`,
   `langfuse-minio` (S3, `127.0.0.1:${LANGFUSE_MINIO_PORT:-9090}` for media
@@ -186,13 +200,26 @@ docker compose -f deploy/docker-compose.yml --profile observability ps   # all "
   model answers. Keep project membership admin-only and the UI on
   `127.0.0.1` (reach it through an SSH tunnel or an authenticated proxy).
 
-Point RootCause at it (the API's `.env` or process environment):
+Point RootCause at it (`deploy/.env`, or a host-run API's `.env`):
 
 ```bash
 ROOTCAUSE_LANGFUSE_ENABLED=true
-ROOTCAUSE_LANGFUSE_HOST=http://localhost:3000
+ROOTCAUSE_LANGFUSE_HOST=http://localhost:3001     # host-run API/agent only
 ROOTCAUSE_LANGFUSE_PUBLIC_KEY=pk-lf-...
 ROOTCAUSE_LANGFUSE_SECRET_KEY=sk-lf-...
+```
+
+The `api` and `agent` containers ignore `ROOTCAUSE_LANGFUSE_HOST` from the
+file: compose sets it to `CONTAINER_LANGFUSE_HOST`, default
+`http://langfuse-web:3000` (the profile's service inside the compose
+network). For Langfuse Cloud set `CONTAINER_LANGFUSE_HOST` to its https URL
+and skip the profile. Tracing the compose stack end to end:
+
+```bash
+docker compose -f deploy/docker-compose.yml --profile observability up -d
+# create the project keys (UI or LANGFUSE_INIT_* in deploy/langfuse.env), put
+# them in deploy/.env with ROOTCAUSE_LANGFUSE_ENABLED=true, then recreate:
+docker compose -f deploy/docker-compose.yml --profile observability up -d --force-recreate api agent
 ```
 
 `ROOTCAUSE_LANGFUSE_HOST` must be https, except for loopback addresses
@@ -241,11 +268,53 @@ docker volume rm rootcause_langfuse_postgres_data rootcause_langfuse_clickhouse_
   rootcause_langfuse_clickhouse_logs rootcause_langfuse_redis_data rootcause_langfuse_minio_data
 ```
 
-## api / web services
+## Application services: web, api, agent, migrate
 
-The `api` (T005, FastAPI beside LangGraph Server) and `web` (T070, Next.js)
-services are added to this same compose file under the `app` profile, so a
-plain `docker compose up` keeps starting only the stateful services. Until
-then run the API on the host against `localhost:5432` /
-`http://localhost:1933` (see the `ROOTCAUSE_*` block in `.env.example`);
-inside the compose network the hosts are `postgres` and `openviking`.
+| Service | Image | Host port | Command |
+|---------|-------|-----------|---------|
+| `migrate` | `rootcause-app:dev` (repo-root `Dockerfile`) | none | `rootcause-db upgrade` once, as the migrator role, after `postgres` is healthy |
+| `api` | `rootcause-app:dev` | `127.0.0.1:${API_PORT:-8000}` | `uvicorn --factory rootcause.api.main:create_app` |
+| `agent` | `rootcause-app:dev` | `127.0.0.1:${AGENT_PORT:-8100}` | `uvicorn --factory rootcause.agent_service.main:create_app` |
+| `web` | `rootcause-web:dev` (`web/Dockerfile`) | `127.0.0.1:${WEB_PORT:-3000}` | `node server.js` (Next.js standalone) |
+
+- `api` and `agent` start only after `migrate` exits successfully
+  (`service_completed_successfully`); a failed migration keeps them down
+  (`docker compose logs migrate`).
+- Settings: the three Python services read `deploy/.env` (`env_file`).
+  Compose then overrides the host-oriented values for the compose network:
+  `ROOTCAUSE_DATABASE_URL` (runtime role `rootcause_app`, host `postgres`),
+  `ROOTCAUSE_OPENVIKING_URL` (`http://openviking:1933`),
+  `ROOTCAUSE_LANGFUSE_HOST` (`CONTAINER_LANGFUSE_HOST`) and
+  `ROOTCAUSE_WAREHOUSE_PATH` (`CONTAINER_WAREHOUSE_PATH`, unset by default).
+  Only `migrate` gets `ROOTCAUSE_MIGRATION_DATABASE_URL`; the stack's own
+  secrets (`POSTGRES_*` passwords, `OPENVIKING_*` keys) are blanked for all
+  three.
+- Healthchecks: `api` and `agent` `GET /health`, `web` `GET /`.
+- `web` reads `NEXT_PUBLIC_API_URL` / `NEXT_PUBLIC_AGENT_URL` at **build**
+  time (Next.js inlines them into the browser bundle). They are the URLs the
+  browser uses, so they point at the published host ports. After changing
+  them (or the ports) rebuild: `docker compose -f deploy/docker-compose.yml up -d --build web`.
+- Images are built locally (`up --build`) and never pushed. Base images are
+  pinned by exact tag plus the digest observed at pin time (comments in the
+  Dockerfiles).
+
+### Demo warehouse
+
+The host directory `DATA_DIR` (default `../data`, i.e. `<repo>/data`,
+gitignored) is mounted **read-only** at `/data` in `api` and `agent`.
+Generate the manufacturing demo warehouse on the host, from the repo root:
+
+```bash
+uv run python -m rootcause.evals.manufacturing generate --out data/warehouse
+```
+
+Then add a DuckDB connection in the UI (or `POST /api/v1/connections`) with
+the path `/data/warehouse/warehouse.duckdb` (the container path, not the host
+path). The file must be readable by uid 10001 (the containers' user).
+
+### Running the API on the host instead
+
+Start only `postgres` (and `openviking`), copy `deploy/.env` to the repo root
+and run `uv run uvicorn --factory rootcause.api.main:create_app`: the
+`localhost` URLs in the file are written for that case. Stop the `api` /
+`agent` containers first if they hold the same ports.

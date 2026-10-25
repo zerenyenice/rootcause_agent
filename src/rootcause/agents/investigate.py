@@ -52,7 +52,8 @@ def investigate(question: str, *, handle: OrchestratorHandle | None = None) -> W
 
     Without ``handle`` the orchestrator is built from settings over the configured
     warehouse. Returns ``None`` for a blank question, when the orchestrator never
-    delegated to the root-cause subagent, or when the step budget ran out.
+    delegated to the root-cause subagent, or when the step budget ran out before
+    the subagent returned its chain.
 
     Raises:
         ConfigurationError: no handle is given and the warehouse is not configured
@@ -113,9 +114,19 @@ def _run(handle: OrchestratorHandle, question: str) -> WhyChain | None:
             payload = Command(resume=_reject_all(pending))
     except GraphRecursionError:
         _logger.warning("investigation_step_budget_exhausted", max_steps=config["recursion_limit"])
-        return _log_outcome(None, resumes)
+        # The subagent may have returned its chain before the orchestrator ran out.
+        return _log_outcome(_why_chain(_saved_messages(handle, config)), resumes)
     _logger.warning("investigation_resume_budget_exhausted", max_resumes=max_resumes)
     return _log_outcome(_why_chain(result.get("messages", ())), max_resumes)
+
+
+def _saved_messages(handle: OrchestratorHandle, config: RunnableConfig) -> Sequence[BaseMessage]:
+    """Messages checkpointed for the run's thread; empty without a checkpointer."""
+    try:
+        snapshot = handle.graph.get_state(config)
+    except ValueError:  # compiled without a checkpointer
+        return ()
+    return tuple(snapshot.values.get("messages", ()))
 
 
 def _reject_all(interrupts: Sequence[Any]) -> dict[str, Any]:

@@ -26,6 +26,8 @@ ConnectionKind = Literal["postgres", "duckdb"]
 # Record field -> ``app.connections`` column, where the names differ.
 _COLUMN_OF = {"name": "display_name", "kind": "dialect", "user": "username"}
 VERIFIED_FIELD = "read_only_verified_at"
+# Where and as whom a connection logs in; a probe result is only valid for these values.
+LOGIN_FIELDS = ("host", "port", "database", "user", "sslmode", "path", "encrypted_secret")
 UPDATABLE_FIELDS = frozenset(
     {
         "name",
@@ -101,6 +103,13 @@ class ConnectionRepository(Protocol):
 
     async def delete(self, connection_id: uuid.UUID) -> bool: ...
 
+    async def record_verification(
+        self, probed: ConnectionRecord, verified_at: datetime | None
+    ) -> bool:
+        """Set ``read_only_verified_at`` only if the login (``LOGIN_FIELDS``) still equals
+        ``probed``'s; returns whether it was recorded."""
+        ...
+
 
 def _touches(changes: Mapping[str, Any]) -> bool:
     """Whether ``changes`` edit the connection itself (a probe result alone does not)."""
@@ -150,11 +159,24 @@ class InMemoryConnectionRepository:
         self._records = {**self._records, connection_id: updated}
         return updated
 
+    async def record_verification(
+        self, probed: ConnectionRecord, verified_at: datetime | None
+    ) -> bool:
+        current = self._records.get(probed.id)
+        if current is None or _login(current) != _login(probed):
+            return False
+        await self.update(probed.id, {VERIFIED_FIELD: verified_at})
+        return True
+
     async def delete(self, connection_id: uuid.UUID) -> bool:
         if connection_id not in self._records:
             return False
         self._records = {key: rec for key, rec in self._records.items() if key != connection_id}
         return True
+
+
+def _login(record: ConnectionRecord) -> tuple[Any, ...]:
+    return tuple(getattr(record, name) for name in LOGIN_FIELDS)
 
 
 def _columns(values: Mapping[str, Any]) -> dict[str, Any]:
@@ -221,6 +243,25 @@ class SqlConnectionRepository:
         async with self._sessions.begin() as session:
             row = await session.scalar(statement)
         return None if row is None else _record(row)
+
+    async def record_verification(
+        self, probed: ConnectionRecord, verified_at: datetime | None
+    ) -> bool:
+        # One conditional UPDATE: a concurrent login change makes it match no row.
+        unchanged = [
+            getattr(Connection, _COLUMN_OF.get(name, name)).is_not_distinct_from(
+                getattr(probed, name)
+            )
+            for name in LOGIN_FIELDS
+        ]
+        statement = (
+            update(Connection)
+            .where(Connection.id == probed.id, *unchanged)
+            .values({VERIFIED_FIELD: verified_at, "updated_at": Connection.updated_at})
+            .returning(Connection.id)
+        )
+        async with self._sessions.begin() as session:
+            return await session.scalar(statement) is not None
 
     async def delete(self, connection_id: uuid.UUID) -> bool:
         statement = (

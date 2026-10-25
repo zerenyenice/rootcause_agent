@@ -1,0 +1,15 @@
+# Build context of web/Dockerfile (docker compose builds it from web/).
+# Never send local secrets, dependencies or build output to the daemon:
+# the image installs from package-lock.json and builds from source.
+.env
+.env.*
+node_modules
+.next
+coverage
+data
+.git
+.gitignore
+Dockerfile
+.dockerignore
+*.tsbuildinfo
+npm-debug.log*

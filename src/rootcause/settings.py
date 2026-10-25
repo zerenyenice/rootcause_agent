@@ -43,11 +43,15 @@ ValidationFailures = tuple[tuple[str, str], ...]
 LlmProvider = Literal["anthropic", "azure_openai"]
 LlmRole = Literal["orchestrator", "fast", "reasoning"]
 LLM_ROLES: tuple[LlmRole, ...] = ("orchestrator", "fast", "reasoning")
+ReasoningEffort = Literal["none", "minimal", "low", "medium", "high"]
 EmbeddingProvider = Literal["azure_openai", "openai_compatible"]
 PromptSource = Literal["files", "langfuse"]
 # Settings fields Langfuse needs whenever tracing or remote prompts are switched on.
 LANGFUSE_CREDENTIAL_FIELDS = ("langfuse_host", "langfuse_public_key", "langfuse_secret_key")
 LOOPBACK_HOSTNAME = "localhost"
+# Browser origins allowed to call the agent service (CORS): ``scheme://host[:port]``.
+ORIGIN_PATTERN = re.compile(r"^https?://[A-Za-z0-9.\-]+(?::[0-9]{1,5})?$")
+DEFAULT_AGENT_ALLOWED_ORIGINS = ("http://localhost:3000",)
 PLAINTEXT_HOST_ERROR = (
     "langfuse_host must use https unless it is a loopback address or a "
     "single-label service name (for example a compose service)"
@@ -132,6 +136,8 @@ class Settings(BaseSettings):
     otel_endpoint: AnyHttpUrl | None = None
     service_name: str = Field(default="rootcause", min_length=1)
     rate_limit: str = "120/minute"
+    # JSON list in the environment, e.g. '["http://localhost:3000"]'.
+    agent_allowed_origins: tuple[str, ...] = DEFAULT_AGENT_ALLOWED_ORIGINS
     orchestrator_model: str = Field(default="anthropic:claude-opus-5", min_length=1)
     fast_model: str = Field(default="anthropic:claude-sonnet-5", min_length=1)
     reasoning_model: str = Field(default="anthropic:claude-opus-5", min_length=1)
@@ -142,6 +148,8 @@ class Settings(BaseSettings):
     investigation_max_tool_calls: int = Field(default=40, gt=0)
     # Wall-clock budget (seconds) of one investigate() run, checked between resumes.
     investigation_timeout_seconds: int = Field(default=600, gt=0)
+    # Most tables one ``GET /connections/{id}/introspect`` response lists (the rest is cut).
+    introspect_max_tables: int = Field(default=1000, gt=0)
     # DuckDB warehouse file the agent queries read-only; ``None`` means none is configured.
     warehouse_path: Path | None = None
     db_pool_size: int = Field(default=5, gt=0)
@@ -153,6 +161,11 @@ class Settings(BaseSettings):
     orchestrator_provider: LlmProvider | None = None
     fast_provider: LlmProvider | None = None
     reasoning_provider: LlmProvider | None = None
+    # Per-role reasoning effort for Azure OpenAI models; ``None`` keeps the provider
+    # default. Anthropic models ignore it.
+    orchestrator_reasoning_effort: ReasoningEffort | None = None
+    fast_reasoning_effort: ReasoningEffort | None = None
+    reasoning_reasoning_effort: ReasoningEffort | None = None
     anthropic_api_key: SecretStr | None = None
     azure_openai_endpoint: AnyHttpUrl | None = None
     azure_openai_api_key: SecretStr | None = None
@@ -203,6 +216,14 @@ class Settings(BaseSettings):
             raise ValueError(SECRET_KEY_FORMAT_ERROR)
         return value
 
+    @field_validator("agent_allowed_origins")
+    @classmethod
+    def _validate_origins(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        """Exact origins only (no wildcard, path or trailing slash): CORS compares strings."""
+        if any(ORIGIN_PATTERN.fullmatch(origin) is None for origin in value):
+            raise ValueError("agent_allowed_origins must be origins like 'https://host:port'")
+        return value
+
     @field_validator("langfuse_host")
     @classmethod
     def _require_https_for_routable_hosts(cls, value: AnyHttpUrl | None) -> AnyHttpUrl | None:
@@ -218,6 +239,11 @@ class Settings(BaseSettings):
         """Resolve the chat provider for ``role``: its override, else ``llm_provider``."""
         override: LlmProvider | None = getattr(self, f"{role}_provider")
         return override if override is not None else self.llm_provider
+
+    def reasoning_effort_for(self, role: LlmRole) -> ReasoningEffort | None:
+        """The reasoning effort configured for ``role`` (``None``: provider default)."""
+        effort: ReasoningEffort | None = getattr(self, f"{role}_reasoning_effort")
+        return effort
 
     @model_validator(mode="after")
     def _require_azure_fields(self) -> Self:
