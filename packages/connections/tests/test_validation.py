@@ -286,7 +286,7 @@ def test_validation_result_is_frozen_and_uses_tuples(v) -> None:
     result = v.validate_sql("SELECT a FROM t", "postgres")
 
     with pytest.raises(dataclasses.FrozenInstanceError):
-        result.ok = False  # type: ignore[misc]
+        result.ok = False
     assert isinstance(result.errors, tuple)
     assert isinstance(result.warnings, tuple)
     assert isinstance(result.referenced_tables, tuple)
@@ -315,3 +315,28 @@ def test_issue_code_enum_exposes_planned_members(v) -> None:
         "UNKNOWN_COLUMN",
         "UNSUPPORTED_DIALECT",
     } <= names
+
+
+@pytest.mark.unit
+def test_catalog_qualified_unknown_column_on_known_table_is_error(v, catalog) -> None:
+    result = v.validate_sql("SELECT o.nope FROM orders o", "postgres", catalog=catalog)
+
+    assert result.ok is False
+    assert "UNKNOWN_COLUMN" in _codes(result.errors)
+
+
+@pytest.mark.unit
+def test_postgres_limit_all_is_left_untouched(v) -> None:
+    result = v.validate_sql("SELECT a FROM t LIMIT ALL", "postgres")
+
+    assert result.ok is True
+    assert result.limit_injected is False
+    assert result.sql.upper().endswith("LIMIT ALL")
+
+
+@pytest.mark.unit
+def test_comment_only_input_is_parse_error(v) -> None:
+    result = v.validate_sql("-- nothing", "postgres")
+
+    assert result.ok is False
+    assert "PARSE_ERROR" in _codes(result.errors)
