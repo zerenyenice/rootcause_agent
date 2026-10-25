@@ -11,7 +11,9 @@ therefore has two concerns:
    `dependency-audit` checks the locked runtime dependency set for known
    vulnerabilities; `db-migrations` applies, reverses and re-applies the
    Alembic chain against a real Postgres 16 + pgvector and runs the
-   integration tests there.
+   integration tests there; `web-quality` runs the Next.js chat UI's (`web/`)
+   lint → typecheck → format → test (80% coverage) → build → `npm audit`
+   chain.
 2. **Harness integrity** — generated agent surfaces must match their
    sources, tracked shell/workflow/JSON files must lint and parse clean, no
    secret ever lands in history, and every commit carries this project's
@@ -95,6 +97,49 @@ for a clean audit of a real dependency tree.
 **Why:** `rules/devops/security.md` requires a dependency audit in CI; new
 HIGH/CRITICAL advisories are review findings to act on (bump, pin, or an
 explicitly justified `--ignore-vuln`), not noise to silence.
+
+### `web-quality`
+
+**What it checks:** the Next.js chat UI in `web/`, using the scripts from
+`web/package.json` in fail-fast order. Every `run:` step uses
+`working-directory: web` (job-level `defaults.run`).
+
+1. `actions/setup-node` (SHA-pinned, v7.1.0) installs Node 22 (`engines.node`
+   is `>=22`), with the npm cache keyed on `web/package-lock.json`.
+2. `npm ci` installs exactly what `package-lock.json` pins and fails if it
+   has drifted from `package.json` (never a bare `npm install`, per
+   `rules/devops/security.md`).
+3. `npm run lint` runs `eslint .`.
+4. `npm run typecheck` runs `tsc --noEmit`.
+5. `npm run format:check` runs `prettier --check .`.
+6. `npm test` runs `vitest run --coverage`. **Under 80% the step fails**,
+   because `coverage.thresholds` in `web/vitest.config.mts` sets lines,
+   functions, branches and statements to 80. That config is where the
+   frontend gate lives, so lowering it is a Gate 2 override only the user can
+   grant (`rules/devops/ci-cd.md` § Never weaken to go green).
+7. `npm run build` runs `next build`, the production build.
+8. `npm audit --audit-level=high` fails on any HIGH or CRITICAL advisory in
+   the installed tree.
+
+`web/coverage/` (HTML, `clover.xml`, `coverage-final.json`) is uploaded as
+the `web-coverage` artifact with `if: always()` and 7-day retention, the same
+policy as `coverage-xml`.
+
+**Why:** this is the frontend half of "CI mirrors the merge gate": the same
+commands a developer runs in `web/`, with the same 80% bar as
+`python-quality`. There is no `paths:` filter, because `ci.yml` uses none and
+a required check has to report on every PR (a path-filtered required check
+that never runs leaves the PR blocked as "expected").
+
+**Note:** `web/.npmrc` sets `legacy-peer-deps=true`, so `npm ci` in CI
+resolves peer dependencies the same lenient way it does locally.
+
+**Reproduce locally** (Node 22, from the repo root):
+
+```bash
+cd web && npm ci && npm run lint && npm run typecheck && npm run format:check \
+  && npm test && npm run build && npm audit --audit-level=high
+```
 
 ### `db-migrations`
 
@@ -423,9 +468,10 @@ actors):**
   values above exactly): `python-quality`, `dependency-audit`,
   `harness-sync`, `lint-shell`, `lint-workflows`, `validate-json`,
   `compose-config`, `secret-scan`, `commit-protocol` (the last enforces the
-  git-audit-trail guarantee the whole protocol depends on), and
-  `db-migrations`. `python-quality` and `dependency-audit` were added in
-  T003, `compose-config` in T002 and `db-migrations` in T006;
+  git-audit-trail guarantee the whole protocol depends on),
+  `db-migrations`, and `web-quality`. `python-quality` and
+  `dependency-audit` were added in T003, `compose-config` in T002,
+  `db-migrations` in T006 and `web-quality` with the chat UI (PR #128);
   the Lead adds each to the ruleset after its PR merges (a check cannot be
   required before it exists on the base branch).
 - Require branches to be up to date before merging (strict policy).
