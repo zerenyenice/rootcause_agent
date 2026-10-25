@@ -24,6 +24,12 @@ BURN_IN_DAYS = 90
 MAX_NULL_RUN_SHARE = 0.35
 MAX_CLAIMS_PER_RUN = 8
 MAX_DAY_TO_MEDIAN = 4
+ANNUAL_CLAIMS = 6000
+CLAIM_RATE_TOLERANCE = 0.10
+EARLY_DAYS = 30
+LATE_START_DAY = 120
+STATIONARITY_LOW = 0.4
+STATIONARITY_HIGH = 1.6
 SENTINELS = {"None", "nan", "<NA>"}
 
 TEXT_NULLABLE = [
@@ -85,8 +91,30 @@ def test_claim_lag_is_between_30_and_90_days(year_tables: dict[str, pd.DataFrame
     ).dt.days
 
     assert len(joined) > 0
+    assert (pd.to_datetime(joined["claim_date"]) > pd.to_datetime(joined["ts"])).all()
     assert lag.min() >= MIN_LAG_DAYS
     assert lag.max() <= MAX_LAG_DAYS
+
+
+@pytest.mark.unit
+def test_claim_rate_for_runs_in_window(year_tables: dict[str, pd.DataFrame]) -> None:
+    in_window = len(year_tables["warranty_claims"])
+    expected = ANNUAL_CLAIMS / 365 * YEAR_DAYS
+
+    assert (
+        expected * (1 - CLAIM_RATE_TOLERANCE) <= in_window <= expected * (1 + CLAIM_RATE_TOLERANCE)
+    )
+
+
+@pytest.mark.unit
+def test_claim_rate_is_stationary_after_burn_in(year_tables: dict[str, pd.DataFrame]) -> None:
+    claims = year_tables["warranty_claims"]
+    day = (pd.to_datetime(claims["claim_date"]).dt.normalize() - pd.Timestamp(START)).dt.days
+    early_rate = (day < EARLY_DAYS).sum() / EARLY_DAYS
+    late_rate = ((day >= LATE_START_DAY) & (day < YEAR_DAYS)).sum() / (YEAR_DAYS - LATE_START_DAY)
+
+    assert late_rate > 0
+    assert STATIONARITY_LOW <= early_rate / late_rate <= STATIONARITY_HIGH
 
 
 @pytest.mark.unit

@@ -153,13 +153,16 @@ def test_event_rate_matches_prd_volume(
 
 
 @pytest.mark.unit
-def test_warranty_claim_rate_for_runs_in_window(tables: dict[str, pd.DataFrame]) -> None:
-    runs = set(tables["production_runs"]["run_id"])
+def test_warranty_claims_sanity_in_30_day_window(tables: dict[str, pd.DataFrame]) -> None:
     claims = tables["warranty_claims"]
+    runs = tables["production_runs"]
+    window_start = pd.to_datetime(runs["ts"]).min().normalize()
+    window_end = window_start + pd.Timedelta(days=DAYS)
+    claim_dates = pd.to_datetime(claims["claim_date"])
 
-    in_window = int(claims["run_id"].isin(runs).sum())
-
-    assert _within(in_window, 6000, 0.5)
+    assert len(claims) > 0
+    assert ((claim_dates >= window_start) & (claim_dates < window_end)).all()
+    assert claims["run_id"].dropna().isin(runs["run_id"]).all()
 
 
 @pytest.mark.unit
@@ -209,17 +212,6 @@ def test_night_shift_scrap_rate_exceeds_day_shift(
     rate = totals["units_scrapped"] / totals["units_produced"]
 
     assert rate["night"] > rate["day"]
-
-
-@pytest.mark.unit
-def test_warranty_claims_are_dated_after_their_run(
-    tables: dict[str, pd.DataFrame],
-) -> None:
-    runs = tables["production_runs"][["run_id", "ts"]]
-    claims = tables["warranty_claims"].merge(runs, on="run_id", how="inner")
-
-    assert len(claims) > 0
-    assert (pd.to_datetime(claims["claim_date"]) > pd.to_datetime(claims["ts"])).all()
 
 
 @pytest.mark.unit
