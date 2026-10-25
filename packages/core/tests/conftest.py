@@ -32,7 +32,11 @@ def _reset_otel_globals() -> None:
 
 @pytest.fixture(autouse=True)
 def isolated_environment(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[None]:
-    for name in [key for key in os.environ if key.startswith("ROOTCAUSE_")]:
+    for name in [
+        key
+        for key in os.environ
+        if key.startswith("ROOTCAUSE_") and not key.startswith("ROOTCAUSE_TEST_")
+    ]:
         monkeypatch.delenv(name)
     monkeypatch.chdir(tmp_path)  # no stray .env file is picked up
     _clear_settings_cache_if_available()

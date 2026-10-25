@@ -14,3 +14,4 @@ Template: [0000-template.md](0000-template.md). Index:
 | [0004](0004-five-whys-method.md) | 5 Whys as the v1 root-cause method; other methods are later skills | Accepted |
 | [0005](0005-evaluation-suite-first.md) | Seeded evaluation suite built in phase 0, before agent tuning | Accepted |
 | [0006](0006-langfuse-observability.md) | Langfuse for agent tracing and prompt management | Accepted |
+| [0007](0007-three-database-roles-append-only-audit.md) | Three database roles for the application database; append-only audit log | Accepted |

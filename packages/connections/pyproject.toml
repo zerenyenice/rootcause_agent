@@ -3,7 +3,7 @@ name = "rootcause-connections"
 version = "0.1.0"
 description = "RootCause data source connections."
 requires-python = ">=3.12"
-dependencies = ["sqlglot>=30.24,<31"]
+dependencies = ["sqlglot>=30.24,<31", "rootcause-core", "sqlalchemy>=2.0"]
 
 [build-system]
 requires = ["hatchling>=1.25"]
@@ -11,3 +11,6 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/rootcause_connections"]
+
+[tool.uv.sources]
+rootcause-core = { workspace = true }

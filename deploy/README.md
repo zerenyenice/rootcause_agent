@@ -7,7 +7,8 @@ T002 (`docs/plans/T002-docker-compose-stack.md`); owner agent `devops`.
 |------|---------|
 | `docker-compose.yml` | `postgres` (Postgres 16 + pgvector) and `openviking` (OpenViking 0.3.x server); placeholders for `api`/`web` |
 | `.env.example` | Every variable the stack needs, placeholder values only. Copy to `deploy/.env` (gitignored) |
-| `postgres/init.sql` | First-start bootstrap: `CREATE EXTENSION vector`, schemas `app`, `catalog`, `audit` |
+| `postgres/init.sql` | First-start bootstrap: roles `rootcause_owner`/`rootcause_migrator`/`rootcause_app`, `CREATE EXTENSION vector`, schemas `app`, `catalog`, `audit` owned by `rootcause_owner`, runtime grants |
+| `alembic.ini` | Dev-only config for plain `alembic`; use the `rootcause-db` CLI everywhere else |
 | `openviking/ov.conf` | Secret-free OpenViking config template; `${VAR}` references are expanded by the server from the container environment |
 | `docker-compose.yml` profile `observability` | Optional self-hosted Langfuse v4 (web, worker, Postgres, ClickHouse, Redis, MinIO) for agent traces and prompt management (T009, ADR-0006) |
 
@@ -32,6 +33,8 @@ value fails before any container starts instead of running with a default.
 What you need in `deploy/.env`:
 
 - `POSTGRES_PASSWORD` (user/db default to `rootcause`).
+- `POSTGRES_MIGRATOR_PASSWORD` and `POSTGRES_APP_PASSWORD`: login passwords
+  of the migrator and runtime roles `init.sql` creates (see "Database roles").
 - `OPENVIKING_ROOT_API_KEY`: OpenViking refuses to start on `0.0.0.0`
   (required for Docker port mapping) without a root key. The root key is
   admin-only; application code should use a per-account **user key** (see
@@ -49,9 +52,9 @@ What you need in `deploy/.env`:
 ```bash
 docker compose -f deploy/docker-compose.yml ps            # both services "healthy"
 
-# Postgres: pgvector installed, three schemas present
+# Postgres: pgvector installed, three schemas owned by rootcause_owner, three roles
 docker compose -f deploy/docker-compose.yml exec postgres \
-  psql -U rootcause -d rootcause -c '\dx' -c '\dn'
+  psql -U rootcause -d rootcause -c '\dx' -c '\dn' -c '\du rootcause_*'
 
 # OpenViking: liveness (no auth) and readiness (also checks the embedding provider)
 curl -fsS http://127.0.0.1:1933/health     # {"status":"ok"}
@@ -76,6 +79,29 @@ curl -fsS -X POST http://127.0.0.1:1933/api/v1/admin/accounts \
   -d '{"account_id": "rootcause", "admin_user_id": "api"}'
 # -> {"result": {"account_id": "rootcause", "admin_user_id": "api", "user_key": "..."}}
 ```
+
+## Database roles
+
+The application database uses three roles ([ADR-0007](../docs/adr/0007-three-database-roles-append-only-audit.md)):
+
+| Role | Used by | Can |
+|------|---------|-----|
+| `rootcause_owner` (NOLOGIN) | nobody directly | owns the schemas and every migrated object |
+| `rootcause_migrator` | `rootcause-db upgrade` (`ROOTCAUSE_MIGRATION_DATABASE_URL`) | `SET ROLE rootcause_owner`, so it can run DDL |
+| `rootcause_app` | the API (`ROOTCAUSE_DATABASE_URL`) | DML on app/catalog tables, only `SELECT, INSERT` on the audit log |
+
+The compose stack creates them in `init.sql`. On any other server create the
+roles yourself (owner `NOLOGIN`, migrator `IN ROLE rootcause_owner`), then:
+
+```bash
+export ROOTCAUSE_ADMIN_DATABASE_URL=postgresql://<superuser>:<password>@host:5432/rootcause
+uv run rootcause-db bootstrap          # idempotent; or --admin-url without a password + PGPASSWORD
+uv run rootcause-db upgrade            # as the migrator, ROOTCAUSE_MIGRATION_DATABASE_URL
+```
+
+Residual risk: the owner role (and so the migrator) and superusers can still
+alter the audit table and its triggers. Strict tamper evidence needs off-host
+shipping of the audit trail (WAL archive or pgaudit), tracked as a backlog item.
 
 ## Reset
 

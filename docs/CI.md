@@ -9,7 +9,9 @@ therefore has two concerns:
    typecheck → test commands a developer runs locally and fails the job
    under 80% coverage (the Gate 2 bar from `rules/common/testing.md`);
    `dependency-audit` checks the locked runtime dependency set for known
-   vulnerabilities.
+   vulnerabilities; `db-migrations` applies, reverses and re-applies the
+   Alembic chain against a real Postgres 16 + pgvector and runs the
+   integration tests there.
 2. **Harness integrity** — generated agent surfaces must match their
    sources, tracked shell/workflow/JSON files must lint and parse clean, no
    secret ever lands in history, and every commit carries this project's
@@ -93,6 +95,130 @@ for a clean audit of a real dependency tree.
 **Why:** `rules/devops/security.md` requires a dependency audit in CI; new
 HIGH/CRITICAL advisories are review findings to act on (bump, pin, or an
 explicitly justified `--ignore-vuln`), not noise to silence.
+
+### `db-migrations`
+
+**What it checks:** the Alembic migration chain (T006), the three-role
+privilege model, and the `-m integration` tests against a real Postgres. A
+`pgvector/pgvector:0.8.7-pg16` service container (the exact tag
+`deploy/docker-compose.yml` runs) is started with throwaway
+`POSTGRES_USER`/`POSTGRES_PASSWORD`/`POSTGRES_DB` values (`rootcause_ci`).
+These and the role passwords below are plain YAML on purpose: the container
+lives only for the job, so they are not secrets.
+
+**Role model (plan amendment 2).** The database itself stays owned by the
+superuser; none of the application roles owns it.
+
+| Role | Login | Purpose |
+|------|-------|---------|
+| `rootcause_owner` | `NOLOGIN` | Owns the `app`/`catalog`/`audit` schemas and every object in them. |
+| `rootcause_migrator` | `LOGIN` (`ci-only-migrator`) | Member of `rootcause_owner`; runs migrations (`env.py` does `SET ROLE rootcause_owner`). |
+| `rootcause_app` | `LOGIN` (`ci-only-app`), `NOSUPERUSER NOCREATEDB NOCREATEROLE` | Runtime role: DML on app/catalog tables, `SELECT, INSERT` only on audit tables, no `CREATE`, no access to `app.alembic_version`. |
+| `rootcause_ci` | superuser | Creates the roles and runs `rootcause-db bootstrap`; the integration conftest uses it to create per-test databases and roles. |
+
+Environment:
+
+| Variable | Points at |
+|----------|-----------|
+| `ROOTCAUSE_DATABASE_URL` | `rootcause_app` on `rootcause_ci` (runtime) |
+| `ROOTCAUSE_MIGRATION_DATABASE_URL` | `rootcause_migrator` on `rootcause_ci` (read by `upgrade`/`downgrade`) |
+| `ROOTCAUSE_ADMIN_DATABASE_URL` | superuser on `rootcause_ci` (read by `bootstrap` from the environment, never passed as an argument) |
+| `ROOTCAUSE_TEST_ADMIN_URL` | the same superuser, for the integration conftest |
+| `ROOTCAUSE_DB_OWNER_ROLE` / `_MIGRATOR_ROLE` / `_APP_ROLE` | `rootcause_owner` / `rootcause_migrator` / `rootcause_app` |
+
+The integration fixtures create their own uniquely suffixed roles and
+database per test and override these variables per test, so they never
+collide with the job-level roles.
+
+The job runs, in order:
+
+1. `uv sync --locked`.
+2. **Roles:** `psql` inside the service container (`docker exec` on
+   `job.services.postgres.id`, so no runner-side client is needed) creates
+   the three roles above and `GRANT rootcause_owner TO rootcause_migrator`.
+3. **Bootstrap as superuser:** `uv run rootcause-db bootstrap` (admin URL
+   from `ROOTCAUSE_ADMIN_DATABASE_URL`) verifies the roles and creates the
+   `vector` extension, the schemas owned by `rootcause_owner`, the default
+   privileges for the app role, and revokes `CREATE` on `public` from
+   `PUBLIC` (idempotent).
+4. **Migrate as the migrator:** `rootcause-db upgrade head` → `downgrade base`
+   → `upgrade head`. The round trip proves every migration reverses and that
+   a downgraded database can be rebuilt. `ROOTCAUSE_ENVIRONMENT=test` is set
+   explicitly, because `downgrade` refuses to run in prod.
+5. **Runtime-role tamper smoke check:** `psql` as `rootcause_app` inside the
+   container must be able to `SELECT` from `audit.query_log` and must get
+   `permission denied` on `TRUNCATE audit.query_log`. This checks
+   privileges only: the image's `pg_hba.conf` trusts in-container
+   connections, so no password is involved. Password logins for the
+   migrator are exercised by the CLI steps over the published port. The
+   full tamper matrix (UPDATE, DELETE, trigger disable/drop, ALTER COLUMN,
+   ...) is covered by the integration tests; this step checks the CI
+   database the CLI built.
+6. `uv run pytest -m integration -q --no-cov -rs --junitxml=integration-junit.xml
+   packages/db packages/core packages/connections packages/catalog`. `--no-cov`
+   because coverage is gated once, over the full suite, in
+   `python-quality`, and this subset alone would trip the 80% `addopts`
+   gate.
+7. **No-skip guard:** parses `integration-junit.xml` and fails if no test
+   was collected or any test was skipped. The integration fixtures skip
+   (rather than fail) when no usable Postgres/pgvector is reachable. That is
+   right on a laptop, but in CI it would turn this job into a vacuous green.
+   The only allowed skip is the documented one in
+   `packages/db/tests/integration/test_concurrent_upgrade.py`:
+   `test_two_cli_processes_upgrading_at_once_both_succeed` with the reason
+   "rootcause-db console script is not installed". Any other skipped test,
+   or that test skipped for another reason, fails the job. After
+   `uv sync --locked` the script is installed, so in practice it runs.
+
+**Why:** "CI runs migrations against a service Postgres before tests" is
+T006's acceptance criterion. Running migrations as a non-superuser migrator
+after a separate bootstrap keeps CI's privileges the same as production's,
+so a migration that silently needs superuser fails here and not on deploy.
+Keeping the runtime role off object and database ownership is what makes
+the audit log immutable to the application (PROJECT.md section 7).
+
+**Reproduce locally (Docker):** the same image and steps as CI.
+
+```bash
+docker run -d --rm --name rc-ci-pg -p 55432:5432 \
+  -e POSTGRES_USER=rootcause_ci -e POSTGRES_PASSWORD=rootcause_ci -e POSTGRES_DB=rootcause_ci \
+  pgvector/pgvector:0.8.7-pg16
+until docker exec rc-ci-pg pg_isready -U rootcause_ci -d rootcause_ci; do sleep 1; done
+docker exec rc-ci-pg psql -v ON_ERROR_STOP=1 -U rootcause_ci -d rootcause_ci \
+  -c "CREATE ROLE rootcause_owner NOLOGIN" \
+  -c "CREATE ROLE rootcause_migrator LOGIN PASSWORD 'ci-only-migrator' NOSUPERUSER NOCREATEDB NOCREATEROLE" \
+  -c "GRANT rootcause_owner TO rootcause_migrator" \
+  -c "CREATE ROLE rootcause_app LOGIN PASSWORD 'ci-only-app' NOSUPERUSER NOCREATEDB NOCREATEROLE"
+export ROOTCAUSE_ENVIRONMENT=test \
+  ROOTCAUSE_DB_OWNER_ROLE=rootcause_owner \
+  ROOTCAUSE_DB_MIGRATOR_ROLE=rootcause_migrator \
+  ROOTCAUSE_DB_APP_ROLE=rootcause_app \
+  ROOTCAUSE_DATABASE_URL=postgresql://rootcause_app:ci-only-app@localhost:55432/rootcause_ci \
+  ROOTCAUSE_MIGRATION_DATABASE_URL=postgresql://rootcause_migrator:ci-only-migrator@localhost:55432/rootcause_ci \
+  ROOTCAUSE_ADMIN_DATABASE_URL=postgresql://rootcause_ci:rootcause_ci@localhost:55432/rootcause_ci \
+  ROOTCAUSE_TEST_ADMIN_URL=postgresql://rootcause_ci:rootcause_ci@localhost:55432/rootcause_ci
+uv run rootcause-db bootstrap
+uv run rootcause-db upgrade head && uv run rootcause-db downgrade base && uv run rootcause-db upgrade head
+# Expect "permission denied for table query_log":
+docker exec rc-ci-pg psql -U rootcause_app -d rootcause_ci \
+  -c "TRUNCATE audit.query_log"
+uv run pytest -m integration -q --no-cov -rs packages/db packages/core packages/connections packages/catalog
+docker rm -f rc-ci-pg
+```
+
+**Reproduce locally (Homebrew, integration tests only):** without
+`ROOTCAUSE_TEST_ADMIN_URL`, the integration conftest starts a throwaway
+server through `pytest-postgresql` using a local `pg_ctl`. Homebrew's
+`pgvector` formula is not built for `postgresql@16`, so point the fixture
+at PostgreSQL 17 (with `pgvector` installed for it). Otherwise the tests
+skip with a "pgvector is not installed" reason:
+
+```bash
+PG_CTL=/opt/homebrew/opt/postgresql@17/bin/pg_ctl \
+  uv run pytest -m integration -q --no-cov -rs packages/db packages/core packages/connections packages/catalog
+```
+
+Locally a skip is informational. In CI the no-skip guard makes it a failure.
 
 ### `harness-sync`
 
@@ -297,8 +423,9 @@ actors):**
   values above exactly): `python-quality`, `dependency-audit`,
   `harness-sync`, `lint-shell`, `lint-workflows`, `validate-json`,
   `compose-config`, `secret-scan`, `commit-protocol` (the last enforces the
-  git-audit-trail guarantee the whole protocol depends on). `python-quality`
-  and `dependency-audit` were added in T003 and `compose-config` in T002;
+  git-audit-trail guarantee the whole protocol depends on), and
+  `db-migrations`. `python-quality` and `dependency-audit` were added in
+  T003, `compose-config` in T002 and `db-migrations` in T006;
   the Lead adds each to the ruleset after its PR merges (a check cannot be
   required before it exists on the base branch).
 - Require branches to be up to date before merging (strict policy).

@@ -1,0 +1,5 @@
+# Deliberate fake secrets used by the Langfuse trace-leak tests (T009) to
+# prove that credentials are masked before export. Each entry is one exact
+# gitleaks fingerprint (commit:file:rule:line); no rule is weakened.
+fb97133ca8e19d486f6aa874bc3336dac11d6890:packages/agents/tests/test_trace_leaks.py:generic-api-key:27
+fb97133ca8e19d486f6aa874bc3336dac11d6890:packages/core/tests/test_langfuse_secrets_and_export.py:generic-api-key:20
