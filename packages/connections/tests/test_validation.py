@@ -213,9 +213,7 @@ def test_cte_names_are_not_reported_as_tables(v, dialect: str) -> None:
 
 @pytest.fixture
 def catalog(v):
-    return v.CatalogSnapshot(
-        {"orders": ("id", "total"), "customers": ("id", "name")}
-    )
+    return v.CatalogSnapshot({"orders": ("id", "total"), "customers": ("id", "name")})
 
 
 @pytest.mark.unit
@@ -256,9 +254,7 @@ def test_catalog_matching_is_case_insensitive(v, catalog, dialect: str) -> None:
 
 @pytest.mark.unit
 @pytest.mark.parametrize("dialect", DIALECTS)
-def test_catalog_ambiguous_bare_column_is_warning_not_error(
-    v, catalog, dialect: str
-) -> None:
+def test_catalog_ambiguous_bare_column_is_warning_not_error(v, catalog, dialect: str) -> None:
     sql = "SELECT id FROM orders o JOIN customers c ON c.id = o.id"
 
     result = v.validate_sql(sql, dialect, catalog=catalog)
