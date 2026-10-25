@@ -176,7 +176,8 @@ def test_query_status_is_a_str_enum_with_the_three_values():
 
     assert issubclass(QueryStatus, StrEnum)
     assert [s.value for s in QueryStatus] == ["ok", "error", "rejected"]
-    assert QueryStatus.OK.value == "ok"
+    assert str(QueryStatus.OK) == "ok"
+    assert QueryStatus("ok") is QueryStatus.OK
 
 
 def test_query_log_status_maps_the_enum_on_the_query_status_type(query_log_table):

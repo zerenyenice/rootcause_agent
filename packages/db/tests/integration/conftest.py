@@ -103,15 +103,7 @@ def fresh_database_url(request: pytest.FixtureRequest) -> Iterator[str]:
             )
 
 
-# --- amendment fixtures: bootstrap, app role --------------------------------
-
-
-@dataclass(frozen=True)
-class AppRole:
-    name: str
-    password: str
-    url: str  # connects to the fresh database as the role
-    admin_url: str  # superuser URL of the same database
+# --- three-role fixtures (plan amendment 2) ---------------------------------
 
 
 def admin_url_for(database_url: str, database: str | None = None) -> str:
@@ -122,45 +114,103 @@ def admin_url_for(database_url: str, database: str | None = None) -> str:
     return url.render_as_string(hide_password=False)
 
 
+ROLE_ENV = {
+    "owner": "ROOTCAUSE_DB_OWNER_ROLE",
+    "migrator": "ROOTCAUSE_DB_MIGRATOR_ROLE",
+    "app": "ROOTCAUSE_DB_APP_ROLE",
+}
+
+
+@dataclass(frozen=True)
+class DbRoles:
+    """Owner (NOLOGIN), migrator (member of owner) and runtime app role, per test."""
+
+    owner: str
+    migrator: str
+    app: str
+    password: str
+    admin_url: str  # superuser URL of the fresh database
+    migration_url: str  # connects as the migrator
+    app_url: str  # connects as the app role
+    admin_user: str
+
+    def bootstrap_kwargs(self) -> dict[str, str]:
+        return {"owner_role": self.owner, "migrator_role": self.migrator, "app_role": self.app}
+
+
+def _create_roles(server: URL, owner: str, migrator: str, app: str, password: str) -> None:
+    ident, lit = sql.Identifier, sql.Literal
+    with psycopg.connect(_conninfo(server), autocommit=True) as connection:
+        connection.execute(sql.SQL("CREATE ROLE {} NOLOGIN").format(ident(owner)))
+        connection.execute(
+            sql.SQL("CREATE ROLE {} LOGIN PASSWORD {} IN ROLE {}").format(
+                ident(migrator), lit(password), ident(owner)
+            )
+        )
+        connection.execute(
+            sql.SQL("CREATE ROLE {} LOGIN PASSWORD {}").format(ident(app), lit(password))
+        )
+
+
 @pytest.fixture
-def bootstrapped_url(fresh_database_url: str) -> str:
-    """Empty database with the vector extension and the three schemas created."""
-    from rootcause_db.bootstrap import bootstrap
+def db_roles(fresh_database_url: str, monkeypatch: pytest.MonkeyPatch) -> Iterator[DbRoles]:
+    """Three roles on the fresh database's server, plus the env a deployment would set.
 
-    bootstrap(fresh_database_url)
-    return fresh_database_url
+    Sets ROOTCAUSE_DATABASE_URL (app), ROOTCAUSE_MIGRATION_DATABASE_URL (migrator),
+    ROOTCAUSE_ADMIN_DATABASE_URL (superuser) and the three ROOTCAUSE_DB_*_ROLE names.
+    """
+    from rootcause_core.settings import clear_settings_cache
 
-
-@pytest.fixture
-def app_role(fresh_database_url: str) -> Iterator[AppRole]:
-    """Non-superuser LOGIN role owning the fresh database."""
-    role = f"rc_app_{uuid.uuid4().hex[:10]}"
-    password = "app-role-pw"
-    database = make_url(fresh_database_url).database
+    suffix = uuid.uuid4().hex[:10]
+    owner, migrator, app = (f"rc_{kind}_{suffix}" for kind in ("owner", "migrator", "app"))
+    password = "role-pw-9f2"
+    fresh = make_url(fresh_database_url)
+    database = fresh.database
     assert database is not None
-    server = admin_url_for(fresh_database_url, "postgres")
-    with psycopg.connect(_conninfo(make_url(server)), autocommit=True) as connection:
-        connection.execute(
-            sql.SQL("CREATE ROLE {} LOGIN NOSUPERUSER PASSWORD {}").format(
-                sql.Identifier(role), sql.Literal(password)
-            )
-        )
-        connection.execute(
-            sql.SQL("ALTER DATABASE {} OWNER TO {}").format(
-                sql.Identifier(database), sql.Identifier(role)
-            )
-        )
+    server = make_url(admin_url_for(fresh_database_url, "postgres"))
+    _create_roles(server, owner, migrator, app, password)
+    roles = DbRoles(
+        owner=owner,
+        migrator=migrator,
+        app=app,
+        password=password,
+        admin_url=fresh_database_url,
+        migration_url=fresh.set(username=migrator, password=password).render_as_string(
+            hide_password=False
+        ),
+        app_url=fresh.set(username=app, password=password).render_as_string(hide_password=False),
+        admin_user=fresh.username or "",
+    )
+    monkeypatch.setenv("ROOTCAUSE_DATABASE_URL", roles.app_url)
+    monkeypatch.setenv("ROOTCAUSE_MIGRATION_DATABASE_URL", roles.migration_url)
+    monkeypatch.setenv("ROOTCAUSE_ADMIN_DATABASE_URL", roles.admin_url)
+    for kind, variable in ROLE_ENV.items():
+        monkeypatch.setenv(variable, getattr(roles, kind))
+    clear_settings_cache()
     try:
-        role_url = make_url(fresh_database_url).set(username=role, password=password)
-        yield AppRole(
-            name=role,
-            password=password,
-            url=role_url.render_as_string(hide_password=False),
-            admin_url=fresh_database_url,
-        )
+        yield roles
     finally:
-        with psycopg.connect(_conninfo(make_url(server)), autocommit=True) as connection:
+        with psycopg.connect(_conninfo(server), autocommit=True) as connection:
             connection.execute(
                 sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(sql.Identifier(database))
             )
-            connection.execute(sql.SQL("DROP ROLE IF EXISTS {}").format(sql.Identifier(role)))
+            for role in (app, migrator, owner):
+                connection.execute(sql.SQL("DROP ROLE IF EXISTS {}").format(sql.Identifier(role)))
+
+
+@pytest.fixture
+def bootstrapped_url(db_roles: DbRoles) -> str:
+    """Bootstrapped database; the URL connects as the migrator (member of the owner role)."""
+    from rootcause_db.bootstrap import bootstrap
+
+    bootstrap(db_roles.admin_url, **db_roles.bootstrap_kwargs())
+    return db_roles.migration_url
+
+
+@pytest.fixture
+def migrated_roles(bootstrapped_url: str, db_roles: DbRoles) -> DbRoles:
+    """Bootstrapped and migrated to head as the migrator."""
+    from rootcause_db.migrate import upgrade
+
+    upgrade(bootstrapped_url, "head")
+    return db_roles

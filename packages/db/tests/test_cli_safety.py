@@ -24,6 +24,7 @@ def calls(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 def env(monkeypatch: pytest.MonkeyPatch):
     def configure(environment: str) -> None:
         monkeypatch.setenv("ROOTCAUSE_DATABASE_URL", URL)
+        monkeypatch.setenv("ROOTCAUSE_MIGRATION_DATABASE_URL", URL)
         monkeypatch.setenv("ROOTCAUSE_ENVIRONMENT", environment)
 
     return configure
@@ -91,7 +92,7 @@ def test_upgrade_is_allowed_in_prod(calls, env):
     "error",
     [
         OperationalError("SELECT 1", {}, Exception(f"could not connect {URL} password={PASSWORD}")),
-        ConfigurationError("bad setting", variables=("ROOTCAUSE_DATABASE_URL",)),
+        ConfigurationError("bad setting", variables=("ROOTCAUSE_MIGRATION_DATABASE_URL",)),
     ],
     ids=["operational", "configuration"],
 )
@@ -117,10 +118,11 @@ def test_errors_print_a_message_without_the_url_and_exit_non_zero(error, monkeyp
 
 
 def test_missing_database_url_exits_non_zero_with_a_message(monkeypatch, capsys):
-    monkeypatch.delenv("ROOTCAUSE_DATABASE_URL", raising=False)
+    monkeypatch.setenv("ROOTCAUSE_DATABASE_URL", URL)
+    monkeypatch.delenv("ROOTCAUSE_MIGRATION_DATABASE_URL", raising=False)
 
     code = _exit_code(["upgrade"])
 
     assert _failed(code)
     output = capsys.readouterr()
-    assert "ROOTCAUSE_DATABASE_URL" in output.err + output.out + str(code)
+    assert "ROOTCAUSE_MIGRATION_DATABASE_URL" in output.err + output.out + str(code)
