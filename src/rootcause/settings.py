@@ -142,6 +142,8 @@ class Settings(BaseSettings):
     investigation_max_tool_calls: int = Field(default=40, gt=0)
     # Wall-clock budget (seconds) of one investigate() run, checked between resumes.
     investigation_timeout_seconds: int = Field(default=600, gt=0)
+    # Most tables one ``GET /connections/{id}/introspect`` response lists (the rest is cut).
+    introspect_max_tables: int = Field(default=1000, gt=0)
     # DuckDB warehouse file the agent queries read-only; ``None`` means none is configured.
     warehouse_path: Path | None = None
     db_pool_size: int = Field(default=5, gt=0)

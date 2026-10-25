@@ -5,7 +5,8 @@ Same surface as :class:`~rootcause.connections.duckdb_executor.DuckDBExecutor`
 (ADR-0002):
 
 1. Every statement passes :func:`validate_sql` (dialect ``postgres``) against a
-   :class:`CatalogSnapshot` of the role's user relations, taken at connect time:
+   :class:`CatalogSnapshot` of the role's user relations, taken before the first
+   validated statement (connecting, probing and introspecting do not need it):
    one read-only statement, allow-listed functions, a capped ``LIMIT``; system
    catalogs and unknown tables are rejected, as are generator functions. Only the
    regenerated ``result.sql`` is executed, never the caller's text.
@@ -15,7 +16,7 @@ Same surface as :class:`~rootcause.connections.duckdb_executor.DuckDBExecutor`
    bypassed.
 
 Connection, catalog and execution errors never carry the password, the DSN, SQL
-text or row values, and the driver exception is never chained.
+text or row values, and the driver exception is never chained or set as context.
 """
 
 from __future__ import annotations
@@ -52,12 +53,14 @@ from rootcause.errors import RootCauseError
 
 __all__ = [
     "DIALECT",
+    "CatalogPage",
     "ColumnInfo",
     "ConnectionFailed",
     "PostgresExecutor",
     "QueryFailed",
     "QueryRejected",
     "QueryTimeout",
+    "RelationInfo",
     "TableInfo",
     "UnknownTable",
 ]
@@ -105,6 +108,24 @@ class ConnectionFailed(RootCauseError):
 
 
 @dataclass(frozen=True, slots=True)
+class RelationInfo:
+    """A user relation with its planner row estimate and columns in declaration order."""
+
+    schema: str
+    name: str
+    row_estimate: int
+    columns: tuple[ColumnInfo, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogPage:
+    """The first relations in (schema, name) order; ``truncated`` when more exist."""
+
+    relations: tuple[RelationInfo, ...]
+    truncated: bool
+
+
+@dataclass(frozen=True, slots=True)
 class _Fetched:
     columns: tuple[str, ...]
     rows: tuple[tuple[Any, ...], ...]
@@ -136,6 +157,19 @@ def _top_cost(plan: Any) -> float | None:
         return float(plan[0]["Plan"]["Total Cost"])
     except (LookupError, TypeError, ValueError):
         return None
+
+
+def _relations(rows: tuple[tuple[Any, ...], ...]) -> tuple[RelationInfo, ...]:
+    """Group ``INTROSPECT_SQL`` rows (one per column, in order) into relations."""
+    grouped: dict[tuple[str, str], tuple[int, list[ColumnInfo]]] = {}
+    for schema, table, row_estimate, column, data_type, nullable in rows:
+        _, columns = grouped.setdefault((str(schema), str(table)), (int(row_estimate), []))
+        if column is not None:  # NULL: the relation has no columns
+            columns.append(ColumnInfo(str(column), str(data_type), bool(nullable)))
+    return tuple(
+        RelationInfo(schema=schema, name=table, row_estimate=estimate, columns=tuple(columns))
+        for (schema, table), (estimate, columns) in grouped.items()
+    )
 
 
 def _split_name(name: str) -> tuple[str | None, str] | None:
@@ -178,6 +212,8 @@ class PostgresExecutor:
         self._timeout_seconds = timeout_seconds
         self._max_result_bytes = max_result_bytes
         self._lock = threading.Lock()
+        self._catalog_lock = threading.Lock()
+        self._catalog: CatalogSnapshot | None = None
         self._connection: psycopg.Connection[tuple[Any, ...]] | None = _connect(
             host=host,
             port=port,
@@ -187,11 +223,6 @@ class PostgresExecutor:
             sslmode=sslmode,
             connect_timeout=connect_timeout_seconds,
         )
-        try:
-            self._catalog = self._load_catalog()
-        except BaseException:
-            self.close()
-            raise
 
     def __enter__(self) -> Self:
         return self
@@ -279,6 +310,14 @@ class PostgresExecutor:
         fetched = self._execute(statement, {"limit": min(limit, self._max_rows)}, None)
         return tuple(str(row[0]) for row in fetched.rows)
 
+    def introspect(self, max_tables: int) -> CatalogPage:
+        """The first ``max_tables`` user relations with their columns, in one statement."""
+        if max_tables < 1:
+            raise ValueError("max_tables must be at least 1")
+        rows = self._execute(q.INTROSPECT_SQL, {"limit": max_tables + 1}, None).rows
+        relations = _relations(rows)
+        return CatalogPage(relations=relations[:max_tables], truncated=len(relations) > max_tables)
+
     # --- connection probe -------------------------------------------------------------
 
     def server_version(self) -> str:
@@ -288,7 +327,8 @@ class PostgresExecutor:
 
     def is_read_only(self) -> bool:
         """Whether the role can change nothing (see ``postgres_queries.CAN_WRITE_SQL``)."""
-        rows = self._execute(q.CAN_WRITE_SQL, None, None).rows
+        params = {"risky_roles": list(q.RISKY_BUILTIN_ROLES)}
+        rows = self._execute(q.CAN_WRITE_SQL, params, None).rows
         return rows[0][0] is False
 
     # --- internals ----------------------------------------------------------------------
@@ -297,7 +337,7 @@ class PostgresExecutor:
         """Validate against the catalog, then reject generator functions (both fail closed)."""
         # The extra row lets ``run`` tell "exactly max_rows" apart from "more were cut".
         result = validate_sql(
-            sql_text, DIALECT, catalog=self._catalog, default_limit=self._max_rows + 1
+            sql_text, DIALECT, catalog=self._catalog_snapshot(), default_limit=self._max_rows + 1
         )
         if not result.ok:
             raise QueryRejected([issue.code.value for issue in result.errors])
@@ -308,6 +348,13 @@ class PostgresExecutor:
         if has_generator:
             raise QueryRejected([GENERATOR_FUNCTION_CODE])
         return result.sql
+
+    def _catalog_snapshot(self) -> CatalogSnapshot:
+        """The catalog snapshot, loaded on first use (a failure is retried next time)."""
+        with self._catalog_lock:
+            if self._catalog is None:
+                self._catalog = self._load_catalog()
+            return self._catalog
 
     def _load_catalog(self) -> CatalogSnapshot:
         columns: dict[str, list[str]] = {}
@@ -334,20 +381,34 @@ class PostgresExecutor:
             connection = self._connection
             if connection is None:
                 raise RuntimeError("The Postgres executor is closed.")
-            try:
-                with connection.transaction():
-                    connection.execute(q.STATEMENT_TIMEOUT_SQL, {"timeout": f"{self._timeout_ms}"})
-                    with connection.cursor() as cursor:
-                        rows = self._fetch(
-                            cursor.stream(statement, params, size=_STREAM_CHUNK_ROWS), limit
-                        )
-                        columns = tuple(str(d.name) for d in cursor.description or ())
-            except psycopg.errors.QueryCanceled:
-                raise QueryTimeout(self._timeout_seconds) from None
-            except psycopg.Error as error:
-                raise _query_failed(error) from None
-            except ResultTooLarge:
-                raise QueryRejected([RESULT_TOO_LARGE_CODE]) from None
+            outcome = self._attempt(connection, statement, params, limit)
+        if isinstance(outcome, RootCauseError):
+            # Raised outside the handlers: the driver error must not ride along as context.
+            raise outcome
+        return outcome
+
+    def _attempt(
+        self,
+        connection: psycopg.Connection[tuple[Any, ...]],
+        statement: str | sql.Composed,
+        params: Mapping[str, Any] | None,
+        limit: int | None,
+    ) -> _Fetched | RootCauseError:
+        """The fetched rows, or the error to raise (never raised here, see ``_execute``)."""
+        try:
+            with connection.transaction():
+                connection.execute(q.STATEMENT_TIMEOUT_SQL, {"timeout": f"{self._timeout_ms}"})
+                with connection.cursor() as cursor:
+                    rows = self._fetch(
+                        cursor.stream(statement, params, size=_STREAM_CHUNK_ROWS), limit
+                    )
+                    columns = tuple(str(d.name) for d in cursor.description or ())
+        except psycopg.errors.QueryCanceled:
+            return QueryTimeout(self._timeout_seconds)
+        except psycopg.Error as error:
+            return _query_failed(error)
+        except ResultTooLarge:
+            return QueryRejected([RESULT_TOO_LARGE_CODE])
         return _Fetched(columns=columns, rows=rows)
 
     def _fetch(
