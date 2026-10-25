@@ -275,7 +275,7 @@ src/rootcause/  — the single installable package (py.typed)
 ├── api/            — the FastAPI service (/health, /version) and the LangGraph `rootcause` graph factory
 └── evals/          — evaluation harness (manufacturing warehouse generator)
 tests/          — one tree mirrored by area (core, db, connections, catalog, agents, api, evals)
-web/            — placeholder for the Next.js UI (lands in T070; not runnable yet)
+web/            — Next.js chat UI (streams from LangGraph Server; see web/README.md)
 docs/           — PRD, backlog, plans and process documentation
 deploy/         — Docker Compose stack, Postgres bootstrap and dev-only alembic.ini
 langgraph.json  — LangGraph Server config registering the `rootcause` graph
