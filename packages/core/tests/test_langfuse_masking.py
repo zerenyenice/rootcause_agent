@@ -172,15 +172,25 @@ def test_tool_output_of_unknown_name_is_still_denied(mask: Callable[..., Any]) -
     assert "ROWVALUE-Ayse-Yilmaz" not in _dump(mask(data=message))
 
 
-@pytest.mark.parametrize("name", ["write_todos", "explain_sql"])
-def test_allowlisted_tool_output_is_kept(mask: Callable[..., Any], name: str) -> None:
+def test_allowlisted_tool_output_is_kept(mask: Callable[..., Any]) -> None:
     content = json.dumps({"estimated_rows": 12, "estimated_cost": 1.5, "note": "ok"})
-    message = ToolMessage(content=content, tool_call_id="c1", name=name)
+    message = ToolMessage(content=content, tool_call_id="c1", name="explain_sql")
 
     masked = _dump(mask(data=message))
 
     assert "estimated_rows" in masked
     assert "<redacted tool output" not in masked
+
+
+def test_write_todos_output_is_no_longer_kept(mask: Callable[..., Any]) -> None:
+    message = ToolMessage(
+        content="Updated todo list to rowsentineltodo", tool_call_id="c1", name="write_todos"
+    )
+
+    masked = _dump(mask(data=message))
+
+    assert "rowsentineltodo" not in masked
+    assert _redacted("write_todos") in masked
 
 
 def test_run_sql_summary_is_kept_with_columns_count_truncated_and_sql(

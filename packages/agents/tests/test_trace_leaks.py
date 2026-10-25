@@ -6,6 +6,7 @@ messages and the model's own answer; every span the exporter receives (attribute
 status description, events, resource) and every log line is scanned for the sentinels.
 """
 
+import asyncio
 import io
 import json
 import logging
@@ -24,10 +25,10 @@ from rootcause_core.settings import Settings
 
 pytestmark = pytest.mark.unit
 
-PASSWORD = "PWSENTINEL-9f8e"
+PASSWORD = "PWSENTINEL-9f8e"  # gitleaks:allow
 DSN = f"postgresql://svc:{PASSWORD}@db.internal:5432/rc"
-ANTHROPIC_KEY = "sk-ant-api03-LLMKEYSENTINEL"
-SECRET_KEY = "sk-lf-SECSENTINEL"
+ANTHROPIC_KEY = "sk-ant-api03-LLMKEYSENTINEL"  # gitleaks:allow
+SECRET_KEY = "sk-lf-SECSENTINEL"  # gitleaks:allow
 EMAIL = "PII-EMAIL-jane@example.com"
 ROW = "PIIROW-Ayse-Yilmaz"
 CSV = "PIICSV-Mehmet-Demir"
@@ -136,6 +137,7 @@ def run(
         mode: str = "small",
         tools: tuple[Any, ...] = (),
         human: str = "why did orders drop?",
+        is_async: bool = False,
         **config_kwargs: Any,
     ) -> Outcome:
         settings = make_langfuse_settings(
@@ -153,8 +155,12 @@ def run(
             extra_tools=tools,
         )
         config = handle.config_for("thread-1", user_id="u1", **config_kwargs)
+        payload = {"messages": [HumanMessage(human)]}
         try:
-            handle.graph.invoke({"messages": [HumanMessage(human)]}, config=config)
+            if is_async:
+                asyncio.run(handle.graph.ainvoke(payload, config=config))
+            else:
+                handle.graph.invoke(payload, config=config)
         except Exception as error:  # noqa: BLE001 - a failing tool may abort the run
             logging.getLogger(__name__).info("run aborted: %s", type(error).__name__)
         flush_langfuse()
@@ -198,6 +204,45 @@ def _leaks(outcome: Outcome, *extra: str) -> list[str]:
             ]
     found += [f"{label} in logs" for label, n in needles.items() if n in outcome.logs]
     return found
+
+
+def _span_leaks(outcome: Outcome, *extra: str) -> list[str]:
+    """Like ``_leaks`` but only over exported span data (attributes, events, status)."""
+    needles = _needles(outcome.settings, *extra)
+    return [
+        f"{label} in {span.name}: {where}"
+        for span in outcome.spans
+        for where, blob in _blobs(span)
+        for label, n in needles.items()
+        if n in blob
+    ]
+
+
+def _parsed_attributes(outcome: Outcome) -> Iterator[Any]:
+    for span in outcome.spans:
+        for value in (span.attributes or {}).values():
+            if not isinstance(value, str):
+                yield value
+                continue
+            try:
+                yield json.loads(value)
+            except ValueError:
+                yield value
+
+
+def _walk(value: Any) -> Iterator[Any]:
+    yield value
+    if isinstance(value, dict):
+        for item in value.values():
+            yield from _walk(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _walk(item)
+
+
+def _all_nodes(outcome: Outcome) -> Iterator[Any]:
+    for root in _parsed_attributes(outcome):
+        yield from _walk(root)
 
 
 def _call(name: str, args: dict[str, Any], call_id: str) -> AIMessage:
@@ -349,14 +394,17 @@ def test_tool_output_echoed_in_the_next_generation_input_is_redacted(
     assert CSV not in str(generations[-1].attributes.get("langfuse.observation.input"))
 
 
-def test_write_todos_output_stays_visible(run: Callable[..., Outcome]) -> None:
-    todos = [{"content": "Frame the problem", "status": "in_progress"}]
+def test_write_todos_output_is_redacted(run: Callable[..., Outcome]) -> None:
+    todos = [{"content": "rowsentineltodo", "status": "in_progress"}]
     script = [_call("write_todos", {"todos": todos}, "c1"), AIMessage(content="done")]
 
     outcome = run(script)
 
     span = next(span for span in outcome.spans if span.name == "write_todos")
-    assert "<redacted tool output" not in str(span.attributes.get("langfuse.observation.output"))
+    assert "<redacted tool output: write_todos>" in str(
+        span.attributes.get("langfuse.observation.output")
+    )
+    assert _span_leaks(outcome, "rowsentineltodo") == []
 
 
 # --- (1f) the model's own answer ---
@@ -476,3 +524,168 @@ def test_trace_metadata_carries_tenant_and_connection(run: Callable[..., Outcome
     values = {key.rsplit(".", 1)[-1]: value for key, value in root.attributes.items()}
     assert values["tenant_id"] == "tenant-7"
     assert values["connection_id"] == "conn-3"
+
+
+# --- (8) tool-call arguments and agent filesystem state ---
+
+ALLOWED_ARG_KEYS = {"file_path", "path", "subagent_type", "offset", "limit"}
+WRITE = "rowsentinelwritecontent"
+OLD = "rowsentineloldtext"
+NEW = "rowsentinelnewtext"
+TASK = "rowsentinelsubtask"
+TODO = "rowsentineltodotext"
+ARG_SCRIPTS: dict[str, tuple[list[AIMessage], tuple[str, ...]]] = {
+    "write_file": (
+        [_call("write_file", {"file_path": "/notes.md", "content": WRITE}, "c1")],
+        (WRITE,),
+    ),
+    "edit_file": (
+        [
+            _call("write_file", {"file_path": "/notes.md", "content": OLD}, "c1"),
+            _call(
+                "edit_file",
+                {"file_path": "/notes.md", "old_string": OLD, "new_string": NEW},
+                "c2",
+            ),
+        ],
+        (OLD, NEW),
+    ),
+    "task": (
+        [
+            _call(
+                "task",
+                {"description": TASK, "subagent_type": "general-purpose"},
+                "c1",
+            ),
+            AIMessage(content="subagent done"),
+        ],
+        (TASK,),
+    ),
+    "write_todos": (
+        [_call("write_todos", {"todos": [{"content": TODO, "status": "pending"}]}, "c1")],
+        (TODO,),
+    ),
+}
+
+
+@pytest.mark.parametrize("tool_name", sorted(ARG_SCRIPTS))
+def test_tool_call_arguments_never_reach_exported_spans(
+    run: Callable[..., Outcome], tool_name: str
+) -> None:
+    script, needles = ARG_SCRIPTS[tool_name]
+
+    outcome = run([*script, AIMessage(content="done")])
+
+    assert outcome.spans
+    assert _span_leaks(outcome, *needles) == []
+
+
+def test_tool_calls_keep_only_allowlisted_argument_keys(run: Callable[..., Outcome]) -> None:
+    script = [
+        _call("write_file", {"file_path": "/notes.md", "content": WRITE}, "c1"),
+        _call("read_file", {"file_path": "/notes.md", "offset": 0, "limit": 50}, "c2"),
+        _call("ls", {"path": "/"}, "c3"),
+        _call(
+            "edit_file",
+            {"file_path": "/notes.md", "old_string": WRITE, "new_string": NEW},
+            "c4",
+        ),
+        _call("task", {"description": TASK, "subagent_type": "general-purpose"}, "c5"),
+        AIMessage(content="subagent done"),
+        _call("write_todos", {"todos": [{"content": TODO, "status": "pending"}]}, "c6"),
+        AIMessage(content="done"),
+    ]
+
+    outcome = run(script)
+
+    calls = [
+        node
+        for node in _all_nodes(outcome)
+        if isinstance(node, dict) and "args" in node and isinstance(node.get("name"), str)
+    ]
+    by_name = {call["name"]: call["args"] for call in calls}
+    assert {"write_file", "read_file", "ls", "edit_file", "task", "write_todos"} <= set(by_name)
+    for call in calls:
+        args = call["args"]
+        assert isinstance(args, dict)
+        if call["name"] == "write_todos":
+            assert set(args) <= {"todos"}
+            assert all(set(todo) <= {"status"} for todo in args.get("todos", []))
+        else:
+            assert set(args) <= ALLOWED_ARG_KEYS, (call["name"], sorted(args))
+    assert by_name["read_file"] == {"file_path": "/notes.md", "offset": 0, "limit": 50}
+    assert by_name["task"] == {"subagent_type": "general-purpose"}
+    assert by_name["write_file"] == {"file_path": "/notes.md"}
+    assert by_name["write_todos"] == {"todos": [{"status": "pending"}]}
+
+
+def test_tool_span_inputs_keep_only_allowlisted_keys(run: Callable[..., Outcome]) -> None:
+    script = [
+        _call("write_file", {"file_path": "/notes.md", "content": WRITE}, "c1"),
+        _call("write_todos", {"todos": [{"content": TODO, "status": "pending"}]}, "c2"),
+        AIMessage(content="done"),
+    ]
+
+    outcome = run(script)
+
+    inputs = {
+        span.name: json.loads(str(span.attributes["langfuse.observation.input"]))
+        for span in outcome.spans
+        if span.name in {"write_file", "write_todos"}
+    }
+    assert set(inputs) == {"write_file", "write_todos"}
+    assert set(inputs["write_file"]) <= ALLOWED_ARG_KEYS
+    assert inputs["write_todos"] == {"todos": [{"status": "pending"}]}
+
+
+def test_traced_files_state_keeps_paths_but_no_values(run: Callable[..., Outcome]) -> None:
+    script = [
+        _call("run_sql", QUERY, "c1"),
+        _call("write_file", {"file_path": "/notes.md", "content": WRITE}, "c2"),
+        AIMessage(content="done"),
+    ]
+
+    outcome = run(script)
+
+    mappings = [
+        node["files"]
+        for node in _all_nodes(outcome)
+        if isinstance(node, dict) and isinstance(node.get("files"), dict)
+    ]
+    assert "/notes.md" in {path for files in mappings for path in files}
+    for files in mappings:
+        for path, value in files.items():
+            dumped = json.dumps(value)
+            assert not (isinstance(value, dict) and "content" in value), path
+            assert all(needle not in dumped for needle in (WRITE, ROW, EMAIL)), path
+    assert _span_leaks(outcome, WRITE) == []
+
+
+# --- (9) async runs ---
+
+
+def test_a_foreign_active_span_is_not_the_parent_in_async_runs(
+    run: Callable[..., Outcome], foreign_span: Any
+) -> None:
+    outcome = run([_call("run_sql", QUERY, "c1"), AIMessage(content="done")], is_async=True)
+
+    foreign_trace = foreign_span.get_span_context().trace_id
+    foreign_id = foreign_span.get_span_context().span_id
+    roots = [span for span in outcome.spans if span.parent is None]
+    assert len(roots) == 1
+    assert {span.context.trace_id for span in outcome.spans}.isdisjoint({foreign_trace})
+    assert all(span.parent is None or span.parent.span_id != foreign_id for span in outcome.spans)
+
+
+def test_async_runs_do_not_leak_rows_or_tool_arguments(run: Callable[..., Outcome]) -> None:
+    script = [
+        _call("run_sql", QUERY, "c1"),
+        _call("read_file", {"file_path": "/query_results/c1.json"}, "c2"),
+        _call("write_file", {"file_path": "/notes.md", "content": WRITE}, "c3"),
+        AIMessage(content="done"),
+    ]
+
+    outcome = run(script, is_async=True)
+
+    assert {"run_sql", "read_file", "write_file"} <= {span.name for span in outcome.spans}
+    assert _leaks(outcome, WRITE) == []

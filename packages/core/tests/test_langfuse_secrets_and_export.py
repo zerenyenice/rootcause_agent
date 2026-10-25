@@ -17,7 +17,7 @@ from rootcause_core.settings import Settings
 
 pytestmark = pytest.mark.unit
 
-DB_PASSWORD = "DBPW-SENTINEL-4711"
+DB_PASSWORD = "DBPW-SENTINEL-4711"  # gitleaks:allow
 SECRET_VALUES = {
     "anthropic_api_key": "sk-ant-api03-ANTHROPICSENTINEL",
     "azure_openai_api_key": "AZURESENTINEL0123456789",
