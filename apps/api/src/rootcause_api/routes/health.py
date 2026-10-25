@@ -2,9 +2,10 @@
 
 import asyncio
 import os
+import re
 from collections.abc import Awaitable, Callable
 from typing import Annotated, Literal
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 from fastapi import APIRouter, Depends, Request
@@ -23,7 +24,7 @@ logger = get_logger(__name__)
 PROBE_TIMEOUT_SECONDS = 2
 GIT_SHA_VARIABLE = "ROOTCAUSE_GIT_SHA"
 OPENVIKING_HEALTH_PATH = "/health"
-_PLAIN_POSTGRES_SCHEME = "postgresql://"
+_POSTGRES_URL = re.compile(r"^postgres(?:ql)?(?:\+\w+)?://")
 _ASYNC_POSTGRES_SCHEME = "postgresql+asyncpg://"
 
 CheckResult = Literal["ok", "fail", "skipped"]
@@ -51,10 +52,12 @@ def get_app_settings(request: Request) -> Settings:
 AppSettings = Annotated[Settings, Depends(get_app_settings)]
 
 
-def _async_database_url(url: str) -> str:
-    if url.startswith(_PLAIN_POSTGRES_SCHEME):
-        return _ASYNC_POSTGRES_SCHEME + url.removeprefix(_PLAIN_POSTGRES_SCHEME)
-    return url
+def asyncpg_url(url: str) -> str:
+    """Rewrite any ``postgres[ql][+driver]://`` URL to the ``asyncpg`` driver."""
+    match = _POSTGRES_URL.match(url)
+    if match is None:
+        return url
+    return _ASYNC_POSTGRES_SCHEME + url[match.end() :]
 
 
 async def _select_one(url: str) -> None:
@@ -66,10 +69,10 @@ async def _select_one(url: str) -> None:
         await engine.dispose()
 
 
-async def check_postgres(settings: Settings) -> str:
+async def check_postgres(settings: Settings) -> CheckResult:
     """``ok`` when ``SELECT 1`` succeeds within the timeout, else ``fail``."""
     try:
-        url = _async_database_url(settings.database_url.get_secret_value())
+        url = asyncpg_url(settings.database_url.get_secret_value())
         await asyncio.wait_for(_select_one(url), PROBE_TIMEOUT_SECONDS)
     except Exception as error:
         # Type only: driver messages can embed the connection string.
@@ -78,19 +81,22 @@ async def check_postgres(settings: Settings) -> str:
     return "ok"
 
 
-def _openviking_target(base: str) -> str:
-    if urlsplit(base).path.strip("/"):
-        return base
-    return base.rstrip("/") + OPENVIKING_HEALTH_PATH
+def openviking_health_url(settings: Settings) -> str:
+    """Join ``/health`` onto the configured base URL, keeping any existing path."""
+    if settings.openviking_url is None:
+        raise ValueError("openviking_url is not configured")
+    parts = urlsplit(str(settings.openviking_url))
+    path = parts.path.rstrip("/") + OPENVIKING_HEALTH_PATH
+    return urlunsplit(parts._replace(path=path, query="", fragment=""))
 
 
-async def check_openviking(settings: Settings) -> str:
+async def check_openviking(settings: Settings) -> CheckResult:
     """``skipped`` when unconfigured, ``ok`` on a 2xx answer, else ``fail``."""
     if settings.openviking_url is None:
         return "skipped"
     try:
         async with httpx.AsyncClient(timeout=PROBE_TIMEOUT_SECONDS) as client:
-            response = await client.get(_openviking_target(str(settings.openviking_url)))
+            response = await client.get(openviking_health_url(settings))
             response.raise_for_status()
     except Exception as error:
         logger.warning("health_check_failed", check="openviking", error_type=type(error).__name__)
@@ -99,7 +105,7 @@ async def check_openviking(settings: Settings) -> str:
 
 
 async def _run_probe(
-    name: str, probe: Callable[[Settings], Awaitable[str]], settings: Settings
+    name: str, probe: Callable[[Settings], Awaitable[CheckResult]], settings: Settings
 ) -> CheckResult:
     """Run one probe; any exception or unexpected value degrades to ``fail``."""
     try:
@@ -107,11 +113,7 @@ async def _run_probe(
     except Exception as error:
         logger.warning("health_probe_raised", check=name, error_type=type(error).__name__)
         return "fail"
-    if result == "ok":
-        return "ok"
-    if result == "skipped":
-        return "skipped"
-    return "fail"
+    return result
 
 
 @router.get("/health", response_model=Envelope[HealthReport])

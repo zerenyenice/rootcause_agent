@@ -1,14 +1,16 @@
-"""Request-id propagation (pure ASGI) and per-app rate limiting."""
+"""Request-id propagation and per-client rate limiting (both pure ASGI)."""
 
+import math
 import re
+import time
 import uuid
 
 import structlog
 from fastapi import Request
 from fastapi.responses import JSONResponse
-from slowapi import Limiter
-from slowapi.errors import RateLimitExceeded
-from slowapi.util import get_remote_address
+from limits import RateLimitItem
+from limits.storage import MemoryStorage
+from limits.strategies import MovingWindowRateLimiter
 from starlette.datastructures import MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
@@ -17,7 +19,15 @@ from rootcause_core.settings import Settings
 
 REQUEST_ID_STATE_KEY = "request_id"
 REQUEST_ID_LOG_KEY = "request_id"
-RETRY_AFTER_SECONDS = "60"
+UNKNOWN_CLIENT = "unknown"
+SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+    "X-Frame-Options": "DENY",
+    "Cache-Control": "no-store",
+}
+HSTS_HEADER = "Strict-Transport-Security"
+HSTS_VALUE = "max-age=31536000; includeSubDomains"
 _VALID_REQUEST_ID = re.compile(r"^[A-Za-z0-9._\-]{1,128}$")
 
 
@@ -62,31 +72,62 @@ class RequestIdMiddleware:
             structlog.contextvars.unbind_contextvars(REQUEST_ID_LOG_KEY)
 
 
-def create_limiter(settings: Settings) -> Limiter:
+class SecurityHeadersMiddleware:
+    """Add conservative response headers; HSTS only when ``hsts`` (prod) is set."""
+
+    def __init__(self, app: ASGIApp, *, hsts: bool = False) -> None:
+        self.app = app
+        self.headers = {**SECURITY_HEADERS, **({HSTS_HEADER: HSTS_VALUE} if hsts else {})}
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def send_with_headers(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                response_headers = MutableHeaders(scope=message)
+                for name, value in self.headers.items():
+                    response_headers[name] = value
+            await send(message)
+
+        await self.app(scope, receive, send_with_headers)
+
+
+def create_limiter(settings: Settings) -> MovingWindowRateLimiter:
     """Build a limiter owned by a single app so counters never leak across apps."""
-    return Limiter(key_func=get_remote_address, default_limits=[settings.rate_limit])
+    return MovingWindowRateLimiter(MemoryStorage())
 
 
-def rate_limit_response(request: Request) -> JSONResponse:
-    """429 envelope with the request id and a conservative ``Retry-After``."""
+def client_key(scope: Scope) -> str:
+    """Peer address from the ASGI scope; ``X-Forwarded-For`` is deliberately ignored.
+
+    Behind a reverse proxy run uvicorn with ``--proxy-headers`` and
+    ``--forwarded-allow-ips`` so the server rewrites ``scope["client"]`` from
+    trusted proxies only; a client-supplied header can then never pick its bucket.
+    """
+    client = scope.get("client")
+    return str(client[0]) if client else UNKNOWN_CLIENT
+
+
+def retry_after_seconds(reset_time: float, now: float) -> int:
+    """Whole seconds until the window frees a slot, never below one."""
+    return max(1, math.ceil(reset_time - now))
+
+
+def rate_limit_response(request: Request, retry_after: int) -> JSONResponse:
+    """429 envelope with the request id and a ``Retry-After`` from the window reset."""
     return fail(
         "rate_limited",
         "Too many requests. Please retry later.",
         429,
         request_id=request_id_of(request),
-        headers={"Retry-After": RETRY_AFTER_SECONDS},
+        headers={"Retry-After": str(retry_after)},
     )
 
 
 class RateLimitMiddleware:
-    """Apply the app's default slowapi limit to every HTTP request.
-
-    slowapi's own ``SlowAPIMiddleware`` resolves the route by scanning
-    ``app.routes`` for objects with an ``endpoint`` attribute; FastAPI's
-    ``include_router`` wraps routers in objects without one, so no route is
-    found and nothing is limited. This middleware asks the limiter directly
-    (url-keyed, default limits) and renders the envelope itself.
-    """
+    """One global moving-window bucket per client IP, across all paths."""
 
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
@@ -95,12 +136,13 @@ class RateLimitMiddleware:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
-        request = Request(scope)
-        limiter: Limiter = scope["app"].state.limiter
-        try:
-            # slowapi exposes no public "check this request" call.
-            limiter._check_request_limit(request, None, True)
-        except RateLimitExceeded:
-            await rate_limit_response(request)(scope, receive, send)
+        app = scope["app"]
+        limiter: MovingWindowRateLimiter = app.state.limiter
+        item: RateLimitItem = app.state.rate_limit_item
+        key = client_key(scope)
+        if not limiter.hit(item, key):
+            stats = limiter.get_window_stats(item, key)
+            retry_after = retry_after_seconds(stats.reset_time, time.time())
+            await rate_limit_response(Request(scope), retry_after)(scope, receive, send)
             return
         await self.app(scope, receive, send)

@@ -22,7 +22,7 @@ DOTENV_FILE = ".env"
 
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
 
-RATE_LIMIT_PATTERN = re.compile(r"^(?P<count>\d+)/(?:second|minute|hour|day)$")
+RATE_LIMIT_PATTERN = re.compile(r"^(?P<count>[0-9]+)/(?:second|minute|hour|day)$")
 
 # (environment variable name, pydantic error type) pairs extracted from a
 # ValidationError; deliberately value-free so they can be surfaced anywhere.

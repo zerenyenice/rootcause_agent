@@ -7,6 +7,7 @@ processor chain and renderer, so third-party libraries produce the same JSON
 """
 
 import logging
+import re
 import sys
 from typing import TextIO
 
@@ -36,7 +37,30 @@ def add_trace_context(_logger: WrappedLogger, _method: str, event_dict: EventDic
     }
 
 
-def _shared_processors() -> tuple[Processor, ...]:
+_URL_CREDENTIALS = re.compile(r"(\w+://[^:/@\s]+:)[^@\s]+@")
+REDACTED = "***"
+
+
+def make_redactor(secrets: tuple[str, ...] = ()) -> Processor:
+    """Build a processor masking URL passwords and verbatim ``secrets`` in str values."""
+    known = tuple(secret for secret in secrets if secret)
+
+    def redact_text(text: str) -> str:
+        cleaned = _URL_CREDENTIALS.sub(rf"\1{REDACTED}@", text)
+        for secret in known:
+            cleaned = cleaned.replace(secret, REDACTED)
+        return cleaned
+
+    def redact(_logger: WrappedLogger, _method: str, event_dict: EventDict) -> EventDict:
+        return {
+            key: redact_text(value) if isinstance(value, str) else value
+            for key, value in event_dict.items()
+        }
+
+    return redact
+
+
+def _shared_processors(redactor: Processor) -> tuple[Processor, ...]:
     return (
         structlog.contextvars.merge_contextvars,
         structlog.stdlib.add_logger_name,
@@ -46,6 +70,7 @@ def _shared_processors() -> tuple[Processor, ...]:
         add_trace_context,
         structlog.processors.StackInfoRenderer(),
         structlog.processors.format_exc_info,
+        redactor,
     )
 
 
@@ -73,7 +98,8 @@ def configure_logging(settings: Settings) -> None:
     Safe to call more than once; each call rebuilds the stdout handler so the
     stream is resolved at call time rather than cached at import.
     """
-    shared = _shared_processors()
+    redactor = make_redactor((settings.database_url.get_secret_value(),))
+    shared = _shared_processors(redactor)
     structlog.configure(
         processors=[*shared, structlog.stdlib.ProcessorFormatter.wrap_for_formatter],
         logger_factory=structlog.stdlib.LoggerFactory(),

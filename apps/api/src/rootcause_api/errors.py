@@ -1,5 +1,6 @@
 """Exception handlers: every error path answers with an :class:`Envelope`."""
 
+import logging
 from http import HTTPStatus
 
 from fastapi import FastAPI, Request
@@ -26,19 +27,33 @@ def _reason_phrase(status: int) -> str:
 
 
 async def rootcause_error_handler(request: Request, exc: Exception) -> JSONResponse:
-    logger.warning("rootcause_error", path=request.url.path, error=str(exc))
-    return fail("rootcause_error", str(exc), 400, request_id=request_id_of(request))
+    """Render a RootCauseError; only its ``public_message`` ever reaches the caller."""
+    if not isinstance(exc, RootCauseError):
+        return await internal_error_handler(request, exc)
+    request_id = request_id_of(request)
+    logger.log(
+        logging.WARNING if exc.status_code < HTTPStatus.INTERNAL_SERVER_ERROR else logging.ERROR,
+        "rootcause_error",
+        path=request.url.path,
+        error_type=type(exc).__name__,
+        error=str(exc),
+        request_id=request_id,
+    )
+    return fail(exc.code, exc.public_message, exc.status_code, request_id=request_id)
 
 
 async def configuration_error_handler(request: Request, exc: Exception) -> JSONResponse:
-    logger.error("configuration_error", path=request.url.path, error=str(exc))
-    return fail(
-        "configuration_error", GENERIC_CONFIGURATION_MESSAGE, 500, request_id=request_id_of(request)
+    request_id = request_id_of(request)
+    logger.error(
+        "configuration_error", path=request.url.path, error=str(exc), request_id=request_id
     )
+    return fail("configuration_error", GENERIC_CONFIGURATION_MESSAGE, 500, request_id=request_id)
 
 
 async def validation_error_handler(request: Request, exc: Exception) -> JSONResponse:
-    assert isinstance(exc, RequestValidationError)
+    if not isinstance(exc, RequestValidationError):
+        return await internal_error_handler(request, exc)
+    request_id = request_id_of(request)
     # Field, message and type only: pydantic's ``input`` echo is deliberately dropped.
     errors = [
         {
@@ -48,34 +63,46 @@ async def validation_error_handler(request: Request, exc: Exception) -> JSONResp
         }
         for item in exc.errors()
     ]
-    logger.info("validation_error", path=request.url.path, fields=[e["field"] for e in errors])
+    logger.info(
+        "validation_error",
+        path=request.url.path,
+        fields=[e["field"] for e in errors],
+        request_id=request_id,
+    )
     return fail(
         "validation_error",
         "Request validation failed.",
         422,
         details={"errors": errors},
-        request_id=request_id_of(request),
+        request_id=request_id,
     )
 
 
 async def http_error_handler(request: Request, exc: Exception) -> JSONResponse:
-    assert isinstance(exc, StarletteHTTPException)
+    if not isinstance(exc, StarletteHTTPException):
+        return await internal_error_handler(request, exc)
+    request_id = request_id_of(request)
     message = exc.detail if isinstance(exc.detail, str) else _reason_phrase(exc.status_code)
-    logger.info("http_error", path=request.url.path, status=exc.status_code)
+    logger.info("http_error", path=request.url.path, status=exc.status_code, request_id=request_id)
     return fail(
         "http_error",
         message,
         exc.status_code,
-        request_id=request_id_of(request),
+        request_id=request_id,
         headers=dict(exc.headers or {}),
     )
 
 
 async def internal_error_handler(request: Request, exc: Exception) -> JSONResponse:
+    request_id = request_id_of(request)
     logger.error(
-        "internal_error", path=request.url.path, error_type=type(exc).__name__, exc_info=exc
+        "internal_error",
+        path=request.url.path,
+        error_type=type(exc).__name__,
+        request_id=request_id,
+        exc_info=exc,
     )
-    return fail("internal_error", GENERIC_INTERNAL_MESSAGE, 500, request_id=request_id_of(request))
+    return fail("internal_error", GENERIC_INTERNAL_MESSAGE, 500, request_id=request_id)
 
 
 def register_exception_handlers(app: FastAPI) -> None:
