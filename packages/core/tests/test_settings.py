@@ -2,10 +2,12 @@
 
 import pytest
 
+from rootcause_core.settings import Settings
+
 pytestmark = pytest.mark.unit
 
 
-def _load():
+def _load() -> Settings:
     from rootcause_core.settings import get_settings
 
     return get_settings()
@@ -138,7 +140,7 @@ def test_settings_are_frozen() -> None:
     settings = _load()
 
     with pytest.raises(Exception) as excinfo:  # noqa: PT011 - pydantic ValidationError
-        settings.service_name = "mutated"  # type: ignore[misc]
+        settings.service_name = "mutated"
 
     assert type(excinfo.value).__name__ == "ValidationError"
     assert settings.service_name == "rootcause"

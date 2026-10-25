@@ -2,13 +2,16 @@
 
 import json
 import re
+from typing import Any, cast
 
 import pytest
+
+from rootcause_core.settings import Settings
 
 pytestmark = pytest.mark.unit
 
 
-def _settings(monkeypatch: pytest.MonkeyPatch, database_url: str, **env: str):
+def _settings(monkeypatch: pytest.MonkeyPatch, database_url: str, **env: str) -> Settings:
     from rootcause_core.settings import get_settings
 
     monkeypatch.setenv("ROOTCAUSE_DATABASE_URL", database_url)
@@ -22,10 +25,12 @@ def _output(capsys: pytest.CaptureFixture[str]) -> str:
     return captured.out + captured.err
 
 
-def _last_json_line(output: str) -> dict:
+def _last_json_line(output: str) -> dict[str, Any]:
     lines = [line for line in output.splitlines() if line.strip()]
     assert lines, "no log output captured"
-    return json.loads(lines[-1])
+    parsed = json.loads(lines[-1])
+    assert isinstance(parsed, dict)
+    return cast("dict[str, Any]", parsed)
 
 
 def test_json_mode_emits_valid_json_with_standard_fields(
