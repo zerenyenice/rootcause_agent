@@ -63,6 +63,7 @@ dev = [
     "psycopg[binary]>=3.2",
     # Python SAST for the `security-sast` CI job (exact version pinned in uv.lock).
     "bandit>=1.9.4,<2",
+    "blockbuster==1.5.29",
 ]
 
 [tool.ruff]
