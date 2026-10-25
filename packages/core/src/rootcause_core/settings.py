@@ -97,6 +97,13 @@ class Settings(BaseSettings):
     log_level: LogLevel = "INFO"
     log_format: LogFormat = LogFormat.JSON
     database_url: SecretStr = Field(min_length=1)
+    # Three-role database model (docs/adr/0006): the runtime URL above connects
+    # as the app role; migrations and bootstrap use their own URLs.
+    migration_database_url: SecretStr | None = None
+    admin_database_url: SecretStr | None = None
+    db_owner_role: str = Field(default="rootcause_owner", min_length=1, max_length=63)
+    db_migrator_role: str = Field(default="rootcause_migrator", min_length=1, max_length=63)
+    db_app_role: str = Field(default="rootcause_app", min_length=1, max_length=63)
     openviking_url: AnyUrl | None = None
     otel_exporter: OtelExporter = OtelExporter.NONE
     otel_endpoint: AnyHttpUrl | None = None

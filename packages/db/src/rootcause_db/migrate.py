@@ -9,6 +9,7 @@ from sqlalchemy import Engine, create_engine
 from sqlalchemy.pool import NullPool
 
 from rootcause_core.db.engine import SYNC_CONNECT_TIMEOUT_ARG, SYNC_DRIVER, normalise_url
+from rootcause_db.names import MIGRATION_URL_VARIABLE
 
 ALEMBIC_DIR = Path(__file__).parent / "alembic"
 URL_ATTRIBUTE = "database_url"
@@ -22,14 +23,16 @@ MIGRATION_CONNECT_TIMEOUT_S = 10
 _COMMAND_LOCK = threading.Lock()
 
 
-def make_migration_engine(url: str) -> Engine:
+def make_migration_engine(url: str, *, source: str = MIGRATION_URL_VARIABLE) -> Engine:
     """Unpooled psycopg engine for one-shot admin work (migrations, bootstrap).
+
+    ``source`` names where ``url`` came from, for the error message.
 
     Raises:
         ConfigurationError: when ``url`` is not a valid PostgreSQL URL.
     """
     return create_engine(
-        normalise_url(url, SYNC_DRIVER),
+        normalise_url(url, SYNC_DRIVER, source=source),
         poolclass=NullPool,
         connect_args={SYNC_CONNECT_TIMEOUT_ARG: MIGRATION_CONNECT_TIMEOUT_S},
     )
@@ -37,7 +40,7 @@ def make_migration_engine(url: str) -> Engine:
 
 def make_config(url: str) -> Config:
     """Alembic config bound to ``url``; the URL is passed as an attribute (not an ini value)."""
-    normalise_url(url, SYNC_DRIVER)  # fail fast, before Alembic loads env.py
+    normalise_url(url, SYNC_DRIVER, source=MIGRATION_URL_VARIABLE)  # fail fast, before env.py
     config = Config()
     config.set_main_option("script_location", str(ALEMBIC_DIR))
     config.set_main_option("file_template", FILE_TEMPLATE)

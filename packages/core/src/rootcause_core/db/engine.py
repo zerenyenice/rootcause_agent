@@ -20,17 +20,19 @@ SYNC_CONNECT_TIMEOUT_ARG = "connect_timeout"  # libpq / psycopg
 ASYNC_CONNECT_TIMEOUT_ARG = "timeout"  # asyncpg.connect
 
 
-def _invalid_url() -> ConfigurationError:
+def _invalid_url(source: str) -> ConfigurationError:
     # Never echo the URL: it carries the password.
     return ConfigurationError(
-        f"{DATABASE_URL_VARIABLE} must be a valid PostgreSQL URL "
-        "(postgres://user:password@host:port/database).",
-        variables=(DATABASE_URL_VARIABLE,),
+        f"{source} must be a valid PostgreSQL URL (postgres://user:password@host:port/database).",
+        variables=(source,),
     )
 
 
-def normalise_url(raw_url: str, driver: str) -> URL:
+def normalise_url(raw_url: str, driver: str, *, source: str = DATABASE_URL_VARIABLE) -> URL:
     """Return ``raw_url`` rewritten to use ``driver``; query parameters are kept.
+
+    ``source`` names where the URL came from (an environment variable or a
+    command-line option) so the error points at the right place.
 
     Raises:
         ConfigurationError: when the URL is malformed or not a PostgreSQL URL.
@@ -41,9 +43,9 @@ def normalise_url(raw_url: str, driver: str) -> URL:
     except (ArgumentError, ValueError):
         # ValueError: e.g. a non-numeric port. ``from None`` drops the original
         # exception, whose message may quote the URL.
-        raise _invalid_url() from None
+        raise _invalid_url(source) from None
     if url.get_backend_name() not in POSTGRES_BACKENDS:
-        raise _invalid_url()
+        raise _invalid_url(source)
     return url.set(drivername=driver)
 
 

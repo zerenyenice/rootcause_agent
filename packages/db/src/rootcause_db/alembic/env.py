@@ -1,9 +1,12 @@
 """Alembic environment: one database, schemas app/catalog/audit, version table in app.
 
-The extension and schemas are created by ``rootcause-db bootstrap`` (superuser),
-not here: migrations run as the unprivileged application role and fail fast
-with a clear message when the database has not been bootstrapped. Concurrent
-runs are serialised by a transaction-scoped advisory lock.
+The extension, schemas and grants are created by ``rootcause-db bootstrap``
+(superuser), not here. Migrations connect as the migrator role and run under
+``SET LOCAL ROLE <db_owner_role>`` so every object is owned by the NOLOGIN
+owner role, never by a login role (docs/adr/0006). They fail fast with a clear
+message when the database has not been bootstrapped, and in prod they refuse
+to run as a superuser. Concurrent runs are serialised by a transaction-scoped
+advisory lock.
 """
 
 from collections.abc import MutableMapping
@@ -11,19 +14,28 @@ from collections.abc import MutableMapping
 from alembic import context
 from sqlalchemy import Connection, func, select, text
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import OperationalError
 
 import rootcause_catalog.models  # noqa: F401  (registers catalog and connections tables)
 from rootcause_core.db.base import Base
 from rootcause_core.db.schemas import ALL_SCHEMAS, APP_SCHEMA
-from rootcause_core.settings import get_settings
+from rootcause_core.errors import ConfigurationError
+from rootcause_core.settings import Environment, Settings, get_settings
 from rootcause_db.bootstrap import VECTOR_EXTENSION
-from rootcause_db.errors import BootstrapRequiredError
+from rootcause_db.errors import BootstrapRequiredError, DatabaseConnectionError, ProdRefusalError
 from rootcause_db.migrate import URL_ATTRIBUTE, make_migration_engine
+from rootcause_db.names import ADMIN_URL_VARIABLE, MIGRATION_URL_VARIABLE
 
 # Arbitrary, fixed key shared by every migration run ("rootcaus" in ASCII).
 MIGRATION_LOCK_KEY = 0x726F6F7463617573
 BOOTSTRAP_HINT = (
-    "Run `rootcause-db bootstrap --admin-url <superuser URL>` once for this database, then retry."
+    f"Run `rootcause-db bootstrap` once for this database (superuser URL in "
+    f"{ADMIN_URL_VARIABLE}), then retry."
+)
+CONNECTION_FAILED = (
+    "could not connect to the database for migrations. Check that the server is reachable "
+    f"and that {MIGRATION_URL_VARIABLE} is correct; details are omitted because they can "
+    "contain the host and user."
 )
 
 config = context.config
@@ -50,11 +62,56 @@ def _configure(connection: Connection) -> None:
     )
 
 
-def _engine() -> Engine:
+def _engine(settings: Settings) -> Engine:
     explicit = config.attributes.get(URL_ATTRIBUTE)
     if explicit is not None:
         return make_migration_engine(explicit)
-    return make_migration_engine(get_settings().database_url.get_secret_value())
+    if settings.migration_database_url is None:
+        raise ConfigurationError(
+            f"{MIGRATION_URL_VARIABLE} is not set; migrations connect as the migrator role.",
+            variables=(MIGRATION_URL_VARIABLE,),
+        )
+    return make_migration_engine(settings.migration_database_url.get_secret_value())
+
+
+def _connect(engine: Engine) -> Connection:
+    try:
+        return engine.connect()
+    except OperationalError:
+        # The driver message names the host and user; drop it from the chain.
+        raise DatabaseConnectionError(CONNECTION_FAILED) from None
+
+
+def _refuse_superuser_in_prod(connection: Connection, settings: Settings) -> None:
+    if settings.environment is not Environment.PROD:
+        return
+    is_superuser = connection.execute(
+        text("SELECT rolsuper FROM pg_roles WHERE rolname = session_user")
+    ).scalar_one()
+    if is_superuser:
+        raise ProdRefusalError(
+            "Migrations refuse to run as a superuser in the prod environment; connect as the "
+            f"migrator role via {MIGRATION_URL_VARIABLE}."
+        )
+
+
+def _assume_owner_role(connection: Connection, owner_role: str) -> None:
+    """``SET LOCAL ROLE`` to the owner role so new objects belong to it."""
+    can_set = connection.execute(
+        text("SELECT pg_has_role(session_user, oid, 'MEMBER') FROM pg_roles WHERE rolname = :r"),
+        {"r": owner_role},
+    ).scalar_one_or_none()
+    if can_set is None:
+        raise BootstrapRequiredError(
+            f"The owner role {owner_role!r} does not exist. {BOOTSTRAP_HINT}"
+        )
+    if not can_set:
+        raise BootstrapRequiredError(
+            f"The migrating role is not a member of the owner role {owner_role!r}. {BOOTSTRAP_HINT}"
+        )
+    quoted = connection.dialect.identifier_preparer.quote_identifier(owner_role)
+    # Quoted identifier; exec_driver_sql keeps ':' and '%' literal.
+    connection.exec_driver_sql(f"SET LOCAL ROLE {quoted}")
 
 
 def _missing_prerequisites(connection: Connection) -> list[str]:
@@ -96,14 +153,17 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
-    engine = _engine()
+    settings = get_settings()
+    engine = _engine(settings)
     try:
-        with engine.connect() as connection:
+        with _connect(engine) as connection:
             _configure(connection)
             with context.begin_transaction():
                 # Held until commit: a concurrent run waits here, then sees the
                 # committed version table and has nothing left to do.
                 connection.execute(select(func.pg_advisory_xact_lock(MIGRATION_LOCK_KEY)))
+                _refuse_superuser_in_prod(connection, settings)
+                _assume_owner_role(connection, settings.db_owner_role)
                 _require_bootstrap(connection)
                 context.run_migrations()
     finally:
