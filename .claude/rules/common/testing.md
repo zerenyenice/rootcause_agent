@@ -1,5 +1,10 @@
 # Testing Requirements
 
+> **Process tiers:** CLAUDE.md "Process tiers" (Light / Standard / Sensitive)
+> decide how much of this file applies to a task. Where this file is
+> stricter than the task's tier, the tier wins. Non-negotiables in every
+> tier: coverage >= 80% in CI, trailers, no secrets, no test weakening.
+
 ## Minimum Test Coverage: 80%
 
 Test Types (ALL required):

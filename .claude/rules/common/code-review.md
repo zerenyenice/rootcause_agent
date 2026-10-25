@@ -1,5 +1,10 @@
 # Code Review Standards
 
+> **Process tiers:** CLAUDE.md "Process tiers" (Light / Standard / Sensitive)
+> decide how much of this file applies to a task. Where this file is
+> stricter than the task's tier, the tier wins. Non-negotiables in every
+> tier: coverage >= 80% in CI, trailers, no secrets, no test weakening.
+
 ## Purpose
 
 Code review ensures quality, security, and maintainability before code is merged. This rule defines when and how to conduct code reviews.
@@ -38,15 +43,15 @@ Before marking code complete:
 
 ## Security Review Triggers
 
-**STOP and use security-reviewer agent when:**
+**Use security-reviewer (Sensitive tier) when the change:**
 
-- Authentication or authorization code
-- User input handling
-- Database queries
-- File system operations
-- External API calls
-- Cryptographic operations
-- Payment or financial code
+- Executes SQL against customer databases or changes the read-only guards
+- Handles credentials, secrets or cryptography
+- Adds or changes authentication, authorization or tenant isolation
+- Sends data off-host (exports, telemetry payloads, third-party APIs with customer data)
+
+Ordinary input validation, internal queries and file handling are covered by
+the Standard reviewer.
 
 ## Review Severity Levels
 

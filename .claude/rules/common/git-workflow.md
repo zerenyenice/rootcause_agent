@@ -1,5 +1,10 @@
 # Git Workflow
 
+> **Process tiers:** CLAUDE.md "Process tiers" (Light / Standard / Sensitive)
+> decide how much of this file applies to a task. Where this file is
+> stricter than the task's tier, the tier wins. Non-negotiables in every
+> tier: coverage >= 80% in CI, trailers, no secrets, no test weakening.
+
 Git is this system's audit trail. Anyone must be able to reconstruct from
 `git log` alone: what was asked, what was planned, which agent produced what,
 in what order, what the reviewers said, and what the user approved. History is
@@ -139,6 +144,11 @@ deletes the local task branch (`git branch -d <branch>` — `-d`, never
      (see Pull Request Workflow below). Required CI checks run on the PR; the
      user merges it on GitHub — or explicitly tells the Lead to merge — using
      a **merge commit** (never squash/rebase).
+
+  **Standing authorization (this project):** the user has authorized the
+  Lead to skip step 1's wait and to push, open the PR and merge it with a
+  merge commit once every CI check is `pass` and the review approved. The
+  completion report goes in the PR body instead.
 
   Coverage <80% blocks step 2 unless the user explicitly overrides with a
   stated reason (record the override in the PR description and merge commit

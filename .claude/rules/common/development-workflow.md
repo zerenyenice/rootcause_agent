@@ -1,5 +1,10 @@
 # Development Workflow
 
+> **Process tiers:** CLAUDE.md "Process tiers" (Light / Standard / Sensitive)
+> decide how much of this file applies to a task. Where this file is
+> stricter than the task's tier, the tier wins. Non-negotiables in every
+> tier: coverage >= 80% in CI, trailers, no secrets, no test weakening.
+
 > This file extends [common/git-workflow.md](git-workflow.md) with the full feature development process that happens before git operations.
 
 The Feature Implementation Workflow describes the development pipeline: research, planning, TDD, code review, and then committing to git.
@@ -16,7 +21,7 @@ The Feature Implementation Workflow describes the development pipeline: research
    - `/PROJECT.md` is project-team-maintained — read it, don't edit it, unless a
      human on the project team explicitly instructs otherwise.
 
-1. **Research & Reuse** _(mandatory before any new implementation)_
+1. **Research & Reuse** _(when adding a new external dependency or a new subsystem; skip for work inside existing modules)_
    - **GitHub code search first:** Run `gh search repos` and `gh search code` to find existing implementations, templates, and patterns before writing anything new.
    - **Library docs second:** Use Context7 or primary vendor docs to confirm API behavior, package usage, and version-specific details before implementing.
    - **Exa only when the first two are insufficient:** Use Exa for broader web research or discovery after GitHub search and primary docs.
@@ -26,7 +31,7 @@ The Feature Implementation Workflow describes the development pipeline: research
 
 2. **Plan First**
    - The Lead plans directly — there is no dedicated planning/architecture subagent
-   - Generate planning docs before coding: PRD, architecture, system_design, tech_doc, task_list
+   - Write the plan in the PR description; separate planning docs only for multi-PR work
    - Identify dependencies and risks
    - Break down into phases
    - After the user approves the plan (Gate 1): create the task branch
