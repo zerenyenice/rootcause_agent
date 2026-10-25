@@ -32,3 +32,6 @@ deploy/langfuse.env
 
 coverage.xml
 .langgraph_api/
+
+# Generated evaluation warehouses (python -m rootcause.evals.manufacturing generate)
+data/
