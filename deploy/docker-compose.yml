@@ -414,7 +414,7 @@ services:
     env_file: *app-env-file
     environment:
       <<: [*app-environment, *app-env-scrub]
-      # The only service that gets the migrator URL (DDL rights).
+      # Only migrate and agent-setup get the migrator URL (DDL rights).
       ROOTCAUSE_MIGRATION_DATABASE_URL: postgresql://rootcause_migrator:${POSTGRES_MIGRATOR_PASSWORD:?set POSTGRES_MIGRATOR_PASSWORD in deploy/.env}@postgres:5432/${POSTGRES_DB:-rootcause}
 
   # One-shot after migrate: creates the LangGraph checkpointer/store tables in
