@@ -14,6 +14,9 @@ therefore has two concerns:
    sources, tracked shell/workflow/JSON files must lint and parse clean, no
    secret ever lands in history, and every commit carries this project's
    git-protocol trailers.
+3. **Deploy config** — `compose-config` keeps `deploy/docker-compose.yml`
+   (the local/pilot stack from T002) parsing and interpolating against the
+   committed placeholder env file.
 
 Owner agent: `devops`. Governing rules: `.claude/rules/devops/ci-cd.md`,
 `.claude/rules/devops/github-actions.md`, `.claude/rules/devops/security.md`.
@@ -176,6 +179,41 @@ contributor adds) parses with `python3 -m json.tool`.
 for f in $(git ls-files '*.json'); do python3 -m json.tool "$f" > /dev/null && echo "OK $f"; done
 ```
 
+### `compose-config`
+
+**What it checks:** `deploy/docker-compose.yml` (Postgres + pgvector and
+OpenViking, task T002; `api`/`web` join under the `app` profile in
+T005/T070) against the committed placeholder environment:
+
+```bash
+docker compose -f deploy/docker-compose.yml --env-file deploy/.env.example config -q
+```
+
+`config -q` parses the YAML, validates it against the Compose schema and
+resolves every `${VAR}` / `${VAR:?required}` reference, without pulling
+images or starting containers — `docker compose` is preinstalled on
+`ubuntu-latest`, so no download step and no secrets are involved. A second
+step reproduces the `${VAR}` expansion OpenViking applies to
+`deploy/openviking/ov.conf` at load time (`os.path.expandvars` + `json.loads`)
+and fails if the expanded template is not valid JSON or misses a required
+section — the template is deliberately only valid JSON *after* expansion
+(the embedding dimension must expand to a number), so a plain JSON parse
+would not do.
+
+**Why:** the stack definition is the first thing every later task's
+integration tests depend on; a typo in it should fail a PR, not a
+developer's first `docker compose up`. Keeping `deploy/.env.example` as the
+interpolation source also forces the example to stay complete: a new
+`${VAR:?}` in the compose file without a placeholder in the example fails
+this job. Image tags stay exact (never `latest`) per
+`rules/devops/security.md`; bumps are deliberate `chore(deploy):` commits.
+
+**Reproduce locally** (with Docker installed):
+
+```bash
+docker compose -f deploy/docker-compose.yml --env-file deploy/.env.example config -q
+```
+
 ### `commit-protocol` (pull_request only)
 
 **What it checks:** every non-merge commit in the PR's range
@@ -258,11 +296,11 @@ actors):**
 - Require these status checks to pass (names must match the job `name:`
   values above exactly): `python-quality`, `dependency-audit`,
   `harness-sync`, `lint-shell`, `lint-workflows`, `validate-json`,
-  `secret-scan`, `commit-protocol` (the last enforces the git-audit-trail
-  guarantee the whole protocol depends on). `python-quality` and
-  `dependency-audit` were added in T003; the Lead adds them to the ruleset
-  after that PR merges (a check cannot be required before it exists on the
-  base branch).
+  `compose-config`, `secret-scan`, `commit-protocol` (the last enforces the
+  git-audit-trail guarantee the whole protocol depends on). `python-quality`
+  and `dependency-audit` were added in T003 and `compose-config` in T002;
+  the Lead adds each to the ruleset after its PR merges (a check cannot be
+  required before it exists on the base branch).
 - Require branches to be up to date before merging (strict policy).
 - Effect: a **direct push to these branches is rejected** — an un-merged
   commit has no passing checks, so only PRs whose checks are green can land.
