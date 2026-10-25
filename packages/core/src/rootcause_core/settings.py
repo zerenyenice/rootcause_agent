@@ -81,6 +81,10 @@ class Settings(BaseSettings):
     otel_endpoint: AnyHttpUrl | None = None
     service_name: str = Field(default="rootcause", min_length=1)
     rate_limit: str = "120/minute"
+    orchestrator_model: str = Field(default="anthropic:claude-opus-5", min_length=1)
+    fast_model: str = Field(default="anthropic:claude-sonnet-5", min_length=1)
+    reasoning_model: str = Field(default="anthropic:claude-opus-5", min_length=1)
+    scan_row_threshold: int = Field(default=5_000_000, gt=0)
 
     @field_validator("environment", mode="before")
     @classmethod
