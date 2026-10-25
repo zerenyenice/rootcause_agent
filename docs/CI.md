@@ -70,7 +70,7 @@ member, audited against the PyPI advisory database with
 
 ```bash
 uv export --locked --no-dev --no-emit-workspace --format requirements.txt -o requirements-audit.txt
-uv tool run pip-audit -r requirements-audit.txt --strict --progress-spinner off
+uv tool run pip-audit@2.10.1 -r requirements-audit.txt --strict --progress-spinner off
 ```
 
 `--no-dev` drops the `dev` tooling group (ruff/mypy/pytest are not shipped),
