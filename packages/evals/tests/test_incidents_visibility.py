@@ -63,9 +63,8 @@ def test_baseline_without_the_incident_is_not_visible(
 def test_generate_raises_when_a_planted_incident_is_not_visible(
     config120: Any, incidents120: dict[str, Any]
 ) -> None:
-    from rootcause_evals.manufacturing.incidents import IncidentNotVisibleError
-
     from rootcause_evals.manufacturing import generate
+    from rootcause_evals.manufacturing.incidents import IncidentNotVisibleError
 
     weak = _NoOpIncident(incidents120["E1-dev"])
 
@@ -103,9 +102,8 @@ def test_generate_defaults_to_the_plain_baseline(config120: Any) -> None:
 def test_generate_with_all_incidents_plants_every_case(
     config120: Any, baseline120: Any, incidents120: dict[str, Any]
 ) -> None:
-    from rootcause_evals.manufacturing.incidents import assert_visible, instantiate
-
     from rootcause_evals.manufacturing import generate
+    from rootcause_evals.manufacturing.incidents import assert_visible, instantiate
 
     tables = generate(config120, incidents=instantiate(config120))
 
@@ -120,9 +118,8 @@ def test_generate_with_all_incidents_plants_every_case(
 
 @pytest.mark.unit
 def test_generate_with_manifest_returns_tables_and_six_cases(config120: Any) -> None:
-    from rootcause_evals.manufacturing.incidents import CaseManifest
-
     from rootcause_evals.manufacturing import generate_with_manifest
+    from rootcause_evals.manufacturing.incidents import CaseManifest
 
     tables, cases = generate_with_manifest(config120)
 
