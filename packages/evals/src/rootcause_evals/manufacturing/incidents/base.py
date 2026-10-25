@@ -12,6 +12,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Any, ClassVar, Protocol
+from zlib import crc32
 
 import numpy as np
 import pandas as pd
@@ -22,11 +23,25 @@ from rootcause_evals.manufacturing.incidents.manifest import (
     ChainStep,
     Counterfactual,
     ExpectedEffect,
+    FrozenDict,
     MetricSpec,
     RootCause,
 )
 
 Tables = Mapping[str, pd.DataFrame]
+
+PRE_WINDOW_DAYS = 56  # reference period before a window: visibility baseline and placement gap
+INCIDENT_STREAM = 1  # spawn key separating incident randomness from the baseline stream
+
+
+def incident_rng(seed: int, case_id: str) -> np.random.Generator:
+    """Generator private to one incident, stable across processes and across other incidents.
+
+    Keyed by the seed and a CRC32 of ``case_id`` (not ``hash``, which is salted per process),
+    so adding or removing other incidents never changes this incident's draws.
+    """
+    key = [seed, INCIDENT_STREAM, crc32(case_id.encode("utf-8"))]
+    return np.random.default_rng(np.random.SeedSequence(key))
 
 
 class PlantedIncident(Protocol):
@@ -80,18 +95,18 @@ class Incident(ABC):
         """Daily series (indexed by midnight timestamps) the anomaly is visible in."""
 
     @abstractmethod
-    def manifest_entry(self) -> CaseManifest:
-        """Ground-truth record for this case."""
+    def manifest_entry(self, tables: Tables | None = None) -> CaseManifest:
+        """Ground-truth record; ``tables`` (the final warehouse) refines measured effect sizes."""
 
     def build_manifest(
         self,
         *,
         metric: MetricSpec,
         effect: ExpectedEffect,
-        chain: list[ChainStep],
+        chain: tuple[ChainStep, ...],
         root_cause: RootCause,
         counterfactual: Counterfactual,
-        keywords: list[str],
+        keywords: tuple[str, ...],
     ) -> CaseManifest:
         """Assemble the manifest record from this incident's identity and the case content."""
         return CaseManifest(
@@ -103,13 +118,13 @@ class Incident(ABC):
             anomaly_window=AnomalyWindow(
                 start=self.window[0].isoformat(), end=self.window[1].isoformat()
             ),
-            segment_filters=dict(self.segment),
+            segment_filters=FrozenDict(self.segment),
             expected_effect=effect,
             chain=chain,
             root_cause=root_cause,
             counterfactual=counterfactual,
-            decoys=[],
-            benign_events_in_window=list(self.benign_events),
+            decoys=(),
+            benign_events_in_window=tuple(self.benign_events),
             keywords=keywords,
         )
 

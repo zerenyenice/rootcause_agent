@@ -4,9 +4,30 @@ from __future__ import annotations
 
 import dataclasses
 import json
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, NoReturn
+
+
+class FrozenDict(dict[str, str]):
+    """Read-only string mapping: every mutator raises ``TypeError``.
+
+    Unlike ``MappingProxyType`` it survives ``dataclasses.asdict`` (deep copy) and
+    serialises with ``json`` as a plain object.
+    """
+
+    def _readonly(self, *args: Any, **kwargs: Any) -> NoReturn:
+        raise TypeError("FrozenDict is read-only")
+
+    __setitem__ = _readonly
+    __delitem__ = _readonly
+    __ior__ = _readonly
+    update = _readonly
+    pop = _readonly
+    popitem = _readonly
+    clear = _readonly
+    setdefault = _readonly
 
 
 @dataclass(frozen=True)
@@ -41,8 +62,8 @@ class ChainStep:
     """One cause statement with the tables and columns that evidence it."""
 
     cause: str
-    evidence_tables: list[str]
-    evidence_columns: list[str]
+    evidence_tables: tuple[str, ...]
+    evidence_columns: tuple[str, ...]
     sql_hint: str
 
 
@@ -80,14 +101,14 @@ class CaseManifest:
     split: str
     metric: MetricSpec
     anomaly_window: AnomalyWindow
-    segment_filters: dict[str, str]
+    segment_filters: Mapping[str, str]
     expected_effect: ExpectedEffect
-    chain: list[ChainStep]
+    chain: tuple[ChainStep, ...]
     root_cause: RootCause
     counterfactual: Counterfactual
-    decoys: list[Decoy]
-    benign_events_in_window: list[str]
-    keywords: list[str]
+    decoys: tuple[Decoy, ...]
+    benign_events_in_window: tuple[str, ...]
+    keywords: tuple[str, ...]
 
 
 def write_cases_json(cases: Iterable[CaseManifest], path: Path) -> None:

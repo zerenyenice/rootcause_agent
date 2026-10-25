@@ -8,12 +8,9 @@ from typing import ClassVar
 import numpy as np
 import pandas as pd
 
-from rootcause_evals.manufacturing.baseline import (
-    BASE_SCRAP_RATE,
-    MAX_SCRAP_RATE,
-    SCRAP_SHIFT_FACTOR,
-)
+from rootcause_evals.manufacturing.baseline import scrap_rate
 from rootcause_evals.manufacturing.incidents.base import (
+    PRE_WINDOW_DAYS,
     Incident,
     Tables,
     append_rows,
@@ -79,8 +76,7 @@ class CoolantPumpFailure(Incident):
             tables["products"].set_index("product_id")["complexity_score"]
         )
         shift_idx = pd.Index(SHIFT_NAMES).get_indexer(pd.Index(runs["shift"]))
-        rate = SCRAP_MULTIPLIER * BASE_SCRAP_RATE * SCRAP_SHIFT_FACTOR[shift_idx]
-        rate = np.minimum(rate * (0.8 + 0.1 * complexity.to_numpy(dtype=float)), MAX_SCRAP_RATE)
+        rate = scrap_rate(shift_idx, complexity.to_numpy(dtype=float), SCRAP_MULTIPLIER)
         hit = mask.to_numpy()
         scrapped = runs["units_scrapped"].to_numpy().copy()
         scrapped[hit] = rng.binomial(runs["units_produced"].to_numpy()[hit], rate[hit])
@@ -138,39 +134,43 @@ class CoolantPumpFailure(Incident):
         totals = line.groupby(day_of(line, "ts"))[["units_scrapped", "units_produced"]].sum()
         return pd.Series(totals["units_scrapped"] / totals["units_produced"].where(lambda s: s > 0))
 
-    def manifest_entry(self) -> CaseManifest:
+    def manifest_entry(self, tables: Tables | None = None) -> CaseManifest:
         """Ground truth for the coolant pump failure."""
         line, machine = self.segment["line_id"], self.params["machine_id"]
-        chain = [
+        first, last = (d.isoformat() for d in self.window)
+        chain = (
             ChainStep(
                 f"Scrap rate on line {line} triples during the window",
-                ["production_runs"],
-                ["line_id", "ts", "units_produced", "units_scrapped"],
+                ("production_runs",),
+                ("line_id", "ts", "units_produced", "units_scrapped"),
                 f"SELECT CAST(ts AS DATE), SUM(units_scrapped) * 1.0 / SUM(units_produced) "
                 f"FROM production_runs WHERE line_id = '{line}' GROUP BY 1",
             ),
             ChainStep(
-                f"Machine {machine} runs hot while the rest of the line is normal",
-                ["machine_telemetry", "machines"],
-                ["machine_id", "line_id", "ts", "temperature_c"],
-                f"SELECT CAST(ts AS DATE), AVG(temperature_c) FROM machine_telemetry "
-                f"WHERE machine_id = '{machine}' GROUP BY 1",
+                f"Machine {machine} runs hot while the rest of line {line} is normal",
+                ("machine_telemetry", "machines"),
+                ("machine_id", "line_id", "ts", "temperature_c"),
+                f"SELECT CAST(t.ts AS DATE), t.machine_id, AVG(t.temperature_c) "
+                f"FROM machine_telemetry t JOIN machines m USING (machine_id) "
+                f"WHERE m.line_id = '{line}' GROUP BY 1, 2",
             ),
             ChainStep(
                 f"Machine {machine} has extra breakdown downtime on the last days of the window",
-                ["downtime_events"],
-                ["machine_id", "start_ts", "end_ts", "reason_code"],
-                f"SELECT * FROM downtime_events WHERE machine_id = '{machine}' "
-                f"AND reason_code = 'breakdown'",
+                ("downtime_events", "machines"),
+                ("machine_id", "line_id", "start_ts", "end_ts", "reason_code"),
+                f"SELECT d.* FROM downtime_events d JOIN machines m USING (machine_id) "
+                f"WHERE m.line_id = '{line}' AND d.machine_id = '{machine}' "
+                f"AND d.reason_code = 'breakdown'",
             ),
             ChainStep(
                 "The maintenance log records an unplanned coolant pump replacement",
-                ["maintenance_events"],
-                ["machine_id", "kind", "performed_date", "parts_replaced"],
-                f"SELECT * FROM maintenance_events WHERE machine_id = '{machine}' "
-                f"AND parts_replaced = '{PUMP_PART}'",
+                ("maintenance_events", "machines"),
+                ("machine_id", "line_id", "kind", "performed_date", "parts_replaced"),
+                f"SELECT e.* FROM maintenance_events e JOIN machines m USING (machine_id) "
+                f"WHERE m.line_id = '{line}' AND e.machine_id = '{machine}' "
+                f"AND e.parts_replaced = '{PUMP_PART}'",
             ),
-        ]
+        )
         return self.build_manifest(
             metric=MetricSpec(
                 "scrap_rate",
@@ -186,11 +186,20 @@ class CoolantPumpFailure(Incident):
                 "equipment",
             ),
             counterfactual=Counterfactual(
-                f"Replacing the coolant pump of {machine} before the window removes the "
-                "temperature rise, the breakdowns and the scrap increase",
-                f"SELECT AVG(temperature_c) FROM machine_telemetry WHERE machine_id = '{machine}'",
+                f"Replacing the coolant pump of {machine} before the window would keep the "
+                f"scrap rate of line {line} inside the window at its level outside it",
+                f"SELECT CAST(ts AS DATE) BETWEEN DATE '{first}' AND DATE '{last}' AS in_window, "
+                f"SUM(units_scrapped) * 1.0 / SUM(units_produced) FROM production_runs "
+                f"WHERE line_id = '{line}' GROUP BY 1",
             ),
-            keywords=["scrap", "coolant pump", "temperature_c", "maintenance_events", machine],
+            keywords=(
+                "scrap",
+                "coolant pump",
+                "temperature_c",
+                "maintenance_events",
+                line,
+                machine,
+            ),
         )
 
 
@@ -254,10 +263,16 @@ class PowerOutage(Incident):
         downtime: pd.DataFrame, machines: list[str], begin: pd.Timestamp, finish: pd.Timestamp
     ) -> pd.DataFrame:
         count = len(machines)
+        ids = next_ids(downtime, "event_id", count)
+        overlapping = (
+            downtime["machine_id"].isin(machines)
+            & (downtime["start_ts"] < finish)
+            & (downtime["end_ts"] > begin)
+        )  # baseline events inside the outage would double count; the outage supersedes them
         return append_rows(
-            downtime,
+            downtime[~overlapping],
             {
-                "event_id": next_ids(downtime, "event_id", count),
+                "event_id": ids,
                 "machine_id": machines,
                 "start_ts": [begin] * count,
                 "end_ts": [finish] * count,
@@ -280,57 +295,66 @@ class PowerOutage(Incident):
         )
 
     def daily_metric(self, tables: Tables) -> pd.Series[float]:
-        """Daily units produced by the affected plant."""
+        """Units the plant produced in the outage shift, per day (plant x shift x day)."""
         runs = tables["production_runs"]
-        plant = runs[runs["line_id"].isin(self._plant_lines(tables))]
+        plant = runs[
+            runs["line_id"].isin(self._plant_lines(tables))
+            & (runs["shift"] == self.params["shift"])
+        ]
         return pd.Series(plant.groupby(day_of(plant, "ts"))["units_produced"].sum(), dtype=float)
 
-    def manifest_entry(self) -> CaseManifest:
+    def manifest_entry(self, tables: Tables | None = None) -> CaseManifest:
         """Ground truth for the power outage."""
         plant, shift = self.segment["plant_id"], self.params["shift"]
         day = self.window[0].isoformat()
-        chain = [
+        chain = (
             ChainStep(
                 f"Output of plant {plant} is zero for the {shift} shift on {day}",
-                ["production_runs", "production_lines"],
-                ["line_id", "plant_id", "ts", "shift", "units_produced"],
+                ("production_runs", "production_lines"),
+                ("line_id", "plant_id", "ts", "shift", "units_produced"),
                 f"SELECT r.ts, SUM(r.units_produced) FROM production_runs r JOIN "
                 f"production_lines l USING (line_id) WHERE l.plant_id = '{plant}' "
                 f"AND CAST(r.ts AS DATE) = DATE '{day}' GROUP BY 1 ORDER BY 1",
             ),
             ChainStep(
-                "Every machine of the plant has a power downtime event covering the shift",
-                ["downtime_events", "machines", "production_lines"],
-                ["machine_id", "line_id", "plant_id", "start_ts", "end_ts", "reason_code"],
-                "SELECT machine_id, start_ts, end_ts FROM downtime_events "
-                f"WHERE reason_code = 'power' AND CAST(start_ts AS DATE) = DATE '{day}'",
+                f"Every machine of plant {plant} has a power downtime event covering the shift",
+                ("downtime_events", "machines", "production_lines"),
+                ("machine_id", "line_id", "plant_id", "start_ts", "end_ts", "reason_code"),
+                "SELECT d.machine_id, d.start_ts, d.end_ts FROM downtime_events d "
+                "JOIN machines m USING (machine_id) JOIN production_lines l USING (line_id) "
+                f"WHERE l.plant_id = '{plant}' AND d.reason_code = 'power' "
+                f"AND CAST(d.start_ts AS DATE) = DATE '{day}'",
             ),
             ChainStep(
                 f"A business event records the power outage at plant {plant}",
-                ["business_events"],
-                ["event_date", "event_type", "description", "plant_id"],
+                ("business_events",),
+                ("event_date", "event_type", "description", "plant_id"),
                 f"SELECT * FROM business_events WHERE event_type = '{OUTAGE_EVENT}' "
                 f"AND plant_id = '{plant}'",
             ),
-        ]
+        )
         return self.build_manifest(
             metric=MetricSpec(
-                "plant_units_produced",
+                "plant_shift_units_produced",
                 "production_runs",
                 "SUM(units_produced)",
-                "plant_id (via production_lines) x day",
+                "plant x shift x day",
             ),
-            effect=ExpectedEffect("down", 8.0 / 24.0),
+            effect=ExpectedEffect("down", 1.0),
             chain=chain,
             root_cause=RootCause(
                 f"A power outage at plant {plant} stopped every machine for the {shift} shift",
                 "external",
             ),
             counterfactual=Counterfactual(
-                "With grid power available during the shift, output would follow the usual "
-                "weekday profile",
-                "SELECT SUM(units_produced) FROM production_runs WHERE shift = "
-                f"'{shift}' AND CAST(ts AS DATE) = DATE '{day}'",
+                f"With grid power available, plant {plant} would have produced in the {shift} "
+                f"shift what it usually produces on the same weekday: compare the outage day "
+                f"with the preceding {PRE_WINDOW_DAYS} days",
+                f"SELECT CAST(r.ts AS DATE) AS day, SUM(r.units_produced) FROM production_runs r "
+                f"JOIN production_lines l USING (line_id) WHERE l.plant_id = '{plant}' "
+                f"AND r.shift = '{shift}' AND dayofweek(r.ts) = dayofweek(DATE '{day}') "
+                f"AND CAST(r.ts AS DATE) BETWEEN DATE '{day}' - INTERVAL {PRE_WINDOW_DAYS} DAY "
+                f"AND DATE '{day}' GROUP BY 1 ORDER BY 1",
             ),
-            keywords=["power", "outage", "downtime_events", "business_events", plant],
+            keywords=("power", "outage", "downtime_events", "business_events", plant, shift),
         )

@@ -23,11 +23,13 @@ from rootcause_evals.manufacturing.incidents import (
     assert_visible,
     instantiate,
 )
-from rootcause_evals.manufacturing.incidents.base import PlantedIncident
+from rootcause_evals.manufacturing.incidents.base import (
+    INCIDENT_STREAM,
+    PlantedIncident,
+    incident_rng,
+)
 
-__all__ = ["GeneratorConfig", "generate", "generate_with_manifest"]
-
-INCIDENT_STREAM = 1  # spawn key separating incident randomness from the baseline stream
+__all__ = ["INCIDENT_STREAM", "GeneratorConfig", "generate", "generate_with_manifest"]
 
 
 def generate(
@@ -39,7 +41,8 @@ def generate(
     """Generate every warehouse table for ``config`` as pandas DataFrames.
 
     The baseline layer is built first; ``incidents`` are then applied in order,
-    each with its own child generator so the baseline values never change. Unless
+    each with a generator keyed by the seed and its ``case_id`` (so the draws of one
+    incident never depend on the others) and the baseline values never change. Unless
     ``check_visibility`` is false, ``IncidentNotVisibleError`` is raised when a
     planted incident does not stand out (robust z below 3) in the final tables.
     """
@@ -49,9 +52,8 @@ def generate(
     tables = {**dimensions, **facts}
     if not incidents:
         return tables
-    children = np.random.SeedSequence([config.seed, INCIDENT_STREAM]).spawn(len(incidents))
-    for incident, child in zip(incidents, children, strict=True):
-        tables = incident.apply(tables, np.random.default_rng(child))
+    for incident in incidents:
+        tables = incident.apply(tables, incident_rng(config.seed, incident.case_id))
     if check_visibility:
         for incident in incidents:
             report = assert_visible(tables, incident)
@@ -66,4 +68,4 @@ def generate_with_manifest(
     """Generate the warehouse with every registered incident and its ground-truth manifest."""
     incidents = instantiate(config)
     tables = generate(config, incidents)
-    return tables, tuple(incident.manifest_entry() for incident in incidents)
+    return tables, tuple(incident.manifest_entry(tables) for incident in incidents)

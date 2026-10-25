@@ -1,8 +1,16 @@
 """Visibility check: a planted anomaly must stand out from the baseline noise.
 
-The score is a robust z of the window level against the eight weeks before it
-(median and MAD, optionally normalised by weekday), signed by the expected
-direction and scaled by the square root of the window length.
+The statistic is the unscaled, direction-signed robust z of the window median
+against the ``PRE_WINDOW_DAYS`` (56) days before the window::
+
+    z = sign * (median(window) - median(pre)) / (1.4826 * MAD(pre))
+
+where the series is the incident's daily metric, optionally divided by the pre-window
+median of the same weekday first (``weekday_adjusted``), ``MAD`` is the median absolute
+deviation of the pre-window, and ``sign`` is +1 for an expected rise and -1 for a drop.
+The z is not scaled by the window length: it is the shift in units of single-day
+noise, so a longer window does not make a weak effect look visible. An incident is
+visible when ``z >= 3``.
 """
 
 from __future__ import annotations
@@ -12,10 +20,14 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from rootcause_evals.manufacturing.incidents.base import PlantedIncident, Tables, window_bounds
+from rootcause_evals.manufacturing.incidents.base import (
+    PRE_WINDOW_DAYS,
+    PlantedIncident,
+    Tables,
+    window_bounds,
+)
 
 Z_THRESHOLD = 3.0
-PRE_WINDOW_DAYS = 56
 MAD_TO_SIGMA = 1.4826
 MIN_PRE_DAYS = 7
 SCALE_FLOOR = 1e-9
@@ -55,7 +67,7 @@ def _normalised(
 
 
 def robust_z(incident: PlantedIncident, series: pd.Series[float]) -> float:
-    """Signed robust z of the window level against the preceding eight weeks."""
+    """Signed robust z of the window median against the preceding ``PRE_WINDOW_DAYS`` days."""
     start, end_exclusive = window_bounds(incident.window)
     index = pd.DatetimeIndex(series.index)
     pre = series[(index >= start - pd.Timedelta(days=PRE_WINDOW_DAYS)) & (index < start)].dropna()
@@ -70,8 +82,7 @@ def robust_z(incident: PlantedIncident, series: pd.Series[float]) -> float:
     mad = float((pre_n - center).abs().median())
     scale = max(MAD_TO_SIGMA * mad, SCALE_FLOOR)
     sign = 1.0 if incident.direction == "up" else -1.0
-    shift = sign * (float(win_n.median()) - center)
-    return float(shift / scale * np.sqrt(len(win_n)))
+    return float(sign * (float(win_n.median()) - center) / scale)
 
 
 def assert_visible(tables: Tables, incident: PlantedIncident) -> VisibilityReport:

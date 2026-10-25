@@ -69,6 +69,17 @@ class RunGrid:
     work_order_product: npt.NDArray[np.int64]  # product index per work order (1-D)
 
 
+def scrap_rate(
+    shift_idx: npt.NDArray[np.int64], complexity: npt.NDArray[np.float64], multiplier: float = 1.0
+) -> npt.NDArray[np.float64]:
+    """Per-unit scrap probability by shift index and product complexity, capped at the maximum.
+
+    ``multiplier`` scales the base rate (1.0 is the baseline; incidents raise it).
+    """
+    rate = multiplier * BASE_SCRAP_RATE * SCRAP_SHIFT_FACTOR[shift_idx] * (0.8 + 0.1 * complexity)
+    return np.asarray(np.minimum(rate, MAX_SCRAP_RATE), dtype=np.float64)
+
+
 def _flat[S: np.generic](matrix: npt.NDArray[S]) -> npt.NDArray[S]:
     """Flatten a ``(lines, periods)`` matrix period-major."""
     return np.ascontiguousarray(matrix.T).reshape(-1)
@@ -127,8 +138,7 @@ def build_run_grid(
         * noise
     )
     units = rng.poisson(expected).astype(np.int64)
-    scrap_rate = BASE_SCRAP_RATE * SCRAP_SHIFT_FACTOR[shift_idx] * (0.8 + 0.1 * complexity)
-    scrapped = rng.binomial(units, np.minimum(scrap_rate, MAX_SCRAP_RATE)).astype(np.int64)
+    scrapped = rng.binomial(units, scrap_rate(shift_idx, complexity)).astype(np.int64)
     is_night = shift_idx == SHIFT_NAMES.index("night")
     cycle = std_cycle * (CYCLE_TIME_DRIFT + CYCLE_TIME_NOISE_SD * rng.normal(size=std_cycle.shape))
     cycle = cycle * (1.0 + NIGHT_CYCLE_TIME_PENALTY * is_night)

@@ -119,7 +119,7 @@ def run_generate(
         return code
     write_outputs(tables, out_dir)
     if incidents:
-        write_cases_json([i.manifest_entry() for i in incidents], out_dir / CASES_FILENAME)
+        write_cases_json([i.manifest_entry(tables) for i in incidents], out_dir / CASES_FILENAME)
     total = time.perf_counter() - started
     width = max(len(name) for name in tables)
     for name, frame in tables.items():
