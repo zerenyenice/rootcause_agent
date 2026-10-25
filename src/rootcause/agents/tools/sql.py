@@ -3,7 +3,10 @@
 The real executor lands later; tools only depend on the protocol. Expensive
 queries (estimate above the row threshold) are gated twice: the orchestrator's
 human-in-the-loop predicate interrupts before the tool runs, and the tool itself
-refuses to run an unapproved expensive query when used directly.
+refuses to run an unapproved expensive query when used directly. A statement the
+predicate finds invalid (rejected by the validator, unknown table, DuckDB parser/
+binder/catalog error) is not escalated: the tool's own ``explain`` raises again and
+the model gets an error payload with the validator codes or DuckDB's detail.
 
 Rows never enter message text (PROJECT.md section 7): ``run_sql`` writes them to
 the agent filesystem under ``/query_results/<tool_call_id>.json`` and returns
@@ -130,7 +133,9 @@ def _error(exc: Exception, tool_call_id: str | None) -> dict[str, Any]:
 
     Database errors quote row values (constraint violations, casts) and DSNs, so
     neither the message nor ``exc_info`` is logged: only the exception type and
-    the stack frames (code locations, no values).
+    the stack frames (code locations, no values). The payload adds the validator
+    issue ``codes`` of a rejected query and the executor's ``detail`` (set only
+    for invalid-statement errors) so the model can correct its SQL.
     """
     _logger.error(
         "sql_tool_failed",
@@ -138,7 +143,21 @@ def _error(exc: Exception, tool_call_id: str | None) -> dict[str, Any]:
         error_type=type(exc).__name__,
         frames="".join(traceback.format_tb(exc.__traceback__)),
     )
-    return {"error": {"code": type(exc).__name__, "message": _ERROR_MESSAGE}}
+    error: dict[str, Any] = {"code": type(exc).__name__, "message": _ERROR_MESSAGE}
+    return {"error": {**error, **_actionable_fields(exc)}}
+
+
+def _actionable_fields(exc: Exception) -> dict[str, Any]:
+    """``codes`` (QueryRejected) and ``detail`` (QueryFailed) when the error carries them."""
+    # Matched by class name: the executor module imports this one.
+    name = type(exc).__name__
+    codes = getattr(exc, "codes", None)
+    if name == "QueryRejected" and codes is not None:
+        return {"codes": [str(code) for code in codes]}
+    detail = getattr(exc, "detail", None)
+    if name == "QueryFailed" and isinstance(detail, str) and detail:
+        return {"detail": detail}
+    return {}
 
 
 def _json_value(value: Any) -> Any:

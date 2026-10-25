@@ -2,8 +2,9 @@
 
 Used by the evaluation runner, whose contract hands the agent only the question.
 The orchestrator is told no user is available, so it delegates instead of asking.
-Every approval interrupt is rejected (nobody is there to approve an expensive
-scan), so the run continues with the agent proposing cheaper queries.
+Every approval interrupt is rejected (nobody is there to approve a large or
+un-estimable scan), so the run continues with the agent proposing cheaper or
+corrected queries. Invalid SQL never interrupts: it comes back as a tool error.
 """
 
 import time
@@ -31,8 +32,9 @@ from rootcause.settings import get_settings
 MAX_RESUMES = 20
 TASK_TOOL = "task"
 _REJECTION_MESSAGE = (
-    "Rejected automatically: unattended runs cannot approve large scans. "
-    "Use a cheaper query (filters, sampling, aggregates)."
+    "Rejected automatically: this query needs human approval (its scan is large or "
+    "could not be estimated) and unattended runs cannot approve. Use a cheaper or "
+    "corrected query (filters, aggregates, valid columns)."
 )
 _UNATTENDED_INSTRUCTION = (
     "Unattended run: no user is available to answer questions or approve scans. "

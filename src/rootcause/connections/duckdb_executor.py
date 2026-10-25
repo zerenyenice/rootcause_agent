@@ -95,6 +95,12 @@ _COLUMNS_SQL = (
     "AND table_name = ? ORDER BY ordinal_position"
 )
 _CARDINALITY_KEY = "Estimated Cardinality"
+# DuckDB errors about the statement itself (syntax, names, catalog), not the data:
+# their message is safe and useful to hand back to the model as ``detail``.
+INVALID_STATEMENT_ERROR_TYPES = frozenset(
+    {"ParserException", "BinderException", "CatalogException"}
+)
+MAX_ERROR_DETAIL_CHARS = 500
 
 
 class QueryRejected(RootCauseError):
@@ -120,16 +126,19 @@ class QueryTimeout(RootCauseError):
 class QueryFailed(RootCauseError):
     """The database raised while executing a validated statement.
 
-    The message is generic; ``error_type`` names the DuckDB exception class for
-    server-side logging only. The original exception is never chained, since its
-    message can embed SQL text, identifiers and row values.
+    The message is generic; ``error_type`` names the DuckDB exception class. The
+    original exception is never chained, since its message can embed SQL text,
+    identifiers and row values. ``detail`` carries DuckDB's (truncated) message
+    only for :data:`INVALID_STATEMENT_ERROR_TYPES`, so the model can correct the
+    statement; it is never logged.
     """
 
     code = "query_failed"
 
-    def __init__(self, error_type: str) -> None:
+    def __init__(self, error_type: str, detail: str | None = None) -> None:
         super().__init__("The warehouse query failed.")
         self.error_type = error_type
+        self.detail = detail
 
 
 class UnknownTable(RootCauseError):
@@ -140,6 +149,21 @@ class UnknownTable(RootCauseError):
 
     def __init__(self) -> None:
         super().__init__("Unknown table or column.")
+
+
+def is_invalid_statement(exc: BaseException) -> bool:
+    """Whether ``exc`` says the statement itself is invalid (not the data or the runtime)."""
+    if isinstance(exc, QueryRejected | UnknownTable):
+        return True
+    return isinstance(exc, QueryFailed) and exc.error_type in INVALID_STATEMENT_ERROR_TYPES
+
+
+def _query_failed(error: duckdb.Error) -> QueryFailed:
+    """A :class:`QueryFailed` with DuckDB's message as ``detail`` for invalid statements only."""
+    error_type = type(error).__name__
+    if error_type not in INVALID_STATEMENT_ERROR_TYPES:
+        return QueryFailed(error_type)
+    return QueryFailed(error_type, str(error)[:MAX_ERROR_DETAIL_CHARS])
 
 
 @dataclass(frozen=True, slots=True)
@@ -337,7 +361,7 @@ class DuckDBExecutor:
             except duckdb.InterruptException:
                 raise QueryTimeout(self._timeout) from None
             except duckdb.Error as error:
-                raise QueryFailed(type(error).__name__) from None
+                raise _query_failed(error) from None
             except ResultTooLarge:
                 raise QueryRejected([RESULT_TOO_LARGE_CODE]) from None
             finally:

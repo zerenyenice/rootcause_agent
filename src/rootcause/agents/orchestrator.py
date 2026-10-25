@@ -27,6 +27,7 @@ from rootcause.agents.tools.sql import (
     thread_id_of,
 )
 from rootcause.clients import chat_model
+from rootcause.connections.duckdb_executor import is_invalid_statement
 from rootcause.errors import ConfigurationError
 from rootcause.observability.tracing import run_config
 from rootcause.settings import Environment, Settings, get_settings
@@ -92,8 +93,9 @@ def _approval_config(
     def evaluate(sql: str) -> ApprovalDecision:
         try:
             estimate = executor.explain(sql)
-        except Exception:  # noqa: BLE001 - fail closed: a human decides when unsure
-            return ApprovalDecision(requires_approval=True, estimate=None)
+        except Exception as exc:  # noqa: BLE001 - fail closed unless the SQL is invalid
+            # Invalid SQL never runs: run_sql's own explain raises and returns the error.
+            return ApprovalDecision(requires_approval=not is_invalid_statement(exc), estimate=None)
         return ApprovalDecision(estimate.estimated_rows > threshold, estimate)
 
     def decide(thread_id: str, tool_call: Any) -> ApprovalDecision:
