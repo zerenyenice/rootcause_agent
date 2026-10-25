@@ -35,7 +35,7 @@ def test_loads_all_fields_from_prefixed_env_vars(
     assert settings.database_url.get_secret_value() == database_url
     assert str(settings.openviking_url).startswith("http://viking.local:1933")
     assert settings.otel_exporter == "otlp"
-    assert settings.otel_endpoint == "http://otel:4318"
+    assert str(settings.otel_endpoint).rstrip("/") == "http://otel:4318"
     assert settings.service_name == "analyzer"
 
 
@@ -142,7 +142,7 @@ def test_settings_are_frozen() -> None:
     settings = _load()
 
     with pytest.raises(Exception) as excinfo:  # noqa: PT011 - pydantic ValidationError
-        settings.service_name = "mutated"
+        settings.service_name = "mutated"  # type: ignore[misc]  # intentional: asserting frozen model raises
 
     assert type(excinfo.value).__name__ == "ValidationError"
     assert settings.service_name == "rootcause"

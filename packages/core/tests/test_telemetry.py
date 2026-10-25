@@ -158,12 +158,16 @@ def test_traces_endpoint_resolves_otlp_traces_url(base: str, expected: str) -> N
 def test_otlp_exporter_registers_batch_processor_and_exports_nothing_to_stdout(
     monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str], database_url: str
 ) -> None:
+    from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+    from opentelemetry.sdk.trace.export import SpanExportResult
+
     from rootcause_core.telemetry import (
         configure_telemetry,
         get_tracer,
         shutdown_telemetry,
     )
 
+    monkeypatch.setattr(OTLPSpanExporter, "export", lambda self, spans: SpanExportResult.SUCCESS)
     provider = configure_telemetry(
         _settings(
             monkeypatch,
