@@ -54,6 +54,9 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 [tool.mypy]
 python_version = "3.12"
 strict = true
+# Teaches mypy pydantic's synthesized __init__ (BaseSettings fields are
+# optional kwargs because they are populated from the environment).
+plugins = ["pydantic.mypy"]
 # Every tests/ dir has a test_smoke.py and no __init__.py, so mypy needs explicit
 # package bases to give them distinct module names (packages.core.tests.test_smoke
 # etc.). The src/ roots are listed as bases so library modules keep their real

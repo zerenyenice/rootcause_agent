@@ -1,0 +1,97 @@
+"""Structured logging bootstrap built on ``structlog`` with stdlib integration.
+
+Both structlog-native and plain ``logging`` records flow through the same
+processor chain and renderer, so third-party libraries produce the same JSON
+(or console) lines as application code. When an OpenTelemetry span is active,
+``trace_id``/``span_id`` are attached so log lines can be joined to traces.
+"""
+
+import logging
+import sys
+from typing import TextIO
+
+import structlog
+from opentelemetry import trace
+from structlog.typing import EventDict, Processor, WrappedLogger
+
+from rootcause_core.settings import LogFormat, Settings
+
+TRACE_ID_FIELD = "trace_id"
+SPAN_ID_FIELD = "span_id"
+
+
+class _StdoutHandler(logging.StreamHandler[TextIO]):
+    """Marker subclass so reconfiguration replaces only the handler we own."""
+
+
+def add_trace_context(_logger: WrappedLogger, _method: str, event_dict: EventDict) -> EventDict:
+    """Attach the current span's ids as zero-padded hex when a span is active."""
+    context = trace.get_current_span().get_span_context()
+    if not context.is_valid:
+        return event_dict
+    return {
+        **event_dict,
+        TRACE_ID_FIELD: format(context.trace_id, "032x"),
+        SPAN_ID_FIELD: format(context.span_id, "016x"),
+    }
+
+
+def _shared_processors() -> tuple[Processor, ...]:
+    return (
+        structlog.contextvars.merge_contextvars,
+        structlog.stdlib.add_logger_name,
+        structlog.stdlib.add_log_level,
+        structlog.stdlib.PositionalArgumentsFormatter(),
+        structlog.processors.TimeStamper(fmt="iso", utc=True, key="timestamp"),
+        add_trace_context,
+        structlog.processors.StackInfoRenderer(),
+        structlog.processors.format_exc_info,
+    )
+
+
+def _renderer(log_format: LogFormat) -> Processor:
+    if log_format is LogFormat.JSON:
+        return structlog.processors.JSONRenderer()
+    return structlog.dev.ConsoleRenderer()
+
+
+def _install_stdout_handler(formatter: logging.Formatter, level: str) -> None:
+    """Replace any handler we installed earlier with a fresh one on current stdout."""
+    root = logging.getLogger()
+    for handler in [h for h in root.handlers if isinstance(h, _StdoutHandler)]:
+        root.removeHandler(handler)
+        handler.close()
+    handler = _StdoutHandler(sys.stdout)
+    handler.setFormatter(formatter)
+    root.addHandler(handler)
+    root.setLevel(level)
+
+
+def configure_logging(settings: Settings) -> None:
+    """Configure structlog and the stdlib root logger from ``settings``.
+
+    Safe to call more than once; each call rebuilds the stdout handler so the
+    stream is resolved at call time rather than cached at import.
+    """
+    shared = _shared_processors()
+    structlog.configure(
+        processors=[*shared, structlog.stdlib.ProcessorFormatter.wrap_for_formatter],
+        logger_factory=structlog.stdlib.LoggerFactory(),
+        wrapper_class=structlog.stdlib.BoundLogger,
+        cache_logger_on_first_use=False,
+    )
+    formatter = structlog.stdlib.ProcessorFormatter(
+        processors=[
+            structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+            _renderer(settings.log_format),
+        ],
+        # ExtraAdder copies stdlib ``extra={...}`` fields into the event dict so
+        # third-party records render them like structlog key-value pairs.
+        foreign_pre_chain=[structlog.stdlib.ExtraAdder(), *shared],
+    )
+    _install_stdout_handler(formatter, settings.log_level)
+
+
+def get_logger(name: str) -> structlog.stdlib.BoundLogger:
+    """Return a structlog logger bound to the stdlib logger ``name``."""
+    return structlog.stdlib.get_logger(name)

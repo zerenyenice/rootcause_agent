@@ -3,7 +3,12 @@ name = "rootcause-core"
 version = "0.1.0"
 description = "RootCause shared core: settings, logging and base types."
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "pydantic-settings>=2.6",
+    "structlog>=24",
+    "opentelemetry-sdk>=1.27",
+    "opentelemetry-exporter-otlp-proto-http>=1.27",
+]
 
 [build-system]
 requires = ["hatchling>=1.25"]
