@@ -33,9 +33,9 @@ TABLE_ORDER: tuple[str, ...] = (
     "production_lines",
     "machines",
     "product_families",
-    "products",
     "suppliers",
     "materials",
+    "products",
     "material_lots",
     "operators",
     "shift_assignments",
@@ -75,6 +75,16 @@ PRIMARY_KEYS: Mapping[str, tuple[str, ...]] = {
 # table -> ((column, parent table, parent column), ...)
 FOREIGN_KEYS: Mapping[str, tuple[tuple[str, str, str], ...]] = {
     "production_lines": (("plant_id", "plants", "plant_id"),),
+    "products": (
+        ("family_id", "product_families", "family_id"),
+        ("material_id", "materials", "material_id"),
+    ),
+    "materials": (("primary_supplier_id", "suppliers", "supplier_id"),),
+    "operators": (("home_line_id", "production_lines", "line_id"),),
+    "downtime_events": (("machine_id", "machines", "machine_id"),),
+    "maintenance_events": (("machine_id", "machines", "machine_id"),),
+    "energy_meter_readings": (("line_id", "production_lines", "line_id"),),
+    "business_events": (("plant_id", "plants", "plant_id"),),
     "machines": (("line_id", "production_lines", "line_id"),),
     "material_lots": (
         ("supplier_id", "suppliers", "supplier_id"),
@@ -84,12 +94,20 @@ FOREIGN_KEYS: Mapping[str, tuple[tuple[str, str, str], ...]] = {
         ("operator_id", "operators", "operator_id"),
         ("line_id", "production_lines", "line_id"),
     ),
-    "work_orders": (("line_id", "production_lines", "line_id"),),
+    "work_orders": (
+        ("line_id", "production_lines", "line_id"),
+        ("product_id", "products", "product_id"),
+    ),
     "production_runs": (
         ("line_id", "production_lines", "line_id"),
         ("work_order_id", "work_orders", "work_order_id"),
+        ("product_id", "products", "product_id"),
+        ("material_lot_id", "material_lots", "lot_id"),
     ),
-    "quality_inspections": (("run_id", "production_runs", "run_id"),),
+    "quality_inspections": (
+        ("run_id", "production_runs", "run_id"),
+        ("inspector_id", "operators", "operator_id"),
+    ),
     "machine_telemetry": (("machine_id", "machines", "machine_id"),),
     "warranty_claims": (
         ("run_id", "production_runs", "run_id"),
@@ -194,7 +212,7 @@ def _copy_ready(frame: pd.DataFrame) -> pd.DataFrame:
         elif spec.sql_type == "BOOLEAN":
             series = series.map({True: "t", False: "f"})
         elif spec.sql_type == "TEXT":
-            series = series.astype("string").str.replace("\\", "\\\\", regex=False)
+            series = series.astype("str").str.replace("\\", "\\\\", regex=False)
             series = series.str.replace("\t", "\\t", regex=False)
             series = series.str.replace("\n", "\\n", regex=False)
             series = series.str.replace("\r", "\\r", regex=False)

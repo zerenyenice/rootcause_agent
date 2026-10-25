@@ -178,10 +178,14 @@ TABLE_DOCS: Mapping[str, TableDoc] = MappingProxyType(
             kwh="Energy consumed by the line in the period in kWh.",
         ),
         "warranty_claims": _doc(
-            "Customer warranty claims traced back to the production run.",
+            "Customer warranty claims traced back to the production run. Claims for production "
+            "in the last 90 days are right-censored at the window end.",
             claim_id="Claim identifier.",
             product_id="Product claimed.",
-            run_id="Production run that built the claimed unit.",
+            run_id=(
+                "Production run that built the claimed unit; null means the unit was produced "
+                "before the warehouse history starts."
+            ),
             claim_date="Date the claim was filed (30 to 90 days after production).",
             defect_type="Reported defect: noise, leak, electrical, cosmetic or failure.",
             claim_cost="Cost of the claim in euros.",

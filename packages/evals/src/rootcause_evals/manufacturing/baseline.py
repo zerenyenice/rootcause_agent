@@ -168,7 +168,7 @@ def assign_material_lots(
         chosen[run_mask] = lot_ids_all[lot_mask][np.clip(eligible - 1 - back, 0, None)]
     blank = rng.choice(len(run_ts), size=int(MATERIAL_LOT_NULL_SHARE * len(run_ts)), replace=False)
     chosen[blank] = None
-    return pd.Series(chosen, dtype="string")
+    return pd.Series(chosen, dtype="str")
 
 
 def build_production_runs(

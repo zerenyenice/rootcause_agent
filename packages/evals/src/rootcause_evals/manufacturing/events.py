@@ -85,7 +85,7 @@ def build_quality_inspections(
             "gauge_id": gauge,
             "measured_value": np.round(measured, 4),
             "passed": passed,
-            "defect_type": pd.Series(defects, dtype="string").mask(passed),
+            "defect_type": pd.Series(defects, dtype="str").mask(passed),
             "source_system": SOURCE_SYSTEM,
         }
     )
@@ -179,7 +179,7 @@ def build_maintenance_events(
     combined = pd.concat([planned, unplanned], ignore_index=True)
     ordered = combined.sort_values(["scheduled_date", "machine_id", "kind"], kind="stable")
     ordered = ordered.reset_index(drop=True)
-    ordered = ordered.assign(parts_replaced=ordered["parts_replaced"].astype("string"))
+    ordered = ordered.assign(parts_replaced=ordered["parts_replaced"].astype("str"))
     ids = np.arange(1, len(ordered) + 1, dtype=np.int64)
     return ordered.assign(event_id=ids)[["event_id", *combined.columns]]
 
@@ -227,12 +227,12 @@ def _burn_in_claims(
 
     The first in-window days are used as the template for that earlier production
     (tiled backwards over the burn-in length), so claim arrivals are stationary from
-    day 1. The virtual runs do not exist as rows, so each such claim references
-    the earliest in-window run of the same product; claims that would be dated
-    before the window, or not after their referenced run, are dropped.
+    day 1. The virtual runs do not exist as rows, so these claims carry a null
+    ``run_id`` (the unit was produced before the history starts); claims that would
+    be dated before the window are dropped.
     """
-    window_start = np.datetime64(config.start, "ns")
     template_days = min(config.days, CLAIM_BURN_IN_DAYS)
+    window_start = np.datetime64(config.start, "ns")
     template = runs.loc[runs["ts"] < window_start + np.timedelta64(template_days, "D")]
     # Tile the template backwards until the whole burn-in period is covered.
     n_tiles = -(-CLAIM_BURN_IN_DAYS // template_days)
@@ -243,15 +243,11 @@ def _burn_in_claims(
     virtual_day = template["ts"].to_numpy()[idx].astype("datetime64[D]").astype("datetime64[ns]")
     virtual_day = virtual_day - (tile_no * template_days).astype("timedelta64[D]")
     lag = rng.integers(CLAIM_LAG_MIN_DAYS, CLAIM_LAG_MAX_DAYS + 1, size=len(idx))
-    product = template["product_id"].to_numpy()[idx]
-    earliest = runs.sort_values("ts", kind="stable").drop_duplicates("product_id")
-    earliest = earliest.set_index("product_id")
     return pd.DataFrame(
         {
-            "product_id": product,
-            "run_id": earliest["run_id"].reindex(product).to_numpy(),
+            "product_id": template["product_id"].to_numpy()[idx],
+            "run_id": pd.array([pd.NA] * len(idx), dtype="Int64"),
             "claim_date": _days(virtual_day, lag),
-            "run_ts": earliest["ts"].reindex(product).to_numpy(),
         }
     )
 
@@ -265,8 +261,8 @@ def build_warranty_claims(
     """Claims arrive 30-90 days after the run; rate scales with units and complexity.
 
     Claims from in-window runs are combined with burn-in claims (see
-    ``_burn_in_claims``) and clipped to the window, so there are no future-dated
-    rows and the daily claim rate is stationary from the first day.
+    ``_burn_in_claims``, null ``run_id``) and clipped to the window, so there are no
+    future-dated rows and the daily claim rate is stationary from the first day.
     """
     complexity = products.set_index("product_id")["complexity_score"]
     counts = _claim_counts(rng, runs, complexity)
@@ -276,20 +272,15 @@ def build_warranty_claims(
     in_window = pd.DataFrame(
         {
             "product_id": runs["product_id"].to_numpy()[run_idx],
-            "run_id": runs["run_id"].to_numpy()[run_idx],
+            "run_id": pd.array(runs["run_id"].to_numpy()[run_idx], dtype="Int64"),
             "claim_date": _days(run_day, lag),
-            "run_ts": runs["ts"].to_numpy()[run_idx],
         }
     )
     burn_in = _burn_in_claims(config, rng, runs, complexity)
     combined = pd.concat([burn_in, in_window], ignore_index=True)
-    window_end = np.datetime64(config.start, "ns") + np.timedelta64(config.days, "D")
     window_start = np.datetime64(config.start, "ns")
-    keep = (
-        (combined["claim_date"] >= window_start)
-        & (combined["claim_date"] < window_end)
-        & (combined["claim_date"] > combined["run_ts"])
-    )
+    window_end = window_start + np.timedelta64(config.days, "D")
+    keep = (combined["claim_date"] >= window_start) & (combined["claim_date"] < window_end)
     kept = combined.loc[keep].sort_values("claim_date", kind="stable").reset_index(drop=True)
     n = len(kept)
     defects = np.array(WARRANTY_DEFECT_TYPES, dtype=str)
@@ -297,7 +288,7 @@ def build_warranty_claims(
         {
             "claim_id": np.arange(1, n + 1, dtype=np.int64),
             "product_id": kept["product_id"].to_numpy(),
-            "run_id": kept["run_id"].to_numpy().astype(np.int64),
+            "run_id": kept["run_id"],
             "claim_date": kept["claim_date"].to_numpy(),
             "defect_type": defects[rng.integers(0, len(defects), size=n)],
             "claim_cost": np.round(rng.uniform(40.0, 600.0, size=n), 2),
@@ -335,7 +326,7 @@ def build_business_events(
     ordered = combined.sort_values(["event_date", "event_type"], kind="stable").reset_index(
         drop=True
     )
-    ordered = ordered.assign(plant_id=ordered["plant_id"].astype("string"))
+    ordered = ordered.assign(plant_id=ordered["plant_id"].astype("str"))
     ids = np.arange(1, len(ordered) + 1, dtype=np.int64)
     return ordered.assign(event_id=ids)[["event_id", *combined.columns]]
 
