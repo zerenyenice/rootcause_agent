@@ -27,3 +27,5 @@ coverage/
 
 # Machine-local Claude Code settings
 .claude/settings.local.json
+
+coverage.xml
