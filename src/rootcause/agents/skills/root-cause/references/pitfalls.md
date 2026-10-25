@@ -24,13 +24,31 @@ process, control or decision behind it.
 ## Single thread when several causes exist
 
 ```
-Problem: OEE fell from 78% to 65%
-Why 1: unplanned downtime +9 points AND speed loss +4 points
-  Branch A (downtime, 69% of delta) -> bearing failures on press P2 -> PM interval stretched
-  Branch B (speed, 31% of delta)    -> new resin lot runs slower -> no incoming material spec
+Problem: OEE fell from 78% to 65% (13 points)
+
+Parent chain (largest share: downtime, 9 of 13 points = 69%)
+  Why 1: the 13-point loss is unplanned downtime (9 points) and speed loss (4 points)
+  Why 2: 80% of the extra downtime is bearing failures on press P2
+  Why 3: P2 bearings failed after its PM interval was stretched from 500 to 900 hours
+  Root cause (process): PM intervals can be changed without a reliability review
+  Validation: Why 3 -> Why 2, Why 2 -> Why 1, Why 1 -> problem
+  Countermeasures: immediate, preventive, detection
+
+  branches[0] (speed loss, 4 of 13 points = 31% > 25%)
+    Why 1: the 13-point loss is unplanned downtime (9 points) and speed loss (4 points)
+                                                       <- shared prefix, repeated
+    Why 2: cycle time is 8% longer on every run using resin lot R-2
+    Why 3: lot R-2 melt flow index is outside the range of all earlier lots
+    Root cause (process): there is no incoming material spec for melt flow index
+    Validation: Why 3 -> Why 2, Why 2 -> Why 1, Why 1 -> problem
+    Countermeasures: immediate, preventive, detection
 ```
 
-Both explain more than 25% of the delta, so both become branches.
+The parent follows the largest-share cause to its own root cause. Speed loss
+also explains more than 25% of the delta, so it becomes a branch, and the
+branch is a complete chain on its own: it repeats the shared Why 1, then has
+its own evidenced levels, root cause and validation checks. A cause at or below
+25% would go in `notes` instead.
 
 ## Unverified assumptions
 

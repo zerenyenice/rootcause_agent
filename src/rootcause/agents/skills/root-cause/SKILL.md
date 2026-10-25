@@ -11,7 +11,8 @@ repeatedly. Unlike classic 5 Whys, every why is answered by an executed query
 against the connected database, never by reasoning alone.
 
 Adapted from the 5-Whys Root Cause Analysis skill by awesome-skills
-(https://github.com/awesome-skills/5-whys-skill), MIT licence.
+(https://github.com/awesome-skills/5-whys-skill), MIT licence; see `LICENSE`
+in this skill directory for the full notice.
 
 ## Ground rules
 
@@ -33,13 +34,17 @@ Adapted from the 5-Whys Root Cause Analysis skill by awesome-skills
 | `list_tables` | See which tables exist |
 | `describe_table` | Read columns, types and keys before writing SQL |
 | `column_values` | Check real categorical values before filtering on them |
+| `explain_sql(sql)` | Estimate rows and cost of a query without running it |
 | `run_sql(sql, purpose)` | Execute a read-only query |
 
-`run_sql` returns a summary (columns, row_count, truncated, sql) and a `path`.
-Large results are not inlined: read the rows from that file path with
-`read_file` (in slices) instead of re-running a wider query. If it returns
-`approval_required`, narrow the query (filters, aggregation, shorter window)
-or wait for approval; do not work around it.
+Estimate with `explain_sql` before any heavy query (wide joins, long windows,
+unaggregated scans). `run_sql` returns a summary (columns, row_count,
+truncated, sql) and a `path`. Large results are not inlined: read the rows from
+that file path with `read_file` (in slices) instead of re-running a wider
+query. A query over the row threshold returns `approval_required` and waits for
+human approval. If a query is rejected or not approved, never retry the same
+SQL: narrow it with filters, aggregation or a shorter window instead, and do
+not work around the check.
 
 ## Phase 1: Define the problem
 
@@ -51,9 +56,20 @@ State the problem with numbers, using the template:
 - **Impact**: the measurable consequence
 
 Inspect the schema first (`list_tables`, `describe_table`), then run a query
-that measures the problem yourself. If the data disagrees with the user's claim,
-say so before going further. If the problem is vague ("quality is bad"), restate
-it in the template and ask the user to quantify it.
+that measures the problem yourself.
+
+You cannot ask the user anything directly; your only output is the WhyChain.
+Stop and hand the question back through the orchestrator when:
+
+- the problem is too vague to quantify ("quality is bad"), or
+- the data contradicts the user's claim.
+
+In both cases return a WhyChain with `partial: true`, the best `problem` you
+can fill (every field non-empty; write "unspecified" where unknown),
+`levels: []`, `root_cause: null`, and in `notes` either the quantification
+request (which metric, window and scope you need) or the disagreement (what
+the user claimed versus what the query measured, with the SQL). The
+orchestrator relays it to the user.
 
 ## Phase 2: Ask why, level by level
 
@@ -73,9 +89,19 @@ For each level:
 Quality check per level: is it factual, does it explain the previous level, is
 it a mechanism rather than the same symptom at a finer grain?
 
-**Branching**: when two candidates each explain more than 25% of the delta,
-open a branch for each. A branch is a nested WhyChain in `branches` with its
-own levels, root cause and validation. Otherwise follow the strongest one.
+**Branching**: when more than one supported cause explains a share of the
+delta, use this convention:
+
+- The parent chain follows the largest-share cause all the way to its own
+  root cause, validation and countermeasures.
+- Each additional cause that explains more than 25% of the delta becomes a
+  branch: a nested WhyChain in `branches`. Causes at or below 25% are named in
+  `notes`, not branched.
+- A branch is a complete WhyChain. Its `problem` is the parent's problem, and
+  its `levels` start at Why 1 and repeat the shared prefix (the levels it has
+  in common with the parent) before diverging, so every branch on its own has
+  3-7 evidenced levels, a `root_cause` and `validation` checks. The only
+  exception is a branch marked `partial: true` with the reason in `notes`.
 
 ## Phase 3: Identify the root cause
 
@@ -141,10 +167,12 @@ For worked examples and the pitfalls in detail, read
 
 ## Checklist
 
-- [ ] Problem measured by a query and stated in the template
+- [ ] Problem measured by a query and stated in the template, or a partial
+      chain with `levels: []` and the question for the user in `notes`
 - [ ] 3-7 levels, each with at least one executed query in `evidence`
 - [ ] No level restates the symptom at another grain
-- [ ] Branch opened for every second cause above 25% of the delta
+- [ ] Parent follows the largest-share cause; every other cause above 25% of
+      the delta is a complete branch (shared prefix repeated) or marked partial
 - [ ] Root cause is actionable and names a process, never an individual
 - [ ] Every link validated backwards; failures reported
 - [ ] Immediate, preventive and detection countermeasures
