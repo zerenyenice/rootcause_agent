@@ -1,11 +1,16 @@
 name: CI
 
-# This repo ships no application (no package.json/pyproject.toml/tests) — it
-# is the agent-harness template itself. CI therefore protects the template's
-# own integrity: generated surfaces must match their sources, shell/JSON
-# config must parse and lint clean, and every commit must carry this
-# project's git-protocol trailers. See docs/CI.md for the full rationale and
-# local repro commands for each job below.
+# This repo is both the agent-harness template and the RootCause Python
+# monorepo (a uv workspace: apps/api + packages/*, with ruff/mypy/pytest
+# configured in pyproject.toml). CI therefore has two concerns:
+#   1. Product quality — `python-quality` mirrors the local lint → format →
+#      typecheck → test commands and fails under 80% coverage (the Gate 2
+#      bar); `dependency-audit` checks locked runtime deps for known CVEs.
+#   2. Harness integrity — generated surfaces must match their sources,
+#      shell/JSON config must parse and lint clean, and every commit must
+#      carry this project's git-protocol trailers.
+# See docs/CI.md for the full rationale and local repro commands for each
+# job below.
 
 on:
   pull_request:
@@ -215,3 +220,100 @@ jobs:
             exit 1
           fi
           echo "All ${#commits[@]} commit(s) in range satisfy the commit protocol."
+
+  # Product quality gate, mirroring the local commands from pyproject.toml in
+  # fail-fast order: lint → format → typecheck → tests with coverage. The
+  # --cov-fail-under value MUST stay at the 80% from rules/common/testing.md;
+  # lowering it (or adding continue-on-error / deleting a step) is a Gate 2
+  # override only the user can grant.
+  python-quality:
+    name: python-quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # uv itself is version-pinned so the runner resolves/installs exactly
+      # like a developer's machine; bump deliberately via a `ci:` commit.
+      - name: Install uv (cache keyed on uv.lock)
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: "0.13.5"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install Python 3.12
+        run: uv python install 3.12
+
+      - name: Sync workspace from uv.lock (fails if lockfile is stale)
+        run: uv sync --locked
+
+      - name: Lint with ruff
+        run: uv run ruff check .
+
+      - name: Check formatting with ruff
+        run: uv run ruff format --check .
+
+      - name: Typecheck with mypy (strict)
+        run: uv run mypy
+
+      - name: Run tests with coverage (fail under 80%)
+        run: uv run pytest -q --cov --cov-report=xml --cov-report=term-missing --cov-fail-under=80
+
+      - name: Upload coverage.xml (7-day retention)
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-xml
+          path: coverage.xml
+          if-no-files-found: warn
+          retention-days: 7
+
+  # Supply-chain gate (rules/devops/security.md): export the locked *runtime*
+  # dependency set of every workspace member — dev tooling (--no-dev) and the
+  # first-party members themselves (--no-emit-workspace) excluded — and audit
+  # it against the PyPI advisory DB. Any known vulnerability fails the job;
+  # --strict also fails if a dependency cannot be resolved for auditing
+  # instead of silently skipping it.
+  dependency-audit:
+    name: dependency-audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      PIP_AUDIT_VERSION: "2.10.1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # cache-suffix keeps this job's cache key distinct from python-quality's
+      # (same uv.lock glob) so the two jobs don't race to save one key.
+      - name: Install uv (cache keyed on uv.lock)
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: "0.13.5"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+          cache-suffix: audit
+
+      - name: Export locked runtime dependencies to requirements-audit.txt
+        run: |
+          set -euo pipefail
+          uv export --locked --no-dev --no-emit-workspace \
+            --format requirements.txt -o requirements-audit.txt
+          # While the workspace has no third-party runtime deps the export is
+          # comment-only. pip-audit accepts that (exit 0, "No known
+          # vulnerabilities found" — verified locally), so nothing is
+          # special-cased here; the notice just keeps the empty set visible.
+          if ! grep -qvE '^[[:space:]]*(#|$)' requirements-audit.txt; then
+            echo "::notice::No third-party runtime dependencies in uv.lock; the audit set is empty."
+          fi
+
+      - name: Audit runtime dependencies with pip-audit
+        run: >
+          uv tool run "pip-audit@${PIP_AUDIT_VERSION}"
+          -r requirements-audit.txt --strict --progress-spinner off
