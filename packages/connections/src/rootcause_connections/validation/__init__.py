@@ -126,7 +126,7 @@ def _validate(
 def _policy_errors(statement: exp.Expr, dialect: str) -> tuple[ValidationIssue, ...]:
     return (
         *read_only_issues(statement),
-        *statement_keyword_alias_issues(statement),
+        *statement_keyword_alias_issues(statement, dialect),
         *function_issues(statement, dialect),
         *source_issues(statement, dialect),
     )

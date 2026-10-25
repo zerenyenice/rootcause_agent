@@ -213,8 +213,14 @@ def read_only_issues(statement: exp.Expr) -> Iterator[ValidationIssue]:
             )
 
 
-def statement_keyword_alias_issues(statement: exp.Expr) -> Iterator[ValidationIssue]:
-    """Flag unquoted aliases that look like a second statement whose separator is missing."""
+def statement_keyword_alias_issues(statement: exp.Expr, dialect: str) -> Iterator[ValidationIssue]:
+    """Flag unquoted aliases that look like a second statement whose separator is missing.
+
+    Only T-SQL lets a statement keyword follow an expression and start a new statement;
+    in every other dialect such a word is an ordinary alias and is accepted.
+    """
+    if dialect != "tsql":
+        return
     seen: set[str] = set()
     for node in statement.find_all(exp.Alias, exp.TableAlias):
         alias = node.args.get("alias") if isinstance(node, exp.Alias) else node.this
