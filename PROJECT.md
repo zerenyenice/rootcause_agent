@@ -154,8 +154,8 @@ root-cause agent), LangChain DeepAgents docs, volcengine/OpenViking.
 
 Repository layout (single package, decided 2026-10-25): src/rootcause
 (settings, clients, observability, db with Alembic migrations, connections
-with the SQL validator, agents with prompts, skills and tools, api,
-evals), one tests/ tree, web/ (Next.js), deploy/ (Docker Compose), docs/
+with the SQL validator, catalog models, agents with prompts, skills and
+tools, api, evals), one tests/ tree, web/ (Next.js), deploy/ (Docker Compose), docs/
 (PRD, ADRs, plans), scripts/. Subpackages are created when real code
 arrives; there are no placeholder packages.
 ```
@@ -306,9 +306,8 @@ SQLAlchemy models and Alembic migrations with the three-role model and audit
 triggers; sqlglot SQL validator; FastAPI skeleton with health endpoints;
 DeepAgents orchestrator skeleton with human approval for expensive queries;
 evaluation warehouse generator with easy incidents E1 to E3; ADRs 0001 to
-0007.
-
-In progress: single-package repository layout.
+0007; MVP plan and tiered development process; single-package repository
+layout (src/rootcause).
 
 Next (MVP): run_sql executor on DuckDB and schema tools; 5 Whys skill and
 WhyChain report; root-cause subagent wired into the orchestrator;
