@@ -98,7 +98,7 @@ def test_no_delegation_means_no_chain(scripted_model: Callable[..., Any], execut
 
 
 @pytest.mark.unit
-def test_empty_question_still_runs_and_returns_none_without_a_chain(
+def test_blank_question_returns_none_without_running_the_graph(
     scripted_model: Callable[..., Any], executor: Any
 ) -> None:
     investigate = _investigate()
