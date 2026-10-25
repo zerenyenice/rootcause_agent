@@ -7,7 +7,7 @@ requires-python = ">=3.12"
 dependencies = []
 
 [dependency-groups]
-dev = ["pytest>=8", "pytest-cov>=5", "ruff>=0.6", "mypy>=1.11"]
+dev = ["pytest>=8", "pytest-cov>=5", "ruff>=0.6", "mypy>=1.11", "pandas-stubs>=2.2"]
 # Workspace members are installed editable by `uv sync` through this default
 # group so the root project itself carries no runtime dependencies.
 workspace = [
