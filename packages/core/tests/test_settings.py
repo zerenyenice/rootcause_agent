@@ -228,3 +228,54 @@ def test_configuration_error_does_not_retain_pydantic_error_on_chain() -> None:
 
     assert excinfo.value.__context__ is None
     assert excinfo.value.__cause__ is None
+
+
+def test_prod_declared_only_in_dotenv_is_rejected_without_leaking_values(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from rootcause_core.errors import ConfigurationError
+
+    (tmp_path / ".env").write_text(
+        "ROOTCAUSE_ENVIRONMENT=prod\nROOTCAUSE_DATABASE_URL=postgresql://u:p@h/db\n"
+    )
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(ConfigurationError) as excinfo:
+        _load()
+
+    message = str(excinfo.value)
+    assert "ROOTCAUSE_ENVIRONMENT" in message
+    assert ".env" in message
+    assert "postgresql://u:p@h/db" not in message
+    assert "u:p@h" not in message
+
+
+@pytest.mark.parametrize("raw", ["PROD", "Prod", "prod"])
+def test_environment_prod_is_case_insensitive_and_ignores_dotenv(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str, raw: str
+) -> None:
+    from rootcause_core.settings import Environment
+
+    (tmp_path / ".env").write_text("ROOTCAUSE_SERVICE_NAME=from-dotenv\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ROOTCAUSE_ENVIRONMENT", raw)
+    monkeypatch.setenv("ROOTCAUSE_DATABASE_URL", database_url)
+
+    settings = _load()
+
+    assert settings.environment is Environment.PROD
+    assert settings.service_name == "rootcause"
+
+
+@pytest.mark.usefixtures("base_env")
+@pytest.mark.parametrize("raw", ["Dev", "DEV"])
+def test_environment_dev_is_case_insensitive_and_normalised(
+    monkeypatch: pytest.MonkeyPatch, raw: str
+) -> None:
+    from rootcause_core.settings import Environment
+
+    monkeypatch.setenv("ROOTCAUSE_ENVIRONMENT", raw)
+
+    settings = _load()
+
+    assert settings.environment is Environment.DEV
