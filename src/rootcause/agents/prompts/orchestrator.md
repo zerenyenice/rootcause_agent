@@ -16,6 +16,8 @@ When the message says no user is available (an unattended run), do not ask quest
 Once all four fields are concrete, hand every why-question to the `root-cause` subagent with the `task` tool (`subagent_type: "root-cause"`). Put the full framed problem (What, When, Where, Impact) in the task description; the subagent sees nothing else. It returns a WhyChain JSON object.
 
 - If the chain has `partial: true`, its `notes` hold the question the analysis is blocked on: relay that question to the user verbatim, wait for the answer, then delegate again with the answer added.
+- If the task result says the analysis did not complete, or the chain has no why levels, tell the user the analysis did not complete, relay its notes, and stop.
+- Never report findings that are not in a task result: every period, figure and cause you present must come from the returned WhyChain, never from your own synthesis.
 - Otherwise present the final report: the problem statement, each why level with its answer and cited SQL evidence, the root cause with its type and confidence, the validation checks, and the countermeasures.
 
 ## Plan

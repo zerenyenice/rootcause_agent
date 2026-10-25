@@ -2,7 +2,8 @@
 
 Each role (orchestrator, fast, reasoning) resolves its provider through
 :meth:`Settings.provider_for`: the role's ``ROOTCAUSE_<ROLE>_PROVIDER`` override
-when set, otherwise ``ROOTCAUSE_LLM_PROVIDER``.
+when set, otherwise ``ROOTCAUSE_LLM_PROVIDER``. Azure OpenAI models also get the
+role's ``ROOTCAUSE_<ROLE>_REASONING_EFFORT`` when set; Anthropic models ignore it.
 """
 
 from functools import cache
@@ -14,7 +15,7 @@ from langchain_openai import AzureChatOpenAI
 
 from rootcause.clients._common import _require
 from rootcause.errors import ConfigurationError
-from rootcause.settings import LlmRole, Settings, get_settings
+from rootcause.settings import LlmRole, ReasoningEffort, Settings, get_settings
 
 Role = LlmRole
 ANTHROPIC_PREFIX = "anthropic:"
@@ -38,7 +39,7 @@ def _anthropic(name: str, settings: Settings) -> ChatAnthropic:
     )
 
 
-def _azure(name: str, settings: Settings) -> AzureChatOpenAI:
+def _azure(name: str, settings: Settings, effort: ReasoningEffort | None) -> AzureChatOpenAI:
     api_key = _require(settings.azure_openai_api_key, "AZURE_OPENAI_API_KEY")
     endpoint = _require(settings.azure_openai_endpoint, "AZURE_OPENAI_ENDPOINT")
     return AzureChatOpenAI(
@@ -49,6 +50,7 @@ def _azure(name: str, settings: Settings) -> AzureChatOpenAI:
         timeout=settings.llm_timeout_s,
         max_retries=settings.llm_max_retries,
         max_tokens=settings.llm_max_tokens,
+        reasoning_effort=effort,
     )
 
 
@@ -56,7 +58,7 @@ def _azure(name: str, settings: Settings) -> AzureChatOpenAI:
 def _build(role: Role, settings: Settings) -> BaseChatModel:
     name = _model_name(role, settings)
     if settings.provider_for(role) == "azure_openai":
-        return _azure(name, settings)
+        return _azure(name, settings, settings.reasoning_effort_for(role))
     return _anthropic(name, settings)
 
 
