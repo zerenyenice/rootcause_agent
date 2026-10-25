@@ -53,12 +53,15 @@ def test_run_config_carries_thread_callbacks_and_langfuse_metadata(
     langfuse_capture: Any, langfuse_env: Any
 ) -> None:
     from langfuse.langchain import CallbackHandler
+
     from rootcause_core.observability.tracing import run_config
 
     config = run_config("thread-42", user_id="analyst-7", tags=("rootcause", "prod"))
 
     assert config["configurable"]["thread_id"] == "thread-42"
-    [handler] = config["callbacks"]
+    callbacks = config["callbacks"]
+    assert isinstance(callbacks, list)
+    [handler] = callbacks
     assert isinstance(handler, CallbackHandler)
     metadata = config["metadata"]
     assert metadata["langfuse_session_id"] == "thread-42"
@@ -91,7 +94,10 @@ def test_run_config_returns_a_fresh_config_each_call(
     assert first is not second
     assert first["configurable"]["thread_id"] == "t1"
     assert second["configurable"]["thread_id"] == "t2"
-    assert first["callbacks"][0] is not second["callbacks"][0]
+    first_callbacks, second_callbacks = first["callbacks"], second["callbacks"]
+    assert isinstance(first_callbacks, list)
+    assert isinstance(second_callbacks, list)
+    assert first_callbacks[0] is not second_callbacks[0]
     assert not second["metadata"].get("langfuse_tags")
 
 

@@ -29,6 +29,7 @@ def test_builds_client_from_settings(
     langfuse_capture: Any, make_langfuse_settings: Callable[..., Settings]
 ) -> None:
     from langfuse import Langfuse
+
     from rootcause_core.clients.langfuse import langfuse_client
 
     settings = make_langfuse_settings(langfuse_release="2026.10.1", langfuse_sample_rate=0.5)
@@ -71,9 +72,8 @@ def test_client_is_cached_per_settings(
 def test_reset_clients_forgets_the_cached_client(
     langfuse_capture: Any, make_langfuse_settings: Callable[..., Settings]
 ) -> None:
-    from rootcause_core.clients.langfuse import langfuse_client
-
     from rootcause_core.clients import reset_clients
+    from rootcause_core.clients.langfuse import langfuse_client
 
     settings = make_langfuse_settings()
     first = langfuse_client(settings)
@@ -97,6 +97,7 @@ def test_flush_langfuse_flushes_the_client(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from langfuse import Langfuse
+
     from rootcause_core.clients.langfuse import flush_langfuse, langfuse_client
 
     settings = make_langfuse_settings()
@@ -123,9 +124,9 @@ def test_close_clients_flushes_langfuse(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from langfuse import Langfuse
-    from rootcause_core.clients.langfuse import langfuse_client
 
     from rootcause_core.clients import close_clients
+    from rootcause_core.clients.langfuse import langfuse_client
 
     langfuse_client(make_langfuse_settings())
     calls: list[str] = []
