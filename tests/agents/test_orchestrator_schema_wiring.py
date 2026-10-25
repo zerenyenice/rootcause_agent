@@ -64,7 +64,7 @@ def _tool_names(model: _RecordingModel, executor: Any, table_docs: Any = None) -
 
 @pytest.fixture
 def duck_executor(tmp_path: Path) -> Any:
-    from rootcause.connections.duckdb_executor import (  # type: ignore[import-not-found]
+    from rootcause.connections.duckdb_executor import (
         DuckDBExecutor,
     )
 

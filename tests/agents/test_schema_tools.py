@@ -9,11 +9,11 @@ from typing import Any
 import duckdb
 import pytest
 from langchain_core.tools import BaseTool
-from rootcause.agents.tools.schema import make_schema_tools  # type: ignore[import-not-found]
-from rootcause.connections.duckdb_executor import (  # type: ignore[import-not-found]
+
+from rootcause.agents.tools.schema import make_schema_tools
+from rootcause.connections.duckdb_executor import (
     DuckDBExecutor,
 )
-
 from rootcause.evals.manufacturing.table_docs import TableDoc
 
 DOCS = {

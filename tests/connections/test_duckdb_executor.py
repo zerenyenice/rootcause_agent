@@ -9,7 +9,8 @@ from typing import Any
 
 import duckdb
 import pytest
-from rootcause.connections.duckdb_executor import (  # type: ignore[import-not-found]
+
+from rootcause.connections.duckdb_executor import (
     ColumnInfo,
     DuckDBExecutor,
     QueryRejected,
@@ -18,7 +19,6 @@ from rootcause.connections.duckdb_executor import (  # type: ignore[import-not-f
     UnknownTable,
     executor_from_settings,
 )
-
 from rootcause.errors import ConfigurationError
 from rootcause.settings import Settings
 
@@ -308,9 +308,9 @@ def test_warehouse_path_reads_prefixed_env_var(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setenv("ROOTCAUSE_WAREHOUSE_PATH", str(tmp_path / "w.duckdb"))
-    assert _settings().warehouse_path == tmp_path / "w.duckdb"  # type: ignore[attr-defined]
+    assert _settings().warehouse_path == tmp_path / "w.duckdb"
     monkeypatch.delenv("ROOTCAUSE_WAREHOUSE_PATH")
-    assert _settings().warehouse_path is None  # type: ignore[attr-defined]
+    assert _settings().warehouse_path is None
 
 
 @pytest.mark.integration
