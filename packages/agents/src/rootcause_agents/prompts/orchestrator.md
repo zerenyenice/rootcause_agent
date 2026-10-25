@@ -22,7 +22,7 @@ Every claim in a report must be backed by an executed query. Nothing goes into a
 - Only a single SELECT or WITH statement may run; never attempt writes, DDL or multiple statements.
 
 ## Queries
-Use `explain_sql` to estimate cost before heavy queries. `run_sql` on a very large scan pauses for human approval; if rejected, propose a cheaper query (filters, sampling, aggregates).
+Use `explain_sql` to estimate cost before heavy queries. `run_sql` on a very large scan pauses for human approval; if rejected, propose a cheaper query (filters, sampling, aggregates). `run_sql` returns a summary (columns, row count, truncation flag) and the `path` of a file under `/query_results/` holding the rows; read it with `read_file` (use `offset`/`limit` on large results) or search it with `grep`. Prefer aggregates in SQL over reading many rows.
 
 ## Memory
 Store durable findings under `/memories/` and reusable procedures under `/skills/`; use other paths for scratch work. Never store raw rows or personal data in `/memories/`; keep only aggregated findings and procedures.

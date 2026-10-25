@@ -16,7 +16,7 @@ import structlog
 from opentelemetry import trace
 from structlog.typing import EventDict, Processor, WrappedLogger
 
-from rootcause_core.settings import LogFormat, Settings
+from rootcause_core.settings import LogFormat, Settings, secret_values
 
 TRACE_ID_FIELD = "trace_id"
 SPAN_ID_FIELD = "span_id"
@@ -71,16 +71,34 @@ def add_trace_context(_logger: WrappedLogger, _method: str, event_dict: EventDic
     }
 
 
-_URL_CREDENTIALS = re.compile(r"(\w+://[^:/@\s]+:)[^@\s]+@")
+# ``scheme://user:password@host``. The password runs to the LAST ``@`` before the
+# path, so passwords containing ``@`` (or ``:``) are redacted in full.
+_URL_CREDENTIALS = re.compile(r"(\b[a-zA-Z][\w+.-]*://[^:/@\s]+:)[^\s/?#]*@")
+# libpq keyword/value strings: ``password=x``, ``password='x y'``, ``password="x"``.
+_LIBPQ_PASSWORD = re.compile(
+    r"""(\bpassword\s*=\s*)('(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"|[^\s'"]+)""",
+    re.IGNORECASE,
+)
 REDACTED = "***"
+# Shorter verbatim secrets are skipped: replacing a one-letter password everywhere
+# would destroy unrelated text. URL and libpq passwords are redacted by pattern
+# regardless of length.
+MIN_VERBATIM_SECRET_LENGTH = 6
 
 
 def make_text_redactor(secrets: tuple[str, ...] = ()) -> Callable[[str], str]:
-    """Build a function masking URL passwords and verbatim ``secrets`` in a string."""
-    known = tuple(secret for secret in secrets if secret)
+    """Build a function masking URL and libpq passwords and verbatim ``secrets`` in a string."""
+    known = tuple(
+        sorted(
+            {secret for secret in secrets if len(secret) >= MIN_VERBATIM_SECRET_LENGTH},
+            key=len,
+            reverse=True,
+        )
+    )
 
     def redact_text(text: str) -> str:
         cleaned = _URL_CREDENTIALS.sub(rf"\1{REDACTED}@", text)
+        cleaned = _LIBPQ_PASSWORD.sub(rf"\1{REDACTED}", cleaned)
         for secret in known:
             cleaned = cleaned.replace(secret, REDACTED)
         return cleaned
@@ -139,7 +157,7 @@ def configure_logging(settings: Settings) -> None:
     Safe to call more than once; each call rebuilds the stdout handler so the
     stream is resolved at call time rather than cached at import.
     """
-    redactor = make_redactor((settings.database_url.get_secret_value(),))
+    redactor = make_redactor(secret_values(settings))
     shared = _shared_processors(redactor)
     structlog.configure(
         processors=[*shared, structlog.stdlib.ProcessorFormatter.wrap_for_formatter],

@@ -4,11 +4,20 @@ The real executor lands later; tools only depend on the protocol. Expensive
 queries (estimate above the row threshold) are gated twice: the orchestrator's
 human-in-the-loop predicate interrupts before the tool runs, and the tool itself
 refuses to run an unapproved expensive query when used directly.
+
+Rows never enter message text (PROJECT.md section 7): ``run_sql`` writes them to
+the agent filesystem under ``/query_results/<tool_call_id>.json`` and returns
+only a summary (columns, row count, truncation flag, SQL, path) as the tool
+message. The agent reads rows back with ``read_file``/``grep`` when it needs
+them; traces deny those tools' output.
 """
 
 import base64
 import datetime
+import json
+import re
 import threading
+import traceback
 import uuid
 from collections import OrderedDict
 from collections.abc import Callable
@@ -16,14 +25,22 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Annotated, Any, Protocol
 
+from deepagents.backends.utils import create_file_data
+from langchain_core.messages import ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool, InjectedToolCallId, tool
+from langgraph.types import Command
 
 from rootcause_core.logging import get_logger
 
 _logger = get_logger(__name__)
 _ERROR_MESSAGE = "The query could not be executed."
 DEFAULT_MAX_DECISIONS = 10_000
+RUN_SQL_TOOL = "run_sql"
+QUERY_RESULTS_DIR = "/query_results/"
+RESULT_FILE_SUFFIX = ".json"
+# Tool call ids become file names; anything else gets a random name.
+_SAFE_FILE_STEM = re.compile(r"[A-Za-z0-9_-]{1,128}")
 
 
 @dataclass(frozen=True)
@@ -109,12 +126,17 @@ class ApprovalRegistry:
 
 
 def _error(exc: Exception, tool_call_id: str | None) -> dict[str, Any]:
+    """Log the failure without its message and return a value-free payload.
+
+    Database errors quote row values (constraint violations, casts) and DSNs, so
+    neither the message nor ``exc_info`` is logged: only the exception type and
+    the stack frames (code locations, no values).
+    """
     _logger.error(
         "sql_tool_failed",
         tool_call_id=tool_call_id,
         error_type=type(exc).__name__,
-        error=str(exc),
-        exc_info=exc,
+        frames="".join(traceback.format_tb(exc.__traceback__)),
     )
     return {"error": {"code": type(exc).__name__, "message": _ERROR_MESSAGE}}
 
@@ -131,14 +153,53 @@ def _json_value(value: Any) -> Any:
     return str(value)
 
 
-def _result_payload(result: QueryResult) -> dict[str, Any]:
+def _summary(result: QueryResult, path: str) -> dict[str, Any]:
     return {
         "columns": list(result.columns),
-        "rows": [[_json_value(v) for v in row] for row in result.rows],
         "row_count": result.row_count,
         "truncated": result.truncated,
         "sql": result.sql,
+        "path": path,
     }
+
+
+def _result_file_text(result: QueryResult) -> str:
+    """The stored result as JSON with one row per line (readable in slices, greppable)."""
+    header = json.dumps(
+        {
+            "columns": list(result.columns),
+            "row_count": result.row_count,
+            "truncated": result.truncated,
+            "sql": result.sql,
+        },
+        ensure_ascii=False,
+    )
+    rows = ",\n".join(
+        json.dumps([_json_value(value) for value in row], ensure_ascii=False) for row in result.rows
+    )
+    body = f"\n{rows}\n" if rows else ""
+    return f'{header[:-1]}, "rows": [{body}]}}'
+
+
+def _result_path(tool_call_id: str) -> str:
+    stem = tool_call_id if _SAFE_FILE_STEM.fullmatch(tool_call_id) else uuid.uuid4().hex
+    return f"{QUERY_RESULTS_DIR}{stem}{RESULT_FILE_SUFFIX}"
+
+
+def _result_command(result: QueryResult, tool_call_id: str) -> Command[Any]:
+    """State update: the summary as the tool message, the rows as an agent file."""
+    path = _result_path(tool_call_id)
+    message = ToolMessage(
+        content=json.dumps(_summary(result, path), ensure_ascii=False),
+        tool_call_id=tool_call_id,
+        name=RUN_SQL_TOOL,
+    )
+    return Command(
+        update={
+            "messages": [message],
+            "files": {path: create_file_data(_result_file_text(result))},
+        }
+    )
 
 
 def make_sql_tools(
@@ -166,8 +227,12 @@ def make_sql_tools(
         purpose: str,
         config: RunnableConfig,
         tool_call_id: Annotated[str, InjectedToolCallId] = "",
-    ) -> dict[str, Any]:
-        """Run a read-only SQL statement; `purpose` states why the query is needed."""
+    ) -> Command[Any] | dict[str, Any]:
+        """Run a read-only SQL statement; `purpose` states why the query is needed.
+
+        Returns a summary (columns, row_count, truncated, sql) and the `path` of a
+        JSON file holding the rows; use read_file on that path to inspect them.
+        """
         decision = (
             registry.take((thread_id_of(config), tool_call_id))
             if registry is not None and tool_call_id
@@ -185,7 +250,11 @@ def make_sql_tools(
                         "threshold": threshold,
                         "sql": sql,
                     }
-            return _result_payload(executor.run(sql, purpose))
+            result = executor.run(sql, purpose)
+        except Exception as exc:  # noqa: BLE001 - surfaced to the model as a payload
+            return _error(exc, tool_call_id)
+        try:
+            return _result_command(result, tool_call_id)
         except Exception as exc:  # noqa: BLE001 - surfaced to the model as a payload
             return _error(exc, tool_call_id)
 

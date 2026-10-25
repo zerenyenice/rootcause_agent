@@ -36,3 +36,10 @@ Both reviews blocked on data leaving the customer database through traces (PROJE
 - **Compose.** Redis runs as the redis user; placeholder `change-me` secrets refuse to start; `LANGFUSE_INIT_PROJECT_SECRET_KEY` moves to `langfuse.env`.
 - **Docs (ADR-0006 and README).** Langfuse UI access exposes all tenants' questions and SQL, so membership is admin-only; prompt source defaults to files in prod and `push_prompts --apply` uses an operator key; Langfuse Cloud needs customer data-residency sign-off; `LANGFUSE_DEBUG` never in prod; prompts resolve at orchestrator build time; paraphrased personal data in model text cannot be fully masked.
 - **Follow-ups (backlog).** Per-service compose env files and a bucket-scoped MinIO key; catalog-driven column masking feeding the PII pass; review of rows persisted in checkpoint state (T035).
+
+### Follow-ups (backlog candidates, not in T009)
+
+- **Per-service compose env files and a bucket-scoped MinIO key.** Every Langfuse container currently reads the one shared `deploy/langfuse.env`, and Langfuse uses the MinIO root credentials for S3. Split the file per service and give Langfuse an access key scoped to the `langfuse` bucket.
+- **Catalog-driven column masking feeding the PII pass.** Use the schema catalog (sensitive-column tags) to mask values the regex PII pass cannot recognise (names, addresses) wherever they appear in trace text.
+- **Rows persisted in checkpoint state (T035).** `run_sql` rows now live in the agent filesystem (`/query_results/...`), which the Postgres checkpointer persists per thread. Review retention, encryption and deletion of those rows together with the T035 lifespan/checkpointer work.
+- **Tool-call arguments.** Arguments the model writes (for example `write_file` content copied from query results) are traced as tool input and only covered by the credential and PII passes; consider denying `write_file`/`edit_file` arguments under result paths.

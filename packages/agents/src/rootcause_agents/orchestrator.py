@@ -39,10 +39,23 @@ class OrchestratorHandle:
     settings: Settings
 
     def config_for(
-        self, thread_id: str, *, user_id: str | None = None, tags: Sequence[str] = ()
+        self,
+        thread_id: str,
+        *,
+        user_id: str | None = None,
+        tags: Sequence[str] = (),
+        tenant_id: str | None = None,
+        connection_id: str | None = None,
     ) -> RunnableConfig:
         """Run config for ``thread_id``, traced in Langfuse when the settings enable it."""
-        return run_config(thread_id, user_id=user_id, tags=tags, settings=self.settings)
+        return run_config(
+            thread_id,
+            user_id=user_id,
+            tags=tags,
+            tenant_id=tenant_id,
+            connection_id=connection_id,
+            settings=self.settings,
+        )
 
 
 def _approval_config(

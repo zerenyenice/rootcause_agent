@@ -42,8 +42,31 @@ management.
 - Every agent invocation uses `run_config(thread_id, ...)`
   (`OrchestratorHandle.config_for`): one trace per run, session id = thread
   id, callbacks propagated to subagents, model and tool calls.
-- A mask runs on every traced value: credentials are redacted with the log
-  redactor, SQL result rows are dropped (columns, counts and SQL kept).
+- Trace data protection (amended 2026-10-25 after backend and security
+  review; PROJECT.md section 7):
+  - **Tool outputs are denied by default.** The mask keeps tool output only
+    for `write_todos`, `explain_sql` and the `run_sql` summary (columns, row
+    count, truncation flag, SQL, result path); every other tool output,
+    including `read_file`/`grep`/`ls` and subagent `task` results, is
+    replaced by `<redacted tool output: NAME>`, also where generation inputs
+    echo it.
+  - **`run_sql` never puts rows in message text.** Rows go to the agent
+    filesystem under `/query_results/<tool_call_id>.json`; the mask drops
+    anything under `/query_results/` and `/large_tool_results/`.
+  - **Exporter-level scrubbing.** The OTLP exporter is wrapped so span
+    attributes, status descriptions, events and the resource are scrubbed
+    too; errors are recorded by exception type only.
+  - **Secrets.** Every `SecretStr` setting (and the database password inside
+    the DSN) feeds both the log and the trace redactor; URL passwords
+    containing `@` and libpq `password=` pairs are redacted by pattern.
+  - **PII pass** (`ROOTCAUSE_LANGFUSE_MASK_PII`, on by default): e-mails,
+    Turkish and US phone numbers, IBANs and 11-digit Turkish national ids in
+    trace text become markers.
+  - **Isolation.** Each run is a fresh trace started from an empty
+    OpenTelemetry context (never a child of a FastAPI span) and carries the
+    opaque `tenant_id` / `connection_id`.
+  - **Transport.** `ROOTCAUSE_LANGFUSE_HOST` must be https unless it is a
+    loopback address or a single-label compose service name.
 - Prompts resolve through `PromptRegistry`: files by default; with
   `ROOTCAUSE_PROMPT_SOURCE=langfuse` the labelled version is fetched and any
   Langfuse failure falls back to the shipped file. `scripts/push_prompts.py`
@@ -62,5 +85,23 @@ management.
 - Remote prompts can diverge from the files in git; the registry falls back to
   the files and the push script keeps Langfuse seeded from git, which stays
   the reviewed source.
+- **Langfuse UI access exposes every tenant's questions and SQL.** Langfuse
+  project membership is admin-only; grant it like database access, not like
+  a dashboard.
+- **Prompt source defaults to `files` in prod.** Switching to `langfuse` is a
+  team decision; `scripts/push_prompts.py --apply` runs with an operator's
+  key, never the API's runtime key. Prompts resolve when the orchestrator is
+  built (process start), so a newly labelled version is picked up on restart
+  (and after the cache TTL for new builds), not mid-run.
+- **Langfuse Cloud** is allowed only with the customer's written data
+  residency sign-off; the default is the self-hosted profile.
+- **`LANGFUSE_DEBUG` must never be set in production**: SDK debug logging
+  prints full, unmasked span contents to the process log.
+- **Residual risk: paraphrased personal data.** Masking removes tool outputs,
+  rows, credentials and pattern-shaped PII, but the model may restate a
+  customer value in its own words (a name, an address) in its reasoning or
+  answer; no regex catches that. Trace access control (above) is the
+  remaining control.
 - Follow-ups: link prompt versions to generations in traces; evaluation runs
-  (EP4) may report scores to Langfuse.
+  (EP4) may report scores to Langfuse; see the T009 plan for the
+  data-protection follow-ups.

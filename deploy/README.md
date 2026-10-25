@@ -145,12 +145,20 @@ docker compose -f deploy/docker-compose.yml --profile observability ps   # all "
   `MINIO_ROOT_PASSWORD`, the S3 secret keys) are derived from the two
   `LANGFUSE_*_PASSWORD` values in it; Compose resolves `${...}` from
   `deploy/.env` and the shell first, so don't define those two names there.
+- ClickHouse, Redis and MinIO also refuse to start while their secret is
+  still a `change-me...` placeholder from the example file. Redis runs as
+  the image's unprivileged `redis` user (`999:999`).
 - First user and API keys: either sign up in the UI and create project keys
   under Project settings > API keys, or set `LANGFUSE_INIT_ORG_ID`,
-  `LANGFUSE_INIT_PROJECT_ID`, `LANGFUSE_INIT_USER_EMAIL` and
+  `LANGFUSE_INIT_PROJECT_ID`, `LANGFUSE_INIT_PROJECT_PUBLIC_KEY`,
+  `LANGFUSE_INIT_PROJECT_SECRET_KEY`, `LANGFUSE_INIT_USER_EMAIL` and
   `LANGFUSE_INIT_USER_PASSWORD` in `deploy/langfuse.env` before the first
-  start; the project is then created with `ROOTCAUSE_LANGFUSE_PUBLIC_KEY` /
-  `_SECRET_KEY` (from `deploy/.env`) as its keys.
+  start. The two project keys must equal `ROOTCAUSE_LANGFUSE_PUBLIC_KEY` /
+  `_SECRET_KEY` in `deploy/.env`; they are not interpolated into the
+  compose file, so `docker compose config` never prints the secret key.
+- **UI access.** The Langfuse UI shows every tenant's questions, SQL and
+  model answers. Keep project membership admin-only and the UI on
+  `127.0.0.1` (reach it through an SSH tunnel or an authenticated proxy).
 
 Point RootCause at it (the API's `.env` or process environment):
 
@@ -161,15 +169,43 @@ ROOTCAUSE_LANGFUSE_PUBLIC_KEY=pk-lf-...
 ROOTCAUSE_LANGFUSE_SECRET_KEY=sk-lf-...
 ```
 
-Each run is one trace whose session id is the LangGraph thread id. Before
-export, URL passwords are redacted and SQL result rows are dropped (column
-names, row counts and the SQL text are kept), per PROJECT.md section 7.
+`ROOTCAUSE_LANGFUSE_HOST` must be https, except for loopback addresses
+(`localhost`, `127.0.0.1`, `::1`) and single-label compose service names such
+as `http://langfuse-web:3000`.
 
-Prompts: `ROOTCAUSE_PROMPT_SOURCE=langfuse` serves the version labelled
-`ROOTCAUSE_PROMPT_LABEL` (default `production`) and falls back to the shipped
-file on any Langfuse error. Upload the shipped prompts as new versions with
+Each run is one fresh trace whose session id is the LangGraph thread id, with
+the opaque `tenant_id` / `connection_id` attached (never nested under the
+API's own OpenTelemetry span). What reaches Langfuse (PROJECT.md section 7,
+details in ADR-0006):
+
+- tool outputs are denied by default: only `write_todos`, `explain_sql` and
+  the `run_sql` summary (columns, row count, truncated flag, SQL, result
+  path) are visible; everything else shows `<redacted tool output: NAME>`;
+- `run_sql` rows live in the agent filesystem (`/query_results/...`) and
+  never enter messages or traces;
+- every credential setting is redacted, in traces and logs, and the
+  exporter scrubs span attributes, error messages and events as well;
+- `ROOTCAUSE_LANGFUSE_MASK_PII=true` (default) replaces e-mails, phone
+  numbers, IBANs and Turkish national ids in trace text.
+
+Masking cannot catch personal data the model paraphrases in its own words;
+treat trace access like database access.
+
+Never set `LANGFUSE_DEBUG` (or Langfuse debug logging) in production: SDK
+debug logs print unmasked span contents.
+
+Langfuse Cloud instead of the self-hosted server requires the customer's
+written data-residency sign-off.
+
+Prompts: the source defaults to `files` and stays there in prod unless the
+team decides otherwise. `ROOTCAUSE_PROMPT_SOURCE=langfuse` serves the version
+labelled `ROOTCAUSE_PROMPT_LABEL` (default `production`) and falls back to the
+shipped file on any Langfuse error. Prompts resolve when the orchestrator is
+built (process start), so a newly labelled version takes effect on restart.
+Upload the shipped prompts as new versions with
 `uv run python scripts/push_prompts.py --apply` (dry run without `--apply`;
-add `--label production` to promote the uploaded versions immediately).
+add `--label production` to promote the uploaded versions immediately), using
+an operator's API key, never the API's runtime key.
 
 Reset only the Langfuse data:
 

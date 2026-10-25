@@ -176,7 +176,8 @@ services:
   # 127.0.0.1. Digests observed 2026-10-25 are recorded next to each image.
   # Secrets: deploy/langfuse.env (copy deploy/langfuse.env.example). Postgres,
   # web and worker reject a missing secret themselves; ClickHouse, Redis and
-  # MinIO would start without one, so their start command checks it first.
+  # MinIO would start without one, so their start command checks it first and
+  # also refuses the `change-me` placeholders copied from the example file.
   # ---------------------------------------------------------------------------
   # sha256:932a46dfab770f89ecb2ec35258b6b80d3be8773403981a64d271ff0a408deef
   langfuse-web:
@@ -196,12 +197,11 @@ services:
       LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://localhost:${LANGFUSE_MINIO_PORT:-9090}
       LANGFUSE_S3_MEDIA_UPLOAD_INTERNAL_ENDPOINT: http://langfuse-minio:9000
       # Optional headless first-start setup; it runs only when
-      # LANGFUSE_INIT_ORG_ID (deploy/langfuse.env) is set. The project gets
-      # RootCause's client keys from deploy/.env as its API keys.
+      # LANGFUSE_INIT_ORG_ID (deploy/langfuse.env) is set. The project's API
+      # keys (public and secret) also come from deploy/langfuse.env, so no
+      # secret is interpolated into this file.
       LANGFUSE_INIT_ORG_NAME: RootCause
       LANGFUSE_INIT_PROJECT_NAME: rootcause
-      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: ${ROOTCAUSE_LANGFUSE_PUBLIC_KEY:-}
-      LANGFUSE_INIT_PROJECT_SECRET_KEY: ${ROOTCAUSE_LANGFUSE_SECRET_KEY:-}
       LANGFUSE_INIT_USER_NAME: admin
     healthcheck:
       # The runtime image has no curl/wget; Next.js binds to the container
@@ -260,7 +260,7 @@ services:
     # CLICKHOUSE_PASSWORD from deploy/langfuse.env. The image would create the
     # user without a password, so refuse to start instead, then hand over to
     # the image's own entrypoint.
-    entrypoint: ["sh", "-c", ": \"$${CLICKHOUSE_PASSWORD:?is not set: create deploy/langfuse.env from deploy/langfuse.env.example}\" && exec /entrypoint.sh"]
+    entrypoint: ["sh", "-c", ": \"$${CLICKHOUSE_PASSWORD:?is not set: create deploy/langfuse.env from deploy/langfuse.env.example}\" && case \"$$CLICKHOUSE_PASSWORD\" in change-me*) echo 'CLICKHOUSE_PASSWORD is still the placeholder: replace it in deploy/langfuse.env' >&2; exit 1;; esac && exec /entrypoint.sh"]
     env_file: *langfuse-env-file
     environment:
       CLICKHOUSE_DB: default
@@ -279,10 +279,13 @@ services:
     image: redis:7.4.11
     profiles: [observability]
     restart: unless-stopped
+    # Runs as the image's unprivileged `redis` user (uid/gid 999), which owns
+    # /data in the image, so the entrypoint never needs root to chown it.
+    user: "999:999"
     # Langfuse's queues need noeviction. REDIS_AUTH (the variable Langfuse
     # reads) from deploy/langfuse.env; an empty --requirepass would disable
-    # auth, so refuse to start without it.
-    command: ["sh", "-c", ": \"$${REDIS_AUTH:?is not set: create deploy/langfuse.env from deploy/langfuse.env.example}\" && exec redis-server --requirepass \"$$REDIS_AUTH\" --maxmemory-policy noeviction"]
+    # auth, so refuse to start without it (or with the example placeholder).
+    command: ["sh", "-c", ": \"$${REDIS_AUTH:?is not set: create deploy/langfuse.env from deploy/langfuse.env.example}\" && case \"$$REDIS_AUTH\" in change-me*) echo 'REDIS_AUTH is still the placeholder: replace it in deploy/langfuse.env' >&2; exit 1;; esac && exec redis-server --requirepass \"$$REDIS_AUTH\" --maxmemory-policy noeviction"]
     env_file: *langfuse-env-file
     volumes:
       - langfuse_redis_data:/data
@@ -299,8 +302,9 @@ services:
     profiles: [observability]
     restart: unless-stopped
     entrypoint: sh
-    # MINIO_ROOT_PASSWORD from deploy/langfuse.env; checked before start.
-    command: ["-c", ": \"$${MINIO_ROOT_PASSWORD:?is not set: create deploy/langfuse.env from deploy/langfuse.env.example}\" && mkdir -p /data/langfuse && exec minio server --address :9000 --console-address :9001 /data"]
+    # MINIO_ROOT_PASSWORD from deploy/langfuse.env; checked (set, and not the
+    # example placeholder) before start.
+    command: ["-c", ": \"$${MINIO_ROOT_PASSWORD:?is not set: create deploy/langfuse.env from deploy/langfuse.env.example}\" && case \"$$MINIO_ROOT_PASSWORD\" in change-me*) echo 'MINIO_ROOT_PASSWORD is still the placeholder: replace it in deploy/langfuse.env' >&2; exit 1;; esac && mkdir -p /data/langfuse && exec minio server --address :9000 --console-address :9001 /data"]
     env_file: *langfuse-env-file
     environment:
       MINIO_ROOT_USER: minio

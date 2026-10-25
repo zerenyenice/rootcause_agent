@@ -5,11 +5,13 @@ are re-raised as :class:`~rootcause_core.errors.ConfigurationError` so callers
 get a message that names the offending variables without leaking their values.
 """
 
+import ipaddress
 import os
 import re
 from enum import StrEnum
 from functools import lru_cache
 from typing import Literal, Self
+from urllib.parse import quote, unquote, urlsplit
 
 from pydantic import (
     AnyHttpUrl,
@@ -43,6 +45,11 @@ EmbeddingProvider = Literal["azure_openai", "openai_compatible"]
 PromptSource = Literal["files", "langfuse"]
 # Settings fields Langfuse needs whenever tracing or remote prompts are switched on.
 LANGFUSE_CREDENTIAL_FIELDS = ("langfuse_host", "langfuse_public_key", "langfuse_secret_key")
+LOOPBACK_HOSTNAME = "localhost"
+PLAINTEXT_HOST_ERROR = (
+    "langfuse_host must use https unless it is a loopback address or a "
+    "single-label service name (for example a compose service)"
+)
 
 
 class MissingVariablesError(ValueError):
@@ -134,6 +141,7 @@ class Settings(BaseSettings):
     langfuse_secret_key: SecretStr | None = None
     langfuse_release: str | None = None
     langfuse_sample_rate: float = Field(default=1.0, ge=0.0, le=1.0)
+    langfuse_mask_pii: bool = True
     prompt_source: PromptSource = "files"
     prompt_label: str = Field(default="production", min_length=1)
     prompt_cache_ttl_s: int = Field(default=300, ge=0)
@@ -152,6 +160,17 @@ class Settings(BaseSettings):
         if match is None or int(match["count"]) < 1:
             raise ValueError("rate_limit must look like '<count>/<second|minute|hour|day>'")
         return value.strip()
+
+    @field_validator("langfuse_host")
+    @classmethod
+    def _require_https_for_routable_hosts(cls, value: AnyHttpUrl | None) -> AnyHttpUrl | None:
+        """Keys and traces never travel in plain text to a routable host.
+
+        The error names the rule only, never the host or any key.
+        """
+        if value is None or value.scheme == "https" or _is_private_hop(value.host or ""):
+            return value
+        raise ValueError(PLAINTEXT_HOST_ERROR)
 
     def provider_for(self, role: LlmRole) -> LlmProvider:
         """Resolve the chat provider for ``role``: its override, else ``llm_provider``."""
@@ -196,6 +215,47 @@ class Settings(BaseSettings):
     def _normalise_log_level(cls, value: object) -> object:
         """Accept ``info``/``Info``/``INFO`` alike; the literal check runs after."""
         return value.upper() if isinstance(value, str) else value
+
+
+def _is_private_hop(host: str) -> bool:
+    """True for loopback addresses, ``localhost`` and single-label names (``langfuse-web``)."""
+    name = host.strip("[]").rstrip(".").lower()
+    if not name:
+        return False
+    if name == LOOPBACK_HOSTNAME:
+        return True
+    try:
+        return ipaddress.ip_address(name).is_loopback
+    except ValueError:
+        return "." not in name
+
+
+def _url_password(url: str) -> str | None:
+    """The password of a ``scheme://user:password@host`` URL, or ``None``."""
+    try:
+        return urlsplit(url).password
+    except ValueError:
+        return None
+
+
+def secret_values(settings: Settings) -> tuple[str, ...]:
+    """Every ``SecretStr`` value in ``settings`` plus URL passwords inside them.
+
+    Feeds the log and trace redactors. Passwords embedded in a URL (the database
+    DSN) are added on their own, both percent-decoded and encoded, so a driver
+    error that prints the bare password is still redacted.
+    """
+    values: list[str] = []
+    for name in type(settings).model_fields:
+        value = getattr(settings, name)
+        if not isinstance(value, SecretStr):
+            continue
+        raw = value.get_secret_value()
+        values.append(raw)
+        password = _url_password(raw)
+        if password:
+            values.extend({password, unquote(password), quote(unquote(password), safe="")})
+    return tuple(dict.fromkeys(value for value in values if value))
 
 
 def _variable_name(location: tuple[int | str, ...]) -> str:
