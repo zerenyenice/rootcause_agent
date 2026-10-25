@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import numpy as np
 import pandas as pd
 
-from rootcause_evals.manufacturing.baseline import BASE_AVAILABILITY
+from rootcause_evals.manufacturing.baseline import BASE_AVAILABILITY, pick_recent_lots
 from rootcause_evals.manufacturing.incidents.base import (
     Incident,
     Tables,
@@ -78,18 +78,18 @@ class ProductMixChange(Incident):
         return {
             **tables,
             "work_orders": new_orders,
-            "production_runs": self._rewrite_runs(
-                tables["production_runs"], order_product, start, end
-            ),
+            "production_runs": self._rewrite_runs(tables, order_product, start, end, rng),
         }
 
     def _rewrite_runs(
         self,
-        runs: pd.DataFrame,
+        tables: Tables,
         order_product: pd.Series[str],
         start: pd.Timestamp,
         end: pd.Timestamp,
+        rng: np.random.Generator,
     ) -> pd.DataFrame:
+        runs = tables["production_runs"]
         on_line = runs["line_id"] == self.segment["line_id"]
         follows = on_line & runs["work_order_id"].isin(order_product.index)
         slowed = (on_line & in_span(runs["ts"], start, end)).to_numpy()
@@ -101,12 +101,38 @@ class ProductMixChange(Incident):
         scrapped = np.where(
             slowed, np.rint(runs["units_scrapped"] / CYCLE_TIME_FACTOR), runs["units_scrapped"]
         )
+        changed = (product != runs["product_id"]).to_numpy()
         return runs.assign(
             product_id=product,
             cycle_time_s=np.round(cycle, 2),
             units_produced=units.astype("int64"),
             units_scrapped=scrapped.astype("int64"),
+            material_lot_id=self._relot(tables, runs, product, changed, rng),
         )
+
+    @staticmethod
+    def _relot(
+        tables: Tables,
+        runs: pd.DataFrame,
+        product: pd.Series[str],
+        changed: np.ndarray[Any, Any],
+        rng: np.random.Generator,
+    ) -> pd.Series[str]:
+        """Lots of the new product's material for switched runs; null lots stay null."""
+        lot = runs["material_lot_id"]
+        redo = changed & lot.notna().to_numpy()
+        if not redo.any():
+            return lot
+        material = product[redo].map(tables["products"].set_index("product_id")["material_id"])
+        picked = pick_recent_lots(
+            rng,
+            runs["ts"].to_numpy()[redo],
+            material.to_numpy(dtype=str),
+            tables["material_lots"],
+        )
+        values = lot.to_numpy(dtype=object).copy()
+        values[redo] = picked
+        return pd.Series(values, index=lot.index, dtype=lot.dtype)
 
     def daily_metric(self, tables: Tables) -> pd.Series[float]:
         """Daily mean cycle time of the affected line."""

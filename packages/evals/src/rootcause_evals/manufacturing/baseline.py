@@ -143,17 +143,16 @@ def build_run_grid(
     )
 
 
-def assign_material_lots(
+def pick_recent_lots(
     rng: np.random.Generator,
     run_ts: npt.NDArray[np.datetime64],
     run_material: npt.NDArray[np.str_],
     lots: pd.DataFrame,
-) -> pd.Series:
-    """Pick one of the most recently received lots of the run's material.
+) -> npt.NDArray[np.object_]:
+    """Pick one of the most recently received lots of each run's material (no blanking).
 
     Lots are sorted by ``received_date``; the opening-stock lot per material
-    guarantees at least one eligible lot. Exactly ``MATERIAL_LOT_NULL_SHARE``
-    of runs are then blanked (PRD data trap).
+    guarantees at least one eligible lot.
     """
     chosen = np.empty(len(run_ts), dtype=object)
     received_all = lots["received_date"].to_numpy()
@@ -166,6 +165,20 @@ def assign_material_lots(
         eligible = np.searchsorted(received, run_ts[run_mask], side="right")
         back = rng.integers(0, RECENT_LOTS_IN_USE, size=int(run_mask.sum()))
         chosen[run_mask] = lot_ids_all[lot_mask][np.clip(eligible - 1 - back, 0, None)]
+    return chosen
+
+
+def assign_material_lots(
+    rng: np.random.Generator,
+    run_ts: npt.NDArray[np.datetime64],
+    run_material: npt.NDArray[np.str_],
+    lots: pd.DataFrame,
+) -> pd.Series:
+    """Pick recent lots per run, then blank exactly ``MATERIAL_LOT_NULL_SHARE`` of runs.
+
+    The blanked share is the PRD data trap.
+    """
+    chosen = pick_recent_lots(rng, run_ts, run_material, lots)
     blank = rng.choice(len(run_ts), size=int(MATERIAL_LOT_NULL_SHARE * len(run_ts)), replace=False)
     chosen[blank] = None
     return pd.Series(chosen, dtype="str")
