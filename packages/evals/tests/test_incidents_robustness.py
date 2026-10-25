@@ -22,6 +22,7 @@ Z_MIN = 3.0
 CLAIM_TOLERANCE = 0.05
 CYCLE_BAND = 0.05
 SIZE_TOLERANCE = 0.05
+MIN_E3_SIZE = 0.25
 
 
 def _assert_all_visible(days: int, seed: int) -> None:
@@ -73,36 +74,95 @@ def test_e2_robust_z_is_at_least_three_on_seed_42() -> None:
             assert assert_visible(tables, incident).z >= Z_MIN, incident.case_id
 
 
-def _shifted_series(window_days: int) -> tuple[Any, pd.Series[float], float]:
-    rng = np.random.default_rng(3)
-    start = date(2024, 1, 1)
-    pre = 100.0 + rng.normal(0.0, 1.0, PRE_DAYS)
-    mad = float(np.median(np.abs(pre - np.median(pre))))
-    series_values = np.concatenate([pre, np.full(window_days, 100.0 + 10 * mad)])
-    index = pd.date_range(start, periods=PRE_DAYS + window_days, freq="D")
-    window_start = start + timedelta(days=PRE_DAYS)
-    incident = SimpleNamespace(
+ROLLING_NOISE_SEED = 3
+SHIFT_MADS = 5.0
+MAD_TO_SIGMA = 1.4826
+
+
+def _incident_for(window_days: int, direction: str = "up") -> Any:
+    window_start = date(2024, 1, 1) + timedelta(days=PRE_DAYS)
+    return SimpleNamespace(
         case_id="synthetic",
         window=(window_start, window_start + timedelta(days=window_days - 1)),
-        direction="up",
+        direction=direction,
         weekday_adjusted=False,
     )
-    return incident, pd.Series(series_values, index=index, dtype=float), mad
+
+
+def _series(values: np.ndarray) -> pd.Series[float]:
+    index = pd.date_range(date(2024, 1, 1), periods=len(values), freq="D")
+    return pd.Series(values, index=index, dtype=float)
+
+
+def _rolling_stats(pre: np.ndarray, window_days: int) -> tuple[float, float]:
+    """Median and MAD of the rolling L-day means inside the pre-window (documented formula)."""
+    rolling = pd.Series(pre).rolling(window_days).mean().dropna().to_numpy()
+    center = float(np.median(rolling))
+    mad = float(np.median(np.abs(rolling - center)))
+    return center, max(mad, 0.01 * center)
+
+
+def _noisy_pre(seed: int = ROLLING_NOISE_SEED) -> np.ndarray:
+    return 100.0 + np.random.default_rng(seed).normal(0.0, 5.0, PRE_DAYS)
 
 
 @pytest.mark.unit
-def test_robust_z_is_not_scaled_by_the_window_length() -> None:
+@pytest.mark.parametrize("window_days", [1, 5, 14])
+@pytest.mark.parametrize("seed", range(6))
+def test_robust_z_of_a_stationary_noisy_series_stays_below_three(
+    window_days: int, seed: int
+) -> None:
     from rootcause_evals.manufacturing.incidents.visibility import robust_z
 
-    inc5, series5, _ = _shifted_series(5)
-    inc14, series14, _ = _shifted_series(14)
+    rng = np.random.default_rng(100 + seed)
+    values = 100.0 + rng.normal(0.0, 5.0, PRE_DAYS + window_days)
 
-    z5 = robust_z(inc5, series5)
-    z14 = robust_z(inc14, series14)
+    z = robust_z(_incident_for(window_days), _series(values))
 
-    assert z5 > 0
-    assert z14 == pytest.approx(z5, rel=0.10)
-    assert z14 == pytest.approx(10 / 1.4826, rel=0.25)  # shift / sigma, no sqrt(n) factor
+    assert abs(z) < Z_MIN
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("window_days", [5, 14])
+def test_robust_z_recovers_a_shift_of_five_robust_sigmas(window_days: int) -> None:
+    from rootcause_evals.manufacturing.incidents.visibility import robust_z
+
+    pre = _noisy_pre()
+    center, mad = _rolling_stats(pre, window_days)
+    window = np.full(window_days, center + SHIFT_MADS * MAD_TO_SIGMA * mad)
+
+    z = robust_z(_incident_for(window_days), _series(np.concatenate([pre, window])))
+
+    assert z == pytest.approx(SHIFT_MADS, rel=0.10)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("window_days", [1, 5, 14])
+@pytest.mark.parametrize("direction", ["up", "down"])
+def test_robust_z_equals_the_documented_formula(window_days: int, direction: str) -> None:
+    from rootcause_evals.manufacturing.incidents.visibility import robust_z
+
+    pre = _noisy_pre()
+    window = 100.0 + np.random.default_rng(9).normal(8.0, 3.0, window_days)
+    center, mad = _rolling_stats(pre, window_days)
+    sign = 1.0 if direction == "up" else -1.0
+    expected = sign * (float(window.mean()) - center) / (MAD_TO_SIGMA * mad)
+
+    z = robust_z(_incident_for(window_days, direction), _series(np.concatenate([pre, window])))
+
+    assert z == pytest.approx(expected, rel=1e-6)
+
+
+@pytest.mark.unit
+def test_robust_z_floors_the_mad_at_one_percent_of_the_median() -> None:
+    from rootcause_evals.manufacturing.incidents.visibility import robust_z
+
+    pre = np.full(PRE_DAYS, 100.0)
+    window = np.full(5, 110.0)
+
+    z = robust_z(_incident_for(5), _series(np.concatenate([pre, window])))
+
+    assert z == pytest.approx(10.0 / (MAD_TO_SIGMA * 1.0), rel=1e-6)
 
 
 @pytest.mark.unit
@@ -164,6 +224,19 @@ def test_e3_expected_effect_matches_the_achieved_cycle_time_ratio(
     assert incident.manifest_entry().expected_effect.size == pytest.approx(
         ratio - 1.0, abs=SIZE_TOLERANCE
     )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("seed", SEEDS)
+def test_e3_is_placed_only_where_a_ratio_of_1_25_is_achievable(seed: int) -> None:
+    from rootcause_evals.manufacturing import GeneratorConfig, generate_with_manifest
+
+    _, cases = generate_with_manifest(GeneratorConfig(seed=seed, days=120))
+
+    e3 = [c for c in cases if c.archetype == "E3"]
+    assert len(e3) == 2
+    for case in e3:
+        assert case.expected_effect.size >= MIN_E3_SIZE, (seed, case.case_id)
 
 
 @pytest.mark.unit

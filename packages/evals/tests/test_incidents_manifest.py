@@ -77,8 +77,8 @@ def test_manifest_entries_carry_every_prd_field(
         assert entry["root_cause"]["statement"]
         assert entry["root_cause"]["type"] in ROOT_CAUSE_TYPES
         assert entry["counterfactual"]["description"]
-        assert entry["decoys"] == []
-        assert isinstance(entry["benign_events_in_window"], list)
+        assert not entry["decoys"]
+        assert isinstance(entry["benign_events_in_window"], (list, tuple))
         assert all(isinstance(k, str) and k for k in entry["keywords"])
 
 
@@ -93,7 +93,7 @@ def test_manifest_chain_is_ordered_evidence_over_real_tables_and_columns(
         for step in chain:
             assert step["cause"]
             assert step["evidence_tables"]
-            assert isinstance(step["evidence_columns"], list)
+            assert isinstance(step["evidence_columns"], (list, tuple))
             assert set(step["evidence_tables"]) <= set(baseline120)
             known = {c for t in step["evidence_tables"] for c in baseline120[t].columns}
             assert set(step["evidence_columns"]) <= known
