@@ -16,8 +16,9 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.store.base import BaseStore
 
 from rootcause.agents.backends import build_backend, build_checkpointer
+from rootcause.agents.final_answer import TaskResultGuardMiddleware
 from rootcause.agents.prompts import load_orchestrator_prompt
-from rootcause.agents.subagents import root_cause_subagent
+from rootcause.agents.subagents import ROOT_CAUSE_NAME, root_cause_subagent
 from rootcause.agents.tools.schema import SchemaExecutor, TableDocLike, make_schema_tools
 from rootcause.agents.tools.sql import (
     ApprovalDecision,
@@ -120,6 +121,7 @@ def _sql_wiring(
     executor: QueryExecutor | None,
     settings: Settings,
     table_docs: Mapping[str, TableDocLike] | None,
+    model: BaseChatModel,
 ) -> tuple[list[BaseTool], dict[str, bool | InterruptOnConfig], list[SubAgent]]:
     """Warehouse tools, the run_sql approval gate and the budgeted root-cause subagent."""
     if executor is None:
@@ -129,13 +131,14 @@ def _sql_wiring(
     tools = list(make_sql_tools(executor, threshold, registry))
     if isinstance(executor, SchemaExecutor):
         tools = [*tools, *make_schema_tools(executor, table_docs)]
-    interrupt_on: dict[str, bool | InterruptOnConfig] = {
-        "run_sql": _approval_config(executor, threshold, registry)
-    }
+    approval = _approval_config(executor, threshold, registry)
+    interrupt_on: dict[str, bool | InterruptOnConfig] = {"run_sql": approval}
     subagent = root_cause_subagent(
         tools,
         max_tool_calls=settings.investigation_max_tool_calls,
         max_steps=settings.investigation_max_steps,
+        approval=approval,
+        answer_model=model,
     )
     return tools, interrupt_on, [subagent]
 
@@ -179,13 +182,13 @@ def build_orchestrator(
         )
     agent_model = model if model is not None else chat_model("orchestrator", resolved)
     saver = _resolve_checkpointer(checkpointer, resolved)
-    tools, interrupt_on, subagents = _sql_wiring(executor, resolved, table_docs)
+    tools, interrupt_on, subagents = _sql_wiring(executor, resolved, table_docs, agent_model)
 
     graph = create_deep_agent(
         model=agent_model,
         tools=[*tools, *extra_tools],
         system_prompt=load_orchestrator_prompt(resolved),
-        middleware=[TodoListMiddleware()],
+        middleware=[TodoListMiddleware(), TaskResultGuardMiddleware(ROOT_CAUSE_NAME)],
         subagents=subagents,
         backend=build_backend(store),
         interrupt_on=interrupt_on,

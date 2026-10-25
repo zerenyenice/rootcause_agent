@@ -42,6 +42,7 @@ ValidationFailures = tuple[tuple[str, str], ...]
 LlmProvider = Literal["anthropic", "azure_openai"]
 LlmRole = Literal["orchestrator", "fast", "reasoning"]
 LLM_ROLES: tuple[LlmRole, ...] = ("orchestrator", "fast", "reasoning")
+ReasoningEffort = Literal["none", "minimal", "low", "medium", "high"]
 EmbeddingProvider = Literal["azure_openai", "openai_compatible"]
 PromptSource = Literal["files", "langfuse"]
 # Settings fields Langfuse needs whenever tracing or remote prompts are switched on.
@@ -141,6 +142,11 @@ class Settings(BaseSettings):
     orchestrator_provider: LlmProvider | None = None
     fast_provider: LlmProvider | None = None
     reasoning_provider: LlmProvider | None = None
+    # Per-role reasoning effort for Azure OpenAI models; ``None`` keeps the provider
+    # default. Anthropic models ignore it.
+    orchestrator_reasoning_effort: ReasoningEffort | None = None
+    fast_reasoning_effort: ReasoningEffort | None = None
+    reasoning_reasoning_effort: ReasoningEffort | None = None
     anthropic_api_key: SecretStr | None = None
     azure_openai_endpoint: AnyHttpUrl | None = None
     azure_openai_api_key: SecretStr | None = None
@@ -196,6 +202,11 @@ class Settings(BaseSettings):
         """Resolve the chat provider for ``role``: its override, else ``llm_provider``."""
         override: LlmProvider | None = getattr(self, f"{role}_provider")
         return override if override is not None else self.llm_provider
+
+    def reasoning_effort_for(self, role: LlmRole) -> ReasoningEffort | None:
+        """The reasoning effort configured for ``role`` (``None``: provider default)."""
+        effort: ReasoningEffort | None = getattr(self, f"{role}_reasoning_effort")
+        return effort
 
     @model_validator(mode="after")
     def _require_azure_fields(self) -> Self:
