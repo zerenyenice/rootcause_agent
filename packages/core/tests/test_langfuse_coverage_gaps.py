@@ -168,6 +168,56 @@ def test_callback_handler_is_none_and_logs_when_langchain_integration_is_missing
     assert events == ["langfuse_langchain_unavailable"]
 
 
+def _handler_without_error_hook(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Swap the SDK handler for one whose private error hook is gone (SDK drift)."""
+    import langfuse.langchain as sdk
+
+    hook = "_get_error_level_and_status_message"
+
+    class DriftedHandler(sdk.CallbackHandler):
+        def __getattribute__(self, name: str) -> Any:
+            if name == hook:
+                raise AttributeError(name)
+            return super().__getattribute__(name)
+
+    monkeypatch.setattr(sdk, "CallbackHandler", DriftedHandler)
+
+
+def test_callback_handler_is_none_and_logs_when_the_sdk_error_hook_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    langfuse_capture: Any,
+    make_langfuse_settings: Callable[..., Any],
+) -> None:
+    from rootcause_core.clients import langfuse as module
+
+    events: list[str] = []
+    monkeypatch.setattr(module._logger, "error", lambda event, **_k: events.append(event))  # noqa: SLF001
+    settings = make_langfuse_settings()
+    _handler_without_error_hook(monkeypatch)
+
+    handler = module.langfuse_callback_handler(settings)
+
+    assert handler is None
+    assert events == ["langfuse_handler_guard_unavailable"]
+
+
+def test_run_config_carries_no_callbacks_when_the_sdk_error_hook_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    langfuse_capture: Any,
+    make_langfuse_settings: Callable[..., Any],
+) -> None:
+    from rootcause_core.observability.tracing import run_config
+
+    settings = make_langfuse_settings()
+    _handler_without_error_hook(monkeypatch)
+
+    config = run_config("thread-1", tenant_id="t1", settings=settings)
+
+    assert "callbacks" not in config
+    assert config["configurable"] == {"thread_id": "thread-1"}
+    assert config["metadata"] == {"tenant_id": "t1"}
+
+
 # --- subagent redaction ---
 
 
