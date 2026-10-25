@@ -429,7 +429,12 @@ def langfuse_callback_handler(settings: Settings | None = None) -> BaseCallbackH
         _logger.error("langfuse_langchain_unavailable", error_type=type(error).__name__)
         return None
     handler = CallbackHandler(public_key=_credentials(resolved).public_key)
-    return _HandlerGuard(handler).install()
+    try:
+        return _HandlerGuard(handler).install()
+    except AttributeError as error:
+        # Fail closed: an SDK without the patched error hook must not trace unguarded.
+        _logger.error("langfuse_handler_guard_unavailable", error_type=type(error).__name__)
+        return None
 
 
 def fetch_prompt(name: str, settings: Settings) -> LangfusePrompt:
