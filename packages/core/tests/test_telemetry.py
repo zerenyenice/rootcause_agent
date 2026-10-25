@@ -22,6 +22,7 @@ def test_configure_telemetry_returns_sdk_provider_whose_spans_are_exported(
     from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
         InMemorySpanExporter,
     )
+
     from rootcause_core.telemetry import configure_telemetry, get_tracer
 
     provider = configure_telemetry(_settings(monkeypatch, database_url, otel_exporter="console"))
@@ -69,6 +70,7 @@ def test_configure_telemetry_is_idempotent(
     monkeypatch: pytest.MonkeyPatch, database_url: str
 ) -> None:
     from opentelemetry import trace
+
     from rootcause_core.telemetry import configure_telemetry
 
     settings = _settings(monkeypatch, database_url, otel_exporter="console")
@@ -106,6 +108,7 @@ def test_none_exporter_installs_provider_that_exports_nothing(
     monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str], database_url: str
 ) -> None:
     from opentelemetry.sdk.trace import TracerProvider
+
     from rootcause_core.telemetry import (
         configure_telemetry,
         get_tracer,
