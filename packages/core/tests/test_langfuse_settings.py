@@ -17,7 +17,7 @@ CREDENTIAL_VARIABLES = (HOST_VARIABLE, *KEY_VARIABLES)
 
 
 def _full_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("ROOTCAUSE_LANGFUSE_HOST", "http://langfuse.local:3000")
+    monkeypatch.setenv("ROOTCAUSE_LANGFUSE_HOST", "http://langfuse-web:3000")
     monkeypatch.setenv("ROOTCAUSE_LANGFUSE_PUBLIC_KEY", "pk-lf-1")
     monkeypatch.setenv("ROOTCAUSE_LANGFUSE_SECRET_KEY", SENTINEL)
 
@@ -55,7 +55,7 @@ def test_loads_every_field_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
     settings = get_settings()
 
     assert settings.langfuse_enabled is True
-    assert str(settings.langfuse_host).startswith("http://langfuse.local:3000")
+    assert str(settings.langfuse_host).startswith("http://langfuse-web:3000")
     assert settings.langfuse_public_key is not None
     assert settings.langfuse_public_key.get_secret_value() == "pk-lf-1"
     assert settings.langfuse_secret_key is not None
@@ -106,7 +106,7 @@ def test_names_only_the_credentials_that_are_missing(
 ) -> None:
     monkeypatch.setenv("ROOTCAUSE_LANGFUSE_ENABLED", "true")
     values = {
-        HOST_VARIABLE: "http://langfuse.local:3000",
+        HOST_VARIABLE: "http://langfuse-web:3000",
         KEY_VARIABLES[0]: "pk-lf-1",
         KEY_VARIABLES[1]: SENTINEL,
     }
@@ -187,3 +187,63 @@ def test_settings_stay_frozen() -> None:
 
     with pytest.raises(ValueError):  # noqa: PT011 - pydantic frozen-instance error
         settings.langfuse_enabled = True
+
+
+def _with_host(host: str) -> Settings:
+    return Settings(
+        _env_file=None,
+        database_url=DB,
+        langfuse_enabled=True,
+        langfuse_host=host,
+        langfuse_public_key="pk-lf-1",
+        langfuse_secret_key=SENTINEL,
+    )
+
+
+@pytest.mark.parametrize(
+    "host",
+    [
+        "https://langfuse.example.com",
+        "https://cloud.langfuse.com",
+        "http://127.0.0.1:3000",
+        "http://localhost:3000",
+        "http://[::1]:3000",
+        "http://langfuse-web:3000",
+        "http://langfuse:3000",
+    ],
+)
+def test_accepts_https_loopback_and_single_label_service_hosts(host: str) -> None:
+    assert str(_with_host(host).langfuse_host).startswith(host.rstrip("/"))
+
+
+@pytest.mark.parametrize(
+    "host",
+    [
+        "http://langfuse.example.com",
+        "http://langfuse.local:3000",
+        "http://10.0.0.5:3000",
+        "http://192.168.1.10",
+        "http://8.8.8.8:3000",
+        "http://langfuse-web.internal.example.com:3000",
+    ],
+    ids=lambda host: host,
+)
+def test_rejects_plain_http_to_routable_hosts(host: str) -> None:
+    with pytest.raises((ValueError, ConfigurationError)):
+        _with_host(host)
+
+
+def test_host_rejection_does_not_echo_the_secret_key() -> None:
+    with pytest.raises((ValueError, ConfigurationError)) as caught:
+        _with_host("http://langfuse.example.com")
+
+    assert SENTINEL not in str(caught.value)
+
+
+def test_pii_pass_is_on_by_default_and_configurable(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert Settings(_env_file=None, database_url=DB).langfuse_mask_pii is True
+
+    monkeypatch.setenv("ROOTCAUSE_DATABASE_URL", DB)
+    monkeypatch.setenv("ROOTCAUSE_LANGFUSE_MASK_PII", "false")
+
+    assert get_settings().langfuse_mask_pii is False

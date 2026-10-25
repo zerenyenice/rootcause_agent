@@ -114,14 +114,16 @@ def _clean_rootcause_environment(monkeypatch: pytest.MonkeyPatch) -> Iterator[No
 
 @pytest.fixture
 def langfuse_capture(monkeypatch: pytest.MonkeyPatch) -> Iterator[LangfuseCapture]:
-    """Route every ``Langfuse(...)`` client to an in-memory span exporter (no network).
+    """Route every Langfuse export to an in-memory span exporter (no network).
 
-    ``Langfuse.__init__`` is wrapped, not replaced: the real client is built, the
-    keyword arguments the code under test passed are recorded, and ``span_exporter``
-    is injected unless the code set one itself.
+    ``Langfuse.__init__`` is wrapped, not replaced: the real client is built and the
+    keyword arguments the code under test passed are recorded. The OTLP exporter's
+    ``export`` is replaced, so spans reach memory after any wrapper the code adds.
     """
     try:
         import langfuse
+        from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+        from opentelemetry.sdk.trace.export import SpanExportResult
         from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
     except ImportError:
         pytest.fail("the 'langfuse' package is not installed (add it as a core dependency)")
@@ -130,9 +132,16 @@ def langfuse_capture(monkeypatch: pytest.MonkeyPatch) -> Iterator[LangfuseCaptur
 
     def init(self: Any, **kwargs: Any) -> None:
         capture.init_kwargs.append(dict(kwargs))
-        original(self, **{"span_exporter": capture.exporter, **kwargs})
+        original(self, **kwargs)
+
+    # Whatever exporter chain the code under test builds (including a redacting
+    # wrapper around the OTLP exporter), the final network hop lands in memory.
+    def export(_self: Any, spans: Any) -> Any:
+        capture.exporter.export(spans)
+        return SpanExportResult.SUCCESS
 
     monkeypatch.setattr(langfuse.Langfuse, "__init__", init)
+    monkeypatch.setattr(OTLPSpanExporter, "export", export)
     yield capture
     from rootcause_core.clients import reset_clients
 

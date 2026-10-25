@@ -7,16 +7,10 @@ import pytest
 pytestmark = pytest.mark.unit
 
 
-def _callbacks(**overrides: Any) -> list[Any]:
+def _callbacks() -> list[Any]:
     from rootcause_core.observability.tracing import trace_callbacks
 
-    kwargs: dict[str, Any] = {
-        "session_id": "t1",
-        "user_id": None,
-        "tags": (),
-        "metadata": {},
-    }
-    return list(trace_callbacks(**{**kwargs, **overrides}))
+    return list(trace_callbacks())
 
 
 def test_trace_callbacks_is_empty_when_disabled(base_env: None, langfuse_capture: Any) -> None:
@@ -30,7 +24,7 @@ def test_trace_callbacks_returns_the_langfuse_handler_when_enabled(
     from langchain_core.callbacks import BaseCallbackHandler
     from langfuse.langchain import CallbackHandler
 
-    callbacks = _callbacks(user_id="u1", tags=("a",), metadata={"k": "v"})
+    callbacks = _callbacks()
 
     assert len(callbacks) == 1
     assert isinstance(callbacks[0], CallbackHandler)
@@ -110,3 +104,37 @@ def test_run_config_accepts_odd_thread_ids(
     from rootcause_core.observability.tracing import run_config
 
     assert run_config(thread_id)["configurable"]["thread_id"] == thread_id
+
+
+def test_trace_callbacks_takes_no_trace_attributes() -> None:
+    """Session, user, tags and metadata belong to run_config, not to the callbacks."""
+    import inspect
+
+    from rootcause_core.observability.tracing import trace_callbacks
+
+    parameters = set(inspect.signature(trace_callbacks).parameters)
+
+    assert parameters <= {"settings"}
+
+
+def test_run_config_carries_tenant_and_connection_in_trace_metadata(
+    langfuse_capture: Any, langfuse_env: Any
+) -> None:
+    from rootcause_core.observability.tracing import run_config
+
+    metadata = run_config("t1", tenant_id="tenant-7", connection_id="conn-3")["metadata"]
+
+    assert metadata["tenant_id"] == "tenant-7"
+    assert metadata["connection_id"] == "conn-3"
+    assert metadata["langfuse_session_id"] == "t1"
+
+
+def test_run_config_omits_tenant_and_connection_when_not_given(
+    langfuse_capture: Any, langfuse_env: Any
+) -> None:
+    from rootcause_core.observability.tracing import run_config
+
+    metadata = run_config("t1")["metadata"]
+
+    assert metadata.get("tenant_id") is None
+    assert metadata.get("connection_id") is None
