@@ -116,3 +116,54 @@ def write_cases_json(cases: Iterable[CaseManifest], path: Path) -> None:
     payload = [dataclasses.asdict(case) for case in cases]
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def case_from_dict(data: Mapping[str, Any]) -> CaseManifest:
+    """Rebuild a frozen ``CaseManifest`` from its ``dataclasses.asdict`` form.
+
+    Raises ``KeyError``/``TypeError`` when a field is missing, unexpected or misshaped.
+    """
+    return CaseManifest(
+        case_id=data["case_id"],
+        archetype=data["archetype"],
+        level=data["level"],
+        split=data["split"],
+        metric=MetricSpec(**data["metric"]),
+        anomaly_window=AnomalyWindow(**data["anomaly_window"]),
+        segment_filters=FrozenDict(data["segment_filters"]),
+        expected_effect=ExpectedEffect(**data["expected_effect"]),
+        chain=tuple(
+            ChainStep(
+                cause=step["cause"],
+                evidence_tables=tuple(step["evidence_tables"]),
+                evidence_columns=tuple(step["evidence_columns"]),
+                sql_hint=step["sql_hint"],
+            )
+            for step in data["chain"]
+        ),
+        root_cause=RootCause(**data["root_cause"]),
+        counterfactual=Counterfactual(**data["counterfactual"]),
+        decoys=tuple(Decoy(**decoy) for decoy in data["decoys"]),
+        benign_events_in_window=tuple(data["benign_events_in_window"]),
+        keywords=tuple(data["keywords"]),
+    )
+
+
+def read_cases_json(path: Path) -> tuple[CaseManifest, ...]:
+    """Read a ``write_cases_json`` file back into frozen manifests (inverse of the writer).
+
+    Raises ``OSError`` if the file cannot be read and ``ValueError`` if it is not a JSON
+    list of well-formed case objects.
+    """
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, list):
+        raise ValueError(f"{path}: expected a JSON list of cases")
+    cases = []
+    for index, item in enumerate(payload):
+        try:
+            if not isinstance(item, Mapping):
+                raise TypeError("case is not an object")
+            cases.append(case_from_dict(item))
+        except (KeyError, TypeError) as exc:
+            raise ValueError(f"{path}: case {index} is malformed: {exc!r}") from exc
+    return tuple(cases)

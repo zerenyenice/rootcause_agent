@@ -9,9 +9,12 @@ therefore has two concerns:
    typecheck → test commands a developer runs locally and fails the job
    under 80% coverage (the Gate 2 bar from `rules/common/testing.md`);
    `dependency-audit` checks the locked runtime dependency set for known
-   vulnerabilities; `db-migrations` applies, reverses and re-applies the
+   vulnerabilities; `security-sast` runs `bandit` static security analysis
+   over `src/`; `db-migrations` applies, reverses and re-applies the
    Alembic chain against a real Postgres 16 + pgvector and runs the
-   integration tests there.
+   integration tests there; `web-quality` runs the Next.js chat UI's (`web/`)
+   lint → typecheck → format → test (80% coverage) → build → `npm audit`
+   chain.
 2. **Harness integrity** — generated agent surfaces must match their
    sources, tracked shell/workflow/JSON files must lint and parse clean, no
    secret ever lands in history, and every commit carries this project's
@@ -95,6 +98,104 @@ for a clean audit of a real dependency tree.
 **Why:** `rules/devops/security.md` requires a dependency audit in CI; new
 HIGH/CRITICAL advisories are review findings to act on (bump, pin, or an
 explicitly justified `--ignore-vuln`), not noise to silence.
+
+### `security-sast`
+
+**What it checks:** Python static security analysis of the product code in
+`src/` with [`bandit`](https://github.com/PyCQA/bandit), failing the job on
+**medium severity and above** (`-ll`):
+
+```bash
+uv sync --locked --only-group dev
+uv run --no-sync bandit -c pyproject.toml -r src -ll
+```
+
+`bandit` is pinned through the `uv` `dev` dependency group (exact version in
+`uv.lock`) and configured in `pyproject.toml` `[tool.bandit]`.
+`--only-group dev` installs just the dev tool group, without the project or
+its runtime dependencies. bandit only parses source, so the job stays
+fast. `--no-sync` stops `uv run` from re-syncing the full environment.
+
+**Suppressing a false positive:** only at the flagged line, with a targeted
+`# nosec B<id>` (never a bare `# nosec`) and a one-line reason comment
+directly above it, for example:
+
+```python
+# name read from information_schema, escaped by _quote_identifier
+sql = f"SELECT count(*) FROM {_quote_identifier(table)}"  # nosec B608
+```
+
+`[tool.bandit]` sets `skips = []` on purpose: no global skips and no
+`exclude_dirs`, so every exception is visible in the diff of the line it
+covers and is reviewed with it. Adding a global skip, raising the severity
+floor (`-lll`) or adding `continue-on-error` is a gate override only the user
+can grant (`rules/devops/ci-cd.md` § Never weaken to go green). A real
+finding is fixed in application code. Never suppress it to go green.
+
+**Log noise:** bandit 1.9 prints `nosec encountered (B608), but no failed
+test` warnings for multi-line f-strings carrying a `# nosec`. These are
+logged warnings only. They do not affect the exit code or the result.
+
+**Baseline (introduced with this job):** 16 medium-severity `B608`
+(string-built SQL) findings, all triaged as false positives and suppressed
+per line: identifier-quoted catalog names in
+`rootcause/connections/duckdb_executor.py`, generator-internal table and
+column names in `rootcause/evals/manufacturing/writers.py`, and manifest
+`sql_hint` text (never executed) in
+`rootcause/evals/manufacturing/incidents/{easy,product_mix}.py`. Two
+low-severity `B105` hits (`db/cli.py`, `db/names.py`) are below the `-ll`
+floor and are not suppressed.
+
+**Why:** `rules/devops/ci-cd.md` lists a security stage in the required
+pipeline, and security review now happens on PRs (CLAUDE.md, "Security
+review happens on PRs"). Every PR gets an automated SAST check, and the
+`security-reviewer` agent reviews the release PR.
+
+**Reproduce locally:** `uv run bandit -c pyproject.toml -r src -ll` after a
+normal `uv sync --locked`.
+
+### `web-quality`
+
+**What it checks:** the Next.js chat UI in `web/`, using the scripts from
+`web/package.json` in fail-fast order. Every `run:` step uses
+`working-directory: web` (job-level `defaults.run`).
+
+1. `actions/setup-node` (SHA-pinned, v7.1.0) installs Node 22 (`engines.node`
+   is `>=22`), with the npm cache keyed on `web/package-lock.json`.
+2. `npm ci` installs exactly what `package-lock.json` pins and fails if it
+   has drifted from `package.json` (never a bare `npm install`, per
+   `rules/devops/security.md`).
+3. `npm run lint` runs `eslint .`.
+4. `npm run typecheck` runs `tsc --noEmit`.
+5. `npm run format:check` runs `prettier --check .`.
+6. `npm test` runs `vitest run --coverage`. **Under 80% the step fails**,
+   because `coverage.thresholds` in `web/vitest.config.mts` sets lines,
+   functions, branches and statements to 80. That config is where the
+   frontend gate lives, so lowering it is a Gate 2 override only the user can
+   grant (`rules/devops/ci-cd.md` § Never weaken to go green).
+7. `npm run build` runs `next build`, the production build.
+8. `npm audit --audit-level=high` fails on any HIGH or CRITICAL advisory in
+   the installed tree.
+
+`web/coverage/` (HTML, `clover.xml`, `coverage-final.json`) is uploaded as
+the `web-coverage` artifact with `if: always()` and 7-day retention, the same
+policy as `coverage-xml`.
+
+**Why:** this is the frontend half of "CI mirrors the merge gate": the same
+commands a developer runs in `web/`, with the same 80% bar as
+`python-quality`. There is no `paths:` filter, because `ci.yml` uses none and
+a required check has to report on every PR (a path-filtered required check
+that never runs leaves the PR blocked as "expected").
+
+**Note:** `web/.npmrc` sets `legacy-peer-deps=true`, so `npm ci` in CI
+resolves peer dependencies the same lenient way it does locally.
+
+**Reproduce locally** (Node 22, from the repo root):
+
+```bash
+cd web && npm ci && npm run lint && npm run typecheck && npm run format:check \
+  && npm test && npm run build && npm audit --audit-level=high
+```
 
 ### `db-migrations`
 
@@ -423,11 +524,13 @@ actors):**
   values above exactly): `python-quality`, `dependency-audit`,
   `harness-sync`, `lint-shell`, `lint-workflows`, `validate-json`,
   `compose-config`, `secret-scan`, `commit-protocol` (the last enforces the
-  git-audit-trail guarantee the whole protocol depends on), and
-  `db-migrations`. `python-quality` and `dependency-audit` were added in
-  T003, `compose-config` in T002 and `db-migrations` in T006;
-  the Lead adds each to the ruleset after its PR merges (a check cannot be
-  required before it exists on the base branch).
+  git-audit-trail guarantee the whole protocol depends on),
+  `db-migrations`, `web-quality` and `security-sast`. `python-quality` and
+  `dependency-audit` were added in T003, `compose-config` in T002,
+  `db-migrations` in T006, `web-quality` with the chat UI (PR #128) and
+  `security-sast` with security-on-release; the Lead adds each to the
+  ruleset after its PR merges (a check cannot be required before it exists
+  on the base branch).
 - Require branches to be up to date before merging (strict policy).
 - Effect: a **direct push to these branches is rejected** — an un-merged
   commit has no passing checks, so only PRs whose checks are green can land.

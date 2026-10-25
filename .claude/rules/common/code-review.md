@@ -43,7 +43,7 @@ Before marking code complete:
 
 ## Security Review Triggers
 
-**Use security-reviewer (Sensitive tier) when the change:**
+**Sensitive tier (label the PR `security`; reviewed by security-reviewer on the release PR) when the change:**
 
 - Executes SQL against customer databases or changes the read-only guards
 - Handles credentials, secrets or cryptography
