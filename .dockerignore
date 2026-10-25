@@ -1,0 +1,19 @@
+# Build context of the root Dockerfile (api / agent / migrate image).
+# Allow-list: the image needs only the project metadata, the lockfile and the
+# package source. Everything else (secrets, virtualenvs, the web app, demo
+# data, git history, tests, docs) stays out of the context.
+*
+!pyproject.toml
+!uv.lock
+!README.md
+!src/
+
+# Never ship these even if they appear under an allowed path.
+**/.env
+**/.env.*
+**/.venv
+**/node_modules
+**/data
+**/.git
+**/__pycache__
+**/*.pyc
