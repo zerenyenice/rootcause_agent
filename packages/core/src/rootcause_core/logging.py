@@ -8,6 +8,7 @@ processor chain and renderer, so third-party libraries produce the same JSON
 
 import logging
 import sys
+from typing import TextIO
 
 import structlog
 from opentelemetry import trace
@@ -19,7 +20,7 @@ TRACE_ID_FIELD = "trace_id"
 SPAN_ID_FIELD = "span_id"
 
 
-class _StdoutHandler(logging.StreamHandler):  # type: ignore[type-arg]
+class _StdoutHandler(logging.StreamHandler[TextIO]):
     """Marker subclass so reconfiguration replaces only the handler we own."""
 
 
@@ -84,7 +85,9 @@ def configure_logging(settings: Settings) -> None:
             structlog.stdlib.ProcessorFormatter.remove_processors_meta,
             _renderer(settings.log_format),
         ],
-        foreign_pre_chain=list(shared),
+        # ExtraAdder copies stdlib ``extra={...}`` fields into the event dict so
+        # third-party records render them like structlog key-value pairs.
+        foreign_pre_chain=[structlog.stdlib.ExtraAdder(), *shared],
     )
     _install_stdout_handler(formatter, settings.log_level)
 
