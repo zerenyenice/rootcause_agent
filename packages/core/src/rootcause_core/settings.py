@@ -37,6 +37,8 @@ RATE_LIMIT_PATTERN = re.compile(r"^(?P<count>[0-9]+)/(?:second|minute|hour|day)$
 ValidationFailures = tuple[tuple[str, str], ...]
 
 LlmProvider = Literal["anthropic", "azure_openai"]
+LlmRole = Literal["orchestrator", "fast", "reasoning"]
+LLM_ROLES: tuple[LlmRole, ...] = ("orchestrator", "fast", "reasoning")
 EmbeddingProvider = Literal["azure_openai", "openai_compatible"]
 
 
@@ -105,12 +107,16 @@ class Settings(BaseSettings):
     reasoning_model: str = Field(default="anthropic:claude-opus-5", min_length=1)
     scan_row_threshold: int = Field(default=5_000_000, gt=0)
     llm_provider: LlmProvider = "anthropic"
+    # Per-role overrides; ``None`` falls back to ``llm_provider``.
+    orchestrator_provider: LlmProvider | None = None
+    fast_provider: LlmProvider | None = None
+    reasoning_provider: LlmProvider | None = None
     anthropic_api_key: SecretStr | None = None
     azure_openai_endpoint: AnyHttpUrl | None = None
     azure_openai_api_key: SecretStr | None = None
     azure_openai_api_version: str = Field(default="2025-04-01-preview", min_length=1)
     llm_timeout_s: int = Field(default=60, gt=0)
-    llm_max_retries: int = Field(default=2, gt=0)
+    llm_max_retries: int = Field(default=2, ge=0)
     llm_max_tokens: int = Field(default=8192, gt=0)
     embedding_provider: EmbeddingProvider = "azure_openai"
     embedding_model: str = Field(default="text-embedding-3-small", min_length=1)
@@ -135,10 +141,15 @@ class Settings(BaseSettings):
             raise ValueError("rate_limit must look like '<count>/<second|minute|hour|day>'")
         return value.strip()
 
+    def provider_for(self, role: LlmRole) -> LlmProvider:
+        """Resolve the chat provider for ``role``: its override, else ``llm_provider``."""
+        override: LlmProvider | None = getattr(self, f"{role}_provider")
+        return override if override is not None else self.llm_provider
+
     @model_validator(mode="after")
     def _require_azure_fields(self) -> Self:
-        """When Azure OpenAI serves the chat models its endpoint and key are mandatory."""
-        if self.llm_provider != "azure_openai":
+        """When Azure OpenAI serves any chat role its endpoint and key are mandatory."""
+        if all(self.provider_for(role) != "azure_openai" for role in LLM_ROLES):
             return self
         missing = tuple(
             f"{ENV_PREFIX}{name.upper()}"

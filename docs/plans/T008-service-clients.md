@@ -31,3 +31,13 @@ Settings defaults and per-provider required fields (missing Azure endpoint/key w
 
 ## Acceptance (backlog)
 Provider selection and required-setting validation covered without network; no direct provider SDK imports outside the clients layer.
+
+## Review amendments (backend review, 2026-10-25)
+- **Per-role provider:** new `orchestrator_provider`, `fast_provider`, `reasoning_provider` (`Literal["anthropic","azure_openai"] | None`, default `None` = inherit `llm_provider`); `Settings.provider_for(role)` resolves them and `chat_model(role)` builds per the resolved provider. The settings validator requires `ROOTCAUSE_AZURE_OPENAI_ENDPOINT`/`_API_KEY` whenever any role resolves to `azure_openai` (value-free `ConfigurationError`).
+- **Embeddings:** `check_embedding_ctx_length=False` on both providers (no tiktoken download, no tokenising for non-OpenAI models); constructor uses field names (`deployment`, `openai_api_key`, `openai_api_version`, `request_timeout`, `openai_api_base`), so no `type: ignore`.
+- **Embedding validation stays lazy:** the embedding config is checked on the first `embeddings()` call, not at settings load. Its first consumer is catalog search (T025); eager validation would break processes that never embed. Revisit when T025 lands.
+- **Limits:** `llm_max_retries` is `ge=0` (0 disables retries).
+- **OpenViking lifecycle:** the `httpx.AsyncClient` is bound to the event loop that first uses it; the API lifespan (T035) must `await close_clients()`. Clients are cached per `Settings` and never replaced, so none is orphaned; no eager async close (the factory is sync and a fire-and-forget close could cut in-flight requests). Documented in the module docstring.
+- **Typing/secrets:** `chat_model`/`_build` return `BaseChatModel`; the original `SecretStr` is passed to providers; one `_require(value, variable)` helper in `clients/_common.py`.
+- **Removed** `rootcause_agents/config.py` `AgentModels` (unused; per-role resolution lives in the clients layer).
+- **Env migration:** `deploy/.env.example` lists every new variable; `ANTHROPIC_API_KEY` is now `ROOTCAUSE_ANTHROPIC_API_KEY`.

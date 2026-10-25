@@ -1,57 +1,55 @@
-"""Embeddings factory: the only place provider embedding classes are constructed."""
+"""Embeddings factory: the only place provider embedding classes are constructed.
+
+``check_embedding_ctx_length`` is disabled for both providers: it would make
+langchain-openai download a tiktoken encoding at first use (network access
+outside the configured endpoint) and it cannot tokenise for non-OpenAI models
+behind an OpenAI-compatible server anyway. Inputs are sent as-is.
+
+Construction is lazy: nothing validates the embedding configuration until the
+first :func:`embeddings` call (the first consumer is catalog search, T025).
+"""
 
 from functools import cache
 
 from langchain_core.embeddings import Embeddings
 from langchain_openai import AzureOpenAIEmbeddings, OpenAIEmbeddings
-from pydantic import AnyHttpUrl, SecretStr
+from pydantic import SecretStr
 
-from rootcause_core.errors import ConfigurationError
-from rootcause_core.settings import ENV_PREFIX, Settings, get_settings
+from rootcause_core.clients._common import _require
+from rootcause_core.settings import Settings, get_settings
 
 # OpenAI-compatible servers that need no key still require a non-empty value.
 PLACEHOLDER_KEY = "not-needed"
 
 
-def _require_url(value: AnyHttpUrl | None, variable: str) -> str:
-    if value is None:
-        raise ConfigurationError(
-            f"{ENV_PREFIX}{variable} is required for the selected provider.",
-            variables=(f"{ENV_PREFIX}{variable}",),
-        )
-    return str(value).rstrip("/")
-
-
 def _azure(settings: Settings) -> Embeddings:
-    endpoint = _require_url(settings.azure_openai_endpoint, "AZURE_OPENAI_ENDPOINT")
-    if settings.azure_openai_api_key is None:
-        raise ConfigurationError(
-            f"{ENV_PREFIX}AZURE_OPENAI_API_KEY is required for the selected provider.",
-            variables=(f"{ENV_PREFIX}AZURE_OPENAI_API_KEY",),
-        )
-    return AzureOpenAIEmbeddings(  # type: ignore[call-arg]
-        azure_deployment=settings.embedding_model,
-        azure_endpoint=endpoint,
-        api_key=settings.azure_openai_api_key,
-        api_version=settings.azure_openai_api_version,
+    endpoint = _require(settings.azure_openai_endpoint, "AZURE_OPENAI_ENDPOINT")
+    api_key = _require(settings.azure_openai_api_key, "AZURE_OPENAI_API_KEY")
+    return AzureOpenAIEmbeddings(
+        deployment=settings.embedding_model,
+        azure_endpoint=str(endpoint).rstrip("/"),
+        openai_api_key=api_key,
+        openai_api_version=settings.azure_openai_api_version,
         dimensions=settings.embedding_dimensions,
         chunk_size=settings.embedding_batch_size,
-        timeout=settings.llm_timeout_s,
+        request_timeout=settings.llm_timeout_s,
         max_retries=settings.llm_max_retries,
+        check_embedding_ctx_length=False,
     )
 
 
 def _compatible(settings: Settings) -> Embeddings:
-    base = _require_url(settings.embedding_api_base, "EMBEDDING_API_BASE")
-    key = settings.embedding_api_key or SecretStr(PLACEHOLDER_KEY)
-    return OpenAIEmbeddings(  # type: ignore[call-arg]
+    base = _require(settings.embedding_api_base, "EMBEDDING_API_BASE")
+    api_key = settings.embedding_api_key or SecretStr(PLACEHOLDER_KEY)
+    return OpenAIEmbeddings(
         model=settings.embedding_model,
-        base_url=base,
-        api_key=key,
+        openai_api_base=str(base).rstrip("/"),
+        openai_api_key=api_key,
         dimensions=settings.embedding_dimensions,
         chunk_size=settings.embedding_batch_size,
-        timeout=settings.llm_timeout_s,
+        request_timeout=settings.llm_timeout_s,
         max_retries=settings.llm_max_retries,
+        check_embedding_ctx_length=False,
     )
 
 
