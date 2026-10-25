@@ -10,7 +10,6 @@ dependencies = [
     "langgraph>=0.6",
     "langgraph-checkpoint-postgres>=2.0",
     "psycopg[binary]>=3.2",
-    "langchain-anthropic>=0.3",
 ]
 
 [tool.uv.sources]
