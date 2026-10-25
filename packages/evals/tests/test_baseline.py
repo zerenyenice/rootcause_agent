@@ -192,7 +192,7 @@ def test_weekend_output_below_eighty_percent_of_weekday(
     tables: dict[str, pd.DataFrame],
 ) -> None:
     runs = tables["production_runs"]
-    dow = pd.to_datetime(runs["ts"]).dt.dayofweek
+    dow = pd.to_datetime(runs["ts"]).dt.day_of_week
     weekend = runs.loc[dow >= 5, "units_produced"].mean()
     weekday = runs.loc[dow < 5, "units_produced"].mean()
 
