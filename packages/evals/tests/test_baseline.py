@@ -79,7 +79,7 @@ NON_NULL_KEYS = {
         "offset_found",
     ],
     "energy_meter_readings": ["ts", "line_id", "kwh"],
-    "warranty_claims": ["claim_id", "product_id", "run_id", "claim_date", "defect_type"],
+    "warranty_claims": ["claim_id", "product_id", "claim_date", "defect_type"],
     "business_events": ["event_date", "event_type", "description"],
 }
 
@@ -182,7 +182,8 @@ def test_foreign_keys_resolve(
     parent: str,
     parent_column: str,
 ) -> None:
-    orphans = ~tables[child][column].isin(tables[parent][parent_column])
+    values = tables[child][column].dropna()  # nullable FKs (burn-in claims) are exempt
+    orphans = ~values.isin(tables[parent][parent_column])
 
     assert not orphans.any()
 
