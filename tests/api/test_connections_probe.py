@@ -142,7 +142,8 @@ def test_duckdb_introspect_returns_schemas_tables_and_columns(
                     },
                 ],
             }
-        ]
+        ],
+        "truncated": False,
     }
     assert _digest(warehouse_file) == before
 

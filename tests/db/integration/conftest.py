@@ -355,3 +355,210 @@ def customer_db(plain_database_url: str) -> Iterator[CustomerDb]:
             )
             for role in (reader, writer, creator, guc_writer):
                 connection.execute(sql.SQL("DROP ROLE IF EXISTS {}").format(ident(role)))
+
+
+# --- roles that are not read-only although they hold no table write grant ----
+#
+# Read-only rule (review finding HIGH 1): besides superuser, table write/TRUNCATE,
+# sequence and CREATE grants, a role is NOT read-only when it (or a role it is a
+# member of) has CREATEDB, CREATEROLE or REPLICATION; is a member of
+# pg_write_server_files, pg_execute_server_program or pg_read_server_files; owns a
+# non-system table, materialized view or schema (an owner can re-grant itself
+# anything); or may CREATE in any database on the server.
+# TEMP on the database is TOLERATED (Lead decision): Postgres grants it to PUBLIC
+# by default, temp objects are session-local (never customer data), the executor's
+# READ ONLY transactions refuse CREATE TEMP TABLE and the validator rejects DDL.
+# The customer database keeps PUBLIC's default TEMP, so the reader has it too.
+# Known gap, deliberately untested: EXECUTE on SECURITY DEFINER functions that write.
+
+RISKY_ROLE_KINDS = (
+    "createdb",
+    "createrole",
+    "replication",
+    "write_server_files",
+    "execute_server_program",
+    "read_server_files",
+    "table_owner",
+    "matview_owner",
+    "schema_owner",
+    "other_db_create",
+)
+# Roles that hold a privilege the rule tolerates; they must still be read-only.
+TOLERATED_ROLE_KINDS = ("temp_is_allowed",)
+_ROLE_ATTRIBUTES = {
+    "createdb": "CREATEDB",
+    "createrole": "CREATEROLE",
+    "replication": "REPLICATION",
+}
+_BUILTIN_MEMBERSHIPS = {
+    "write_server_files": "pg_write_server_files",
+    "execute_server_program": "pg_execute_server_program",
+    "read_server_files": "pg_read_server_files",
+}
+
+
+@dataclass(frozen=True)
+class RiskyRoles:
+    """Login roles by kind (``RISKY_ROLE_KINDS``, ``TOLERATED_ROLE_KINDS``), SELECT-only grants."""
+
+    roles: dict[str, str]
+    other_database: str
+
+
+def _create_risky_role(server: psycopg.Connection, kind: str, role: str) -> None:
+    attribute = sql.SQL(_ROLE_ATTRIBUTES.get(kind, ""))
+    server.execute(
+        sql.SQL("CREATE ROLE {} LOGIN {} PASSWORD {}").format(
+            sql.Identifier(role), attribute, sql.Literal(CUSTOMER_PASSWORD)
+        )
+    )
+    builtin = _BUILTIN_MEMBERSHIPS.get(kind)
+    if builtin is not None:
+        server.execute(
+            sql.SQL("GRANT {} TO {}").format(sql.Identifier(builtin), sql.Identifier(role))
+        )
+
+
+def _grant_owned_objects(db: psycopg.Connection, roles: dict[str, str], database: str) -> None:
+    ident = sql.Identifier
+    owner = roles["table_owner"]
+    db.execute("CREATE TABLE public.owned_by_role (id integer)")
+    db.execute(sql.SQL("ALTER TABLE public.owned_by_role OWNER TO {}").format(ident(owner)))
+    # The owner revoked its own write grants; it can still re-grant them (or DROP).
+    db.execute(
+        sql.SQL("REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON public.owned_by_role FROM {}").format(
+            ident(owner)
+        )
+    )
+    db.execute("CREATE MATERIALIZED VIEW public.owned_matview AS SELECT 1 AS x")
+    db.execute(
+        sql.SQL("ALTER MATERIALIZED VIEW public.owned_matview OWNER TO {}").format(
+            ident(roles["matview_owner"])
+        )
+    )
+    schema_owner = roles["schema_owner"]
+    db.execute(sql.SQL("CREATE SCHEMA owned_schema AUTHORIZATION {}").format(ident(schema_owner)))
+    db.execute(sql.SQL("REVOKE CREATE ON SCHEMA owned_schema FROM {}").format(ident(schema_owner)))
+    db.execute(
+        sql.SQL("GRANT TEMPORARY ON DATABASE {} TO {}").format(
+            ident(database), ident(roles["temp_is_allowed"])
+        )
+    )
+
+
+@pytest.fixture
+def risky_roles(customer_db: CustomerDb) -> Iterator[RiskyRoles]:
+    """One login role per ``RISKY_ROLE_KINDS``/``TOLERATED_ROLE_KINDS`` entry on the server."""
+    suffix = uuid.uuid4().hex[:8]
+    kinds = RISKY_ROLE_KINDS + TOLERATED_ROLE_KINDS
+    roles = {kind: f"rc_{kind[:12]}_{suffix}" for kind in kinds}
+    other_database = f"rc_other_{suffix}"
+    server_url = make_url(admin_url_for(customer_db.admin_url, "postgres"))
+    database_url = make_url(customer_db.admin_url)
+    ident = sql.Identifier
+    with psycopg.connect(_conninfo(server_url), autocommit=True) as server:
+        for kind, role in roles.items():
+            _create_risky_role(server, kind, role)
+        server.execute(sql.SQL("CREATE DATABASE {}").format(ident(other_database)))
+        server.execute(
+            sql.SQL("GRANT CREATE ON DATABASE {} TO {}").format(
+                ident(other_database), ident(roles["other_db_create"])
+            )
+        )
+    with psycopg.connect(_conninfo(database_url), autocommit=True) as db:
+        for role in roles.values():
+            _grant_reader(db, role, customer_db.database)
+        _grant_owned_objects(db, roles, customer_db.database)
+    try:
+        yield RiskyRoles(roles=roles, other_database=other_database)
+    finally:
+        with psycopg.connect(_conninfo(server_url), autocommit=True) as server:
+            server.execute(
+                sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(ident(other_database))
+            )
+        with psycopg.connect(_conninfo(database_url), autocommit=True) as db:
+            for role in roles.values():
+                db.execute(sql.SQL("DROP OWNED BY {}").format(ident(role)))
+        with psycopg.connect(_conninfo(server_url), autocommit=True) as server:
+            for role in roles.values():
+                server.execute(sql.SQL("DROP ROLE IF EXISTS {}").format(ident(role)))
+
+
+# --- connections API against the customer database ----------------------------
+
+CONNECTIONS_PATH = "/api/v1/connections"
+UNREACHABLE_APP_DB = "postgresql://u:p@127.0.0.1:1/db"
+
+
+@dataclass(frozen=True)
+class ConnectionsApi:
+    """App client; connection routes use an in-memory repository, only the customer DB is real."""
+
+    client: Any  # fastapi.testclient.TestClient
+    repository: Any  # rootcause.connections.repository.InMemoryConnectionRepository
+    customer: CustomerDb
+
+    def register(self, user: str, **overrides: Any) -> str:
+        """Store a Postgres connection to the customer database as ``user``; returns its id."""
+        body = {
+            "name": f"customer as {user}",
+            "kind": "postgres",
+            "host": self.customer.host,
+            "port": self.customer.port,
+            "database": self.customer.database,
+            "user": user,
+            "password": self.customer.password,
+            "sslmode": "disable",
+            **overrides,
+        }
+        response = self.client.post(CONNECTIONS_PATH, json=body)
+        assert response.status_code == 201, response.text
+        return str(response.json()["data"]["id"])
+
+    def verified_at(self, connection_id: str) -> Any:
+        import asyncio
+
+        record = asyncio.run(self.repository.get(uuid.UUID(connection_id)))
+        assert record is not None
+        return record.read_only_verified_at
+
+
+@pytest.fixture
+def make_connections_api(
+    customer_db: CustomerDb, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> Iterator[Any]:
+    """Factory: ``make_connections_api(**settings)`` -> :class:`ConnectionsApi`.
+
+    Keyword settings map to ``ROOTCAUSE_<NAME>`` (e.g. ``introspect_max_tables="5"``).
+    """
+    from contextlib import ExitStack
+
+    from cryptography.fernet import Fernet
+    from fastapi.testclient import TestClient
+
+    from rootcause.api.main import create_app
+    from rootcause.api.routes.connections import get_connection_repository
+    from rootcause.connections.repository import InMemoryConnectionRepository
+    from rootcause.settings import clear_settings_cache
+
+    for name in [key for key in os.environ if key.upper().startswith("ROOTCAUSE_")]:
+        if not name.upper().startswith("ROOTCAUSE_TEST_"):
+            monkeypatch.delenv(name)
+    monkeypatch.chdir(tmp_path)
+    stack = ExitStack()
+
+    def _make(**settings: str) -> ConnectionsApi:
+        monkeypatch.setenv("ROOTCAUSE_DATABASE_URL", UNREACHABLE_APP_DB)
+        monkeypatch.setenv("ROOTCAUSE_SECRET_KEY", Fernet.generate_key().decode("ascii"))
+        for key, value in settings.items():
+            monkeypatch.setenv(f"ROOTCAUSE_{key.upper()}", value)
+        clear_settings_cache()
+        app = create_app()
+        repository = InMemoryConnectionRepository()
+        app.dependency_overrides[get_connection_repository] = lambda: repository
+        client = stack.enter_context(TestClient(app))
+        return ConnectionsApi(client=client, repository=repository, customer=customer_db)
+
+    with stack:
+        yield _make
+    clear_settings_cache()
