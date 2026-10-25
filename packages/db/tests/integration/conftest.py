@@ -12,6 +12,7 @@ import os
 import shutil
 import uuid
 from collections.abc import Iterator
+from dataclasses import dataclass
 
 import psycopg
 import pytest
@@ -100,3 +101,66 @@ def fresh_database_url(request: pytest.FixtureRequest) -> Iterator[str]:
             connection.execute(
                 sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(sql.Identifier(name))
             )
+
+
+# --- amendment fixtures: bootstrap, app role --------------------------------
+
+
+@dataclass(frozen=True)
+class AppRole:
+    name: str
+    password: str
+    url: str  # connects to the fresh database as the role
+    admin_url: str  # superuser URL of the same database
+
+
+def admin_url_for(database_url: str, database: str | None = None) -> str:
+    """Superuser URL for ``database_url``'s server (optionally another database)."""
+    url = make_url(database_url)
+    if database is not None:
+        url = url.set(database=database)
+    return url.render_as_string(hide_password=False)
+
+
+@pytest.fixture
+def bootstrapped_url(fresh_database_url: str) -> str:
+    """Empty database with the vector extension and the three schemas created."""
+    from rootcause_db.bootstrap import bootstrap
+
+    bootstrap(fresh_database_url)
+    return fresh_database_url
+
+
+@pytest.fixture
+def app_role(fresh_database_url: str) -> Iterator[AppRole]:
+    """Non-superuser LOGIN role owning the fresh database."""
+    role = f"rc_app_{uuid.uuid4().hex[:10]}"
+    password = "app-role-pw"
+    database = make_url(fresh_database_url).database
+    assert database is not None
+    server = admin_url_for(fresh_database_url, "postgres")
+    with psycopg.connect(_conninfo(make_url(server)), autocommit=True) as connection:
+        connection.execute(
+            sql.SQL("CREATE ROLE {} LOGIN NOSUPERUSER PASSWORD {}").format(
+                sql.Identifier(role), sql.Literal(password)
+            )
+        )
+        connection.execute(
+            sql.SQL("ALTER DATABASE {} OWNER TO {}").format(
+                sql.Identifier(database), sql.Identifier(role)
+            )
+        )
+    try:
+        role_url = make_url(fresh_database_url).set(username=role, password=password)
+        yield AppRole(
+            name=role,
+            password=password,
+            url=role_url.render_as_string(hide_password=False),
+            admin_url=fresh_database_url,
+        )
+    finally:
+        with psycopg.connect(_conninfo(make_url(server)), autocommit=True) as connection:
+            connection.execute(
+                sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(sql.Identifier(database))
+            )
+            connection.execute(sql.SQL("DROP ROLE IF EXISTS {}").format(sql.Identifier(role)))

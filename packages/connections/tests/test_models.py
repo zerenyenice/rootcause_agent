@@ -143,3 +143,51 @@ def test_query_log_required_columns_are_not_nullable(query_log_table):
     for column in ("connection_id", "sql", "started_at", "status"):
         assert query_log_table.c[column].nullable is False
     assert query_log_table.c.error_code.nullable is True
+
+
+# --- amendment: model hardening ---------------------------------------------
+
+
+def test_connection_id_has_a_database_side_uuid_default(connections_table):
+    default = connections_table.c.id.server_default
+
+    assert default is not None
+    assert "gen_random_uuid" in str(default.arg)
+
+
+def test_connection_updated_at_refreshes_on_update(connections_table):
+    assert connections_table.c.updated_at.onupdate is not None
+
+
+def test_connection_port_is_constrained_to_valid_tcp_ports(connections_table):
+    from sqlalchemy import CheckConstraint
+
+    checks = [
+        str(c.sqltext) for c in connections_table.constraints if isinstance(c, CheckConstraint)
+    ]
+
+    assert any("port" in text and "1" in text and "65535" in text for text in checks), checks
+
+
+def test_query_status_is_a_str_enum_with_the_three_values():
+    from enum import StrEnum
+
+    from rootcause_connections.models import QueryStatus
+
+    assert issubclass(QueryStatus, StrEnum)
+    assert [s.value for s in QueryStatus] == ["ok", "error", "rejected"]
+    assert QueryStatus.OK == "ok"
+
+
+def test_query_log_status_maps_the_enum_on_the_query_status_type(query_log_table):
+    from sqlalchemy import Enum
+
+    from rootcause_connections.models import QueryStatus
+
+    status_type = query_log_table.c.status.type
+
+    assert isinstance(status_type, Enum)
+    assert status_type.name == "query_status"
+    assert status_type.schema == "audit"
+    assert status_type.enum_class is QueryStatus
+    assert list(status_type.enums) == ["ok", "error", "rejected"]
