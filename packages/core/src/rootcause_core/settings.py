@@ -54,9 +54,10 @@ class Settings(BaseSettings):
 
     Values come from ``ROOTCAUSE_*`` environment variables. A ``.env`` file in
     the working directory is read as a fallback in ``dev`` and ``test`` only;
-    when ``ROOTCAUSE_ENVIRONMENT`` is ``prod`` (checked by :func:`get_settings`)
-    the file is ignored so production configuration always comes from the real
-    environment.
+    when ``ROOTCAUSE_ENVIRONMENT`` is ``prod`` in the process environment
+    (checked by :func:`get_settings`) the file is ignored so production
+    configuration always comes from the real environment. Declaring ``prod``
+    inside ``.env`` itself is rejected rather than honoured.
     """
 
     model_config = SettingsConfigDict(
@@ -76,6 +77,12 @@ class Settings(BaseSettings):
     otel_exporter: OtelExporter = OtelExporter.NONE
     otel_endpoint: AnyHttpUrl | None = None
     service_name: str = Field(default="rootcause", min_length=1)
+
+    @field_validator("environment", mode="before")
+    @classmethod
+    def _normalise_environment(cls, value: object) -> object:
+        """Accept ``PROD``/``Dev``/``test`` alike; the enum check runs after."""
+        return value.lower() if isinstance(value, str) else value
 
     @field_validator("log_level", mode="before")
     @classmethod
@@ -114,20 +121,47 @@ def _is_prod_environment() -> bool:
     return False
 
 
+def _prod_from_dotenv_error() -> ConfigurationError:
+    """Build the error raised when ``.env`` (not the process) declares ``prod``."""
+    message = (
+        f"{ENVIRONMENT_VARIABLE} is set to '{Environment.PROD.value}' in {DOTENV_FILE} "
+        "but not in the process environment. A prod environment must be set in the "
+        f"process environment, not in {DOTENV_FILE}; {DOTENV_FILE} is ignored in prod."
+    )
+    return ConfigurationError(message, variables=(ENVIRONMENT_VARIABLE,))
+
+
 def _load_settings() -> Settings:
+    """Load settings, consulting ``.env`` only outside production.
+
+    When the real environment says ``prod`` the file is skipped entirely. When
+    it does not but the loaded settings still resolve to ``prod``, the value
+    can only have come from ``.env``, which is refused: production must never
+    be configured from a file that production itself ignores.
+
+    Raises:
+        ConfigurationError: when ``.env`` declares ``prod`` without the process
+            environment doing so.
+    """
     if _is_prod_environment():
         return Settings(_env_file=None)
-    return Settings()
+    settings = Settings()
+    if settings.environment is Environment.PROD:
+        raise _prod_from_dotenv_error()
+    return settings
 
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     """Load and cache the process settings.
 
-    The ``.env`` fallback is disabled when ``ROOTCAUSE_ENVIRONMENT`` is ``prod``.
+    The ``.env`` fallback is disabled when ``ROOTCAUSE_ENVIRONMENT`` is ``prod``
+    in the process environment; a ``prod`` value coming from ``.env`` alone is
+    rejected.
 
     Raises:
-        ConfigurationError: when required variables are missing or invalid.
+        ConfigurationError: when required variables are missing or invalid, or
+            when ``.env`` tries to select the ``prod`` environment.
     """
     try:
         return _load_settings()
