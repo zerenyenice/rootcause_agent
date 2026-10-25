@@ -1,5 +1,7 @@
-export const DEFAULT_API_URL = "http://localhost:2024";
-export const DEFAULT_ASSISTANT_ID = "rootcause";
+export const DEFAULT_AGENT_URL = "http://localhost:8100";
+export const DEFAULT_API_URL = "http://localhost:8000";
 
-export const API_URL = process.env.NEXT_PUBLIC_LANGGRAPH_API_URL || DEFAULT_API_URL;
-export const ASSISTANT_ID = process.env.NEXT_PUBLIC_ASSISTANT_ID || DEFAULT_ASSISTANT_ID;
+/** Agent service (threads, streaming runs, approvals). */
+export const AGENT_URL = process.env.NEXT_PUBLIC_AGENT_URL || DEFAULT_AGENT_URL;
+/** Backend API (connections, catalog). */
+export const API_URL = process.env.NEXT_PUBLIC_API_URL || DEFAULT_API_URL;
