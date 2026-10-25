@@ -47,6 +47,8 @@ filtering, pre-report gate, output format, approval criteria) in
   an implementation change that edits an existing test (loosened assertion,
   deleted case, skipped test) is a blocking finding. Verify with
   `git diff -- 'tests/' '*test*.py'` against the committed RED test.
+  In Light-tier PRs (no RED commit) check instead that existing tests'
+  assertions and cases are unchanged; moved files may change imports only.
 - **Implementation hard-coded to test inputs**: code that returns literal
   expected values or special-cases the exact fixtures the tests use, instead of
   implementing the real behavior.

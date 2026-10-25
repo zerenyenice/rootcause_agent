@@ -138,20 +138,18 @@ fails, give details about why it failed — don't silently fall back to doing th
 
 **Minimum coverage: 80%**
 
-Test types (all required):
-1. **Unit tests** — Individual functions, utilities, components
-2. **Integration tests** — API endpoints, database operations
-3. **E2E tests** — Critical user flows
+Test types: unit tests always; integration tests for API endpoints and
+database operations; E2E tests for critical user flows once the UI exists.
 
-**TDD workflow (mandatory):**
+**TDD workflow (Standard and Sensitive tiers; see Process tiers):**
 1. Write test first (RED) — test should FAIL — and commit it (`test:`) before implementation starts
 2. Write minimal implementation (GREEN) — test should PASS
 3. Refactor (IMPROVE) — verify coverage 80%+
 
 Troubleshoot failures: check test isolation → verify mocks → fix implementation (not tests, unless tests are wrong).
 
-**Test integrity (coder/tester separation):** tests are tester-owned — coder
-agents never modify existing test files; if a test looks wrong they report it
+**Test integrity (coder/tester separation):** in Standard and Sensitive tiers
+tests are tester-owned — coder agents never modify existing test files; if a test looks wrong they report it
 to the Lead, and the tester fixes it. The RED test is committed *on the task
 branch* before implementation — the checkpoint proving tests weren't altered
 to fit the code. Reviewers treat test tampering (edited assertions, deleted
@@ -162,19 +160,51 @@ reason.
 
 ## Development Workflow
 
+**Current priority: the MVP slice in `docs/plans/MVP.md`.** Work labelled
+`later` on the board waits until the MVP gate passes, unless the user asks.
+
 0. **Check against `/PROJECT.md`** — confirm the task is in scope and feasible
-   per the project team's documented requirements/constraints before doing
-   anything else. Stop and raise it with the user if it isn't.
-1. **Plan** — the Lead plans directly, identifies dependencies and risks, breaks into phases. After the user approves the plan (Gate 1), create the task branch `<type>/<task-slug>` off the current branch and commit the approved plan as its first commit (`docs(plan):`, `Agent: lead`)
-2. **Test** — dispatch to `tester` to write the failing test first; the Lead commits it (`test: … (RED)`, `Agent: tester`) on the task branch before implementation starts
-3. **Implement** — dispatch to `backend-coder` or `frontend-coder` to make the test pass (without touching test files), then refactor. The Lead commits each choreography point on the task branch automatically — task-branch commits are protocol-internal and need no approval
-4. **Review** — dispatch to `backend-reviewer` / `frontend-reviewer` (plus `security-reviewer` if a security trigger was touched), address CRITICAL/HIGH issues as separate `fix: address review findings` commits
-5. **Capture knowledge in the right place**
-   - Personal debugging notes, preferences, and temporary context → auto memory
-   - Team/project knowledge (architecture decisions, API changes, runbooks) → the project's existing docs structure
-   - If the current task already produces the relevant docs or code comments, do not duplicate the same information elsewhere
-   - If there is no obvious project doc location, ask before creating a new top-level file
-6. **Hand-off & PR (Gate 2, two user-controlled steps)** — the task ends on its local task branch: nothing pushed, no PR, no local merge. Step 1: present the branch name, commit list, diff summary, and the tester's measured coverage (below 80% blocks step 2 unless the user explicitly overrides with a stated reason), then stop — the user inspects the branch. Step 2: only when the user says so, push the branch (`-u`) and open a PR to the base branch with a comprehensive body (`Reviewed-by:` + coverage); CI checks run on the PR; the user merges on GitHub (or explicitly instructs the Lead to `gh pr merge --merge`) — merge commit only, never squash/rebase. Afterwards: pull the base, confirm the post-merge CI run, delete remote + local task branches
+   per the project team's documented requirements/constraints. Stop and raise
+   it with the user if it isn't.
+1. **Classify the task into a process tier** (below). The tier decides how
+   much ceremony the task gets. When unsure, pick the lower tier and escalate
+   if a Sensitive trigger turns up.
+2. **Branch** `<type>/<task-slug>` off the base branch (one worktree per
+   task). The plan lives in the PR description; a `docs(plan):` commit is only
+   for multi-PR work or when the user asks for a plan document.
+3. **Test and implement** per the tier.
+4. **Review** per the tier: ONE review round. CRITICAL/HIGH are fixed in a
+   `fix: address review findings` commit; MEDIUM/LOW become GitHub issues
+   labelled `later` unless trivial to fix in the same commit. A re-review
+   happens only when a CRITICAL was found.
+5. **Merge (Gate 2)** — the user has authorized the Lead to push the branch,
+   open the PR and merge it with a merge commit once every CI check is `pass`
+   (JSON gate) and the review approved. Then confirm the post-merge CI run on
+   the base, close the issue, delete the branch and worktree. Do not merge the
+   base into a task branch unless the PR shows a conflict.
+6. **Capture knowledge**: personal notes → auto memory; team knowledge →
+   project docs; never duplicate.
+
+### Process tiers
+
+| Tier | Typical work | Tests | Review |
+|---|---|---|---|
+| **Light** | docs, config, CI, scaffolding, eval tooling, behavior-preserving refactors, prototypes | The implementing agent writes tests together with the code (no separate RED commit). Mechanical refactors may move test files and change imports/paths only | Lead reads the diff; one reviewer only if the diff exceeds ~300 source lines |
+| **Standard** (default for product features) | agents, tools, API, UI | Tester writes the failing test first; Lead commits it (`test: … (RED)`), then the coder implements without touching test files | One round by `backend-reviewer` / `frontend-reviewer` |
+| **Sensitive** | executing SQL against customer data, credentials and secrets, auth, tenant isolation, exporting data off-host | As Standard | Standard reviewer plus `security-reviewer`, in parallel, one round |
+
+Rules that hold in every tier: CI coverage ≥ 80%, lint/format/typecheck clean
+(`--no-cache`), commit trailers, no secrets, tests never weakened to pass,
+reviewers flag test tampering as CRITICAL.
+
+**Efficiency rules for the Lead:**
+- Size tasks so one coder finishes in one dispatch; merge tasks that touch the
+  same files.
+- Run independent tasks in parallel worktrees.
+- Do not gold-plate: hardening beyond what the task's acceptance criteria and
+  PROJECT.md §7 require goes to a `later` issue.
+- Prefer one dispatch with a complete brief over several rounds of
+  clarification.
 
 ## Workflow Surface Policy
 
@@ -187,11 +217,11 @@ reason.
 
 **Commit format:** `<type>: <description>` — Types: feat, fix, refactor, docs, test, chore, perf, ci — plus mandatory trailers: `Agent:` (producing agent), `Task:` (kebab-case slug, same as branch), optional `Refs:` (ticket key). Merge commits add `Reviewed-by:` and `Coverage:`.
 
-**Branch-per-task:** every non-trivial task gets `<type>/<task-slug>` off the currently checked-out base branch at Gate 1; the task completes on that branch locally, and lands in the base branch via a **user-triggered PR** at Gate 2 (never a local merge).
+**Branch-per-task:** every non-trivial task gets `<type>/<task-slug>` off the base branch; it lands in the base branch via a PR merge commit (never a local merge). The Lead pushes and merges once CI is green and the review approved (user-authorized).
 
 **Lead-only writes:** only the Lead runs state-changing git commands; subagents are git-read-only (`status`/`diff`/`log`).
 
-**Choreography:** plan commit (`docs(plan):`) → RED test commit (`test:`) → implementation (`feat:`/`fix:`, never touching test files) → review-fix commits → task ends on the branch (Gate 2 step 1: completion report) → push + PR on user instruction (Gate 2 step 2) → PR merge commit (never squash/rebase).
+**Choreography (Standard/Sensitive):** RED test commit (`test:`) → implementation (`feat:`/`fix:`, never touching test files) → one review-fix commit if needed → push + PR → PR merge commit (never squash/rebase). Light tier: implementation commit(s) with tests included → PR. A `docs(plan):` commit is only for multi-PR work.
 
 **PROJECT.md changes** are committed standalone to the base branch as `docs(project):` — never mixed with code.
 
