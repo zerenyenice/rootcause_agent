@@ -1200,6 +1200,19 @@ tasks:
 
       **Acceptance criteria**
       - A new engineer can stand up the pilot from the runbook without help.
+  - id: T109
+    epic: EP10
+    title: "Off-host audit log shipping for tamper evidence"
+    phase: 4
+    size: M
+    labels: [area:security, area:devops]
+    depends_on: [T006]
+    body: |
+      ADR-0007 leaves a residual risk: the owner role and superusers can still alter audit.query_log. Ship audit rows off the database host so tampering is detectable: evaluate pgaudit plus log shipping, WAL archiving, or an append-only external sink (object storage with retention lock); include a periodic hash-chain check of audit rows.
+
+      **Acceptance criteria**
+      - Chosen mechanism documented in an ADR and deployed in the pilot compose profile.
+      - A test or runbook step demonstrates that a row altered by the owner role is detected.
   - id: T108
     epic: EP10
     title: "Security review of the full stack before pilot"
