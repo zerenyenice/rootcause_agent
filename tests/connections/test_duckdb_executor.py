@@ -10,6 +10,7 @@ from typing import Any
 import duckdb
 import pytest
 
+from rootcause.connections import duckdb_executor as duckdb_executor_module
 from rootcause.connections.duckdb_executor import (
     ColumnInfo,
     DuckDBExecutor,
@@ -19,7 +20,7 @@ from rootcause.connections.duckdb_executor import (
     UnknownTable,
     executor_from_settings,
 )
-from rootcause.errors import ConfigurationError
+from rootcause.errors import ConfigurationError, RootCauseError
 from rootcause.settings import Settings
 
 PLANT_COUNT = 3
@@ -155,11 +156,16 @@ def test_underlying_connection_refuses_writes_and_external_reads(
 
 @pytest.mark.unit
 def test_timeout_raises_query_timeout_quickly(db_path: Path) -> None:
+    # Base tables only: generator functions (range, ...) are rejected before execution.
+    con = duckdb.connect(str(db_path))
+    con.execute("CREATE TABLE big (x BIGINT, y BIGINT)")
+    con.execute("INSERT INTO big SELECT i, i * 2 FROM range(5000) r(i)")
+    con.close()
     with DuckDBExecutor(db_path, timeout_seconds=0.2) as ex:
         started = time.perf_counter()
         with pytest.raises(QueryTimeout):
             ex.run(
-                "SELECT sum(a.x * b.y) FROM range(100000) AS a(x) CROSS JOIN range(100000) AS b(y)",
+                "SELECT sum(a.x * b.y + c.x) FROM big a CROSS JOIN big b CROSS JOIN big c",
                 "heavy",
             )
         assert time.perf_counter() - started < 3.0
@@ -329,3 +335,191 @@ def test_real_warehouse_with_e1_incident(tmp_path: Path) -> None:
         assert ex.describe_table("plants")
         result = ex.run("SELECT count(*) AS n FROM plants", "count")
         assert result.rows == ((len(tables["plants"]),),)
+
+
+# --- Hardening round (security review HIGH: memory exhaustion past the timeout) (RED) ---
+# TODO(remove with GREEN): QueryFailed, memory_limit_mb and max_result_bytes do not exist yet;
+# they are resolved dynamically / via ``Any`` so ruff and mypy stay clean until they land.
+
+_executor_module: Any = duckdb_executor_module
+_SENSITIVE_VALUE = "SENSITIVEVALUE42"
+_SLOW_BUDGET_SECONDS = 1.0
+
+
+@pytest.fixture
+def small_db(tmp_path: Path) -> Path:
+    """A few rows only: if a generator query is wrongly executed it stays cheap."""
+    path = tmp_path / "small.duckdb"
+    con = duckdb.connect(str(path))
+    con.execute("CREATE TABLE t (a INTEGER, b VARCHAR)")
+    con.execute("INSERT INTO t VALUES (1,'x1'),(2,'x2'),(3,'x3')")
+    con.close()
+    return path
+
+
+@pytest.fixture
+def wide_db(tmp_path: Path) -> Path:
+    path = tmp_path / "wide.duckdb"
+    con = duckdb.connect(str(path))
+    con.execute("CREATE TABLE t (a INTEGER, b VARCHAR)")
+    con.execute("INSERT INTO t SELECT i, 'row-' || i FROM range(300) r(i)")
+    con.execute("CREATE TABLE u (a INTEGER, label VARCHAR)")
+    con.execute("INSERT INTO u VALUES (1,'one'),(2,'two')")
+    con.close()
+    return path
+
+
+@pytest.mark.unit
+def test_settings_snapshot_reports_memory_limit_from_constructor(small_db: Path) -> None:
+    with DuckDBExecutor(small_db, memory_limit_mb=256) as ex:  # type: ignore[call-arg]
+        value = str(ex.settings_snapshot()["memory_limit"])
+    # DuckDB renders 256 MB as "244.1 MiB"; accept any 24x MiB / 256 MB spelling, not 1 GB.
+    assert value.startswith(("244", "245", "256", "0.2")), value
+
+
+@pytest.mark.unit
+def test_default_memory_limit_is_one_gibibyte(small_db: Path) -> None:
+    with DuckDBExecutor(small_db) as ex:
+        value = str(ex.settings_snapshot()["memory_limit"])
+    assert "GiB" in value or value.startswith(("976", "1024", "953")), value
+
+
+@pytest.mark.unit
+def test_settings_snapshot_reports_bounded_threads_and_no_persistent_secrets(
+    executor: DuckDBExecutor,
+) -> None:
+    snapshot = executor.settings_snapshot()
+    assert int(snapshot["threads"]) <= 2
+    assert str(snapshot["allow_persistent_secrets"]).lower() == "false"
+
+
+@pytest.mark.unit
+def test_settings_snapshot_disables_temp_spill(executor: DuckDBExecutor) -> None:
+    value = str(executor.settings_snapshot()["max_temp_directory_size"])
+    # DuckDB renders 0 as "0 bytes"; a tiny cap in KiB/bytes is also acceptable.
+    assert value.split()[0] == "0" or value.endswith(("bytes", "KiB")), value
+    assert "GiB" not in value
+    assert "MiB" not in value
+
+
+_GENERATOR_SQL = (
+    "select list(x) from (select unnest(range(a::bigint*1000000)) x from t)",
+    "select list(range) from range((select max(a) from t)::bigint*1000000)",
+    "select string_agg(repeat(b, 3000000), '') from t",
+    "select * from generate_series(1, 10)",
+    "select generate_series(1, 10)",
+    "select * from range(10)",
+    "select unnest([1, 2, 3])",
+    "select * from unnest([1, 2, 3])",
+    "select repeat('a', 10)",
+    "select list(g) from generate_series(1, 5) as s(g)",
+)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("sql", _GENERATOR_SQL)
+@pytest.mark.parametrize("method", ["run", "explain"])
+def test_generator_functions_are_rejected_fast_and_executor_stays_usable(
+    small_db: Path, sql: str, method: str
+) -> None:
+    with DuckDBExecutor(small_db, timeout_seconds=5.0) as ex:
+
+        def call() -> object:
+            return ex.run(sql, "probe") if method == "run" else ex.explain(sql)
+
+        started = time.perf_counter()
+        with pytest.raises(QueryRejected) as caught:
+            call()
+        assert time.perf_counter() - started < _SLOW_BUDGET_SECONDS
+        assert "generator_function" in caught.value.codes
+        assert ex.run("select count(*) from t", "after").rows == ((3,),)
+
+
+@pytest.mark.unit
+def test_result_over_byte_budget_is_rejected(wide_db: Path) -> None:
+    with DuckDBExecutor(wide_db, max_result_bytes=1000) as ex:  # type: ignore[call-arg]
+        with pytest.raises(QueryRejected) as caught:
+            ex.run("select string_agg(b, ',') from t", "too big")
+        assert "result_too_large" in caught.value.codes
+        # Small results still fit and the executor stays usable.
+        assert ex.run("select count(*) from t", "small").rows == ((300,),)
+
+
+@pytest.mark.unit
+def test_result_within_default_byte_budget_is_returned(wide_db: Path) -> None:
+    with DuckDBExecutor(wide_db) as ex:
+        result = ex.run("select string_agg(b, ',') from t", "fits")
+    assert len(str(result.rows[0][0])) > 1000
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "select * from pg_settings",
+        "select * from pragma_database_list",
+        "select * from duckdb_databases",
+        "select * from duckdb_tables",
+        "select * from sqlite_master",
+        "select * from information_schema.tables",
+        "select * from does_not_exist",
+    ],
+)
+def test_non_catalog_tables_are_rejected(wide_db: Path, sql: str) -> None:
+    with DuckDBExecutor(wide_db) as ex:
+        with pytest.raises(QueryRejected) as caught:
+            ex.run(sql, "probe")
+        assert caught.value.codes
+
+
+@pytest.mark.unit
+def test_base_tables_and_joins_still_work(wide_db: Path) -> None:
+    with DuckDBExecutor(wide_db) as ex:
+        single = ex.run("select count(*) from t", "count")
+        joined = ex.run("select t.a, u.label from t join u on t.a = u.a order by t.a", "join")
+    assert single.rows == ((300,),)
+    assert joined.rows == ((1, "one"), (2, "two"))
+
+
+@pytest.mark.unit
+def test_runtime_database_error_is_wrapped_without_leaking_value_or_sql(tmp_path: Path) -> None:
+    path = tmp_path / "leaky.duckdb"
+    con = duckdb.connect(str(path))
+    con.execute("CREATE TABLE t (a INTEGER, batch_code VARCHAR)")
+    con.execute(f"INSERT INTO t VALUES (42, '{_SENSITIVE_VALUE}')")
+    con.close()
+    query_failed: Any = getattr(_executor_module, "QueryFailed", None)
+    assert query_failed is not None, "QueryFailed is not defined yet"
+    with DuckDBExecutor(path) as ex, pytest.raises(query_failed) as caught:
+        ex.run("select batch_code::int from t where a = 42", "bad cast")
+    message = str(caught.value)
+    assert _SENSITIVE_VALUE not in message
+    assert "batch_code" not in message
+    assert "select" not in message.lower()
+    cause = caught.value.__cause__
+    assert cause is None or (
+        _SENSITIVE_VALUE not in str(cause) and "batch_code" not in str(cause)
+    ), "the original DuckDB error must not be chained"
+    assert not isinstance(caught.value, duckdb.Error)
+
+
+@pytest.mark.unit
+def test_query_failed_is_a_root_cause_error() -> None:
+    query_failed: Any = getattr(_executor_module, "QueryFailed", None)
+    assert query_failed is not None, "QueryFailed is not defined yet"
+    assert issubclass(query_failed, RootCauseError)
+
+
+@pytest.mark.unit
+def test_explain_fails_closed_when_plan_has_no_cardinality(
+    executor: DuckDBExecutor, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(_executor_module, "_plan_cardinalities", lambda _node: [])
+    with pytest.raises(Exception) as caught:  # noqa: B017 - exact type is the coder's choice
+        executor.explain("select * from production")
+    assert not isinstance(caught.value, AssertionError)
+
+
+@pytest.mark.unit
+def test_explain_still_reports_positive_estimate_for_real_plan(executor: DuckDBExecutor) -> None:
+    assert executor.explain("select * from production").estimated_rows > 0
