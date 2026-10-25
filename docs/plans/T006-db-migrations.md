@@ -21,3 +21,11 @@ Unit: schema constants, naming convention on `Base.metadata` (e.g. fk names `fk_
 
 ## Acceptance (backlog)
 `alembic upgrade head` on a fresh database succeeds and `downgrade` reverses it; CI runs migrations against a service Postgres before tests.
+
+## Amendment 2026-10-25 (after backend review)
+
+- **Package layout.** New workspace package `packages/db` (`rootcause_db`, project `rootcause-db`) owns the Alembic environment, `versions/`, `migrate.py`, `cli.py` and the `rootcause-db` console script; it depends on `rootcause-core`, `rootcause-connections` and `rootcause-catalog`. `rootcause_core.db` keeps `Base`, schema constants and engine factories only. `rootcause-catalog` depends on `rootcause-connections` (its FK targets `app.connections`). `deploy/alembic.ini` points at the new script location.
+- **Privileges.** Extension and schema creation move to `rootcause-db bootstrap --admin-url <superuser url>` (idempotent: `CREATE EXTENSION IF NOT EXISTS vector`, the three schemas, grants to the app role) and the compose init SQL. `env.py` no longer creates them; it fails fast with a clear message if `vector` or a schema is missing. An integration test migrates as a non-superuser owner role after bootstrap.
+- **CLI safety.** `downgrade` and `revision` refuse to run when the environment is prod; errors print a message without the URL and exit non-zero.
+- **Audit immutability (PROJECT.md section 7).** Migration `0002` adds a trigger rejecting UPDATE and DELETE on `audit.query_log`; `downgrade` past it requires non-prod.
+- **Model hardening.** `connections.id` server default `gen_random_uuid()`; `updated_at` onupdate; `QueryStatus` StrEnum mapped to the `query_status` enum; port check 1 to 65535; malformed URLs raise `ConfigurationError`; engine pool and connect timeouts from Settings; `pg_advisory_xact_lock` around migrations; `NullPool` for migration engines; `compare_server_default=True`.
