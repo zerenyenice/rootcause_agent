@@ -3,7 +3,8 @@
 import { useStream } from "@langchain/langgraph-sdk/react";
 import type { Message } from "@langchain/langgraph-sdk";
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
-import { API_URL, ASSISTANT_ID } from "@/lib/config";
+import { AgentThreadTransport } from "@/lib/agentTransport";
+import { AGENT_URL } from "@/lib/config";
 import { buildResume, parseApprovalRequests, type DecisionType } from "@/lib/interrupt";
 import { friendlyError } from "@/lib/messages";
 import { InterruptPanel } from "./InterruptPanel";
@@ -14,10 +15,15 @@ interface ChatState {
 }
 
 export function Chat() {
+  const [transport] = useState(() => new AgentThreadTransport(AGENT_URL));
+  // Controlled so "New thread" can clear the conversation: with a custom transport
+  // useStream resets its state when threadId changes (it has no switchThread then).
+  const [threadId, setThreadId] = useState<string | null>(null);
   const stream = useStream<ChatState>({
-    apiUrl: API_URL,
-    assistantId: ASSISTANT_ID,
+    transport,
     messagesKey: "messages",
+    threadId,
+    onThreadId: setThreadId,
   });
   const [draft, setDraft] = useState("");
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -62,7 +68,10 @@ export function Chat() {
 
   function newThread() {
     setDraft("");
-    stream.switchThread(null);
+    transport.reset();
+    setThreadId(null);
+    // Typed as always present, but missing at runtime with a custom transport.
+    stream.switchThread?.(null);
     inputRef.current?.focus();
   }
 

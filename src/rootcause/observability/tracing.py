@@ -32,7 +32,10 @@ def trace_callbacks(settings: Settings | None = None) -> list[BaseCallbackHandle
     Session, user, tags and tenant metadata are read from the run metadata, not
     from the handler: use :func:`run_config`, which sets both.
     """
-    handler = langfuse_callback_handler(settings)
+    resolved = settings if settings is not None else get_settings()
+    if not resolved.langfuse_enabled:
+        return []
+    handler = langfuse_callback_handler(resolved)
     return [] if handler is None else [handler]
 
 

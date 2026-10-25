@@ -21,7 +21,7 @@ from rootcause.telemetry import configure_telemetry
 APP_TITLE = "RootCause API"
 
 
-def _configure_telemetry_once(settings: Settings) -> None:
+def configure_telemetry_once(settings: Settings) -> None:
     """The tracer provider is set-once per process; later app builds reuse it."""
     try:
         configure_telemetry(settings)
@@ -33,7 +33,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     """Build the application; ``settings`` defaults to the cached process settings."""
     resolved = settings if settings is not None else get_settings()
     configure_logging(resolved)
-    _configure_telemetry_once(resolved)
+    configure_telemetry_once(resolved)
 
     is_prod = resolved.environment is Environment.PROD
     app = FastAPI(

@@ -214,6 +214,8 @@ uv run ruff check .     # lint
 uv run ruff format --check .
 uv run mypy             # strict type-check of src/ and tests/
 uv run uvicorn --factory rootcause.api.main:create_app --reload   # serve the API (needs ROOTCAUSE_DATABASE_URL)
+uv run python -m rootcause.agent_service.persistence   # once: create the agent's checkpoint/store tables (migrator role)
+uv run uvicorn --factory rootcause.agent_service.main:create_app --port 8100   # agent service (chat UI backend)
 uv run --with "langgraph-cli[inmem]" langgraph dev   # LangGraph Server (root langgraph.json), "rootcause" graph
 ```
 
@@ -237,12 +239,23 @@ uv run --with "langgraph-cli[inmem]" langgraph dev   # LangGraph Server (root la
    Without `ROOTCAUSE_WAREHOUSE_PATH` the graph still starts, but with no SQL
    tools and no `root-cause` subagent it can only frame the problem.
 
-3. Start LangGraph Server and the chat UI (two terminals):
+3. Start the agent service and the chat UI (two terminals). The agent keeps
+   threads in Postgres: after `rootcause-db bootstrap` and `rootcause-db upgrade`,
+   create its checkpoint and store tables once with the migrator role
+   (`ROOTCAUSE_MIGRATION_DATABASE_URL`); the service itself runs as the app role
+   (`ROOTCAUSE_DATABASE_URL`) and refuses to start until the tables exist:
 
    ```bash
-   uv run --with "langgraph-cli[inmem]" langgraph dev
+   uv run python -m rootcause.agent_service.persistence
+   uv run uvicorn --factory rootcause.agent_service.main:create_app --port 8100
    cd web && npm run dev
    ```
+
+   The chat UI calls the agent at `NEXT_PUBLIC_AGENT_URL` (default
+   `http://localhost:8100`); the agent accepts browser requests from
+   `ROOTCAUSE_AGENT_ALLOWED_ORIGINS` (JSON list, default `["http://localhost:3000"]`).
+   No authentication in the MVP: bind the services to localhost.
+   `langgraph dev` (root `langgraph.json`) still serves the same graph for LangGraph Studio.
 
    The orchestrator frames the problem (what, when, where, impact), delegates
    the why-questions to the `root-cause` subagent and presents its WhyChain report.
