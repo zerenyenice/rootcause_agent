@@ -177,3 +177,44 @@ def _find_forbidden_keys(value: Any, path: str = "") -> list[str]:
 def forbidden_keys() -> Callable[[Any], list[str]]:
     """``forbidden_keys(body)`` lists every key path naming a password/secret/encrypted value."""
     return _find_forbidden_keys
+
+
+# --- metadata catalog fixtures (feat/catalog) ---------------------------------
+
+CATALOG_PATH = "/api/v1/catalog"
+
+
+@pytest.fixture
+def catalog_repository() -> Any:
+    """In-memory catalog repository the catalog routes are pointed at (no Postgres)."""
+    from rootcause.catalog.repository import InMemoryCatalogRepository
+
+    return InMemoryCatalogRepository()
+
+
+@pytest.fixture
+def catalog_embeddings(make_embeddings: Callable[..., Any]) -> Any:
+    """The fake embeddings client the catalog routes use; set ``.error`` to make it fail."""
+    return make_embeddings()
+
+
+@pytest.fixture
+def catalog_client(
+    make_app: Callable[..., "FastAPI"],
+    connection_repository: Any,
+    catalog_repository: Any,
+    catalog_embeddings: Any,
+    secret_key: str,
+) -> Iterator["TestClient"]:
+    """Client over an app whose connection and catalog routes use in-memory repositories."""
+    from fastapi.testclient import TestClient
+
+    from rootcause.api.routes.catalog import get_catalog_repository, get_embeddings
+    from rootcause.api.routes.connections import get_connection_repository
+
+    app = make_app(secret_key=secret_key, embedding_dimensions=str(catalog_embeddings.dimensions))
+    app.dependency_overrides[get_connection_repository] = lambda: connection_repository
+    app.dependency_overrides[get_catalog_repository] = lambda: catalog_repository
+    app.dependency_overrides[get_embeddings] = lambda: catalog_embeddings
+    with TestClient(app) as client:
+        yield client
