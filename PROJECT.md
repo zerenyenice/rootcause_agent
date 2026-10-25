@@ -161,13 +161,32 @@ Models: Claude Sonnet 5 for anomaly and metadata agents; Claude Opus 5 or
 Fable 5.1 for root cause and lesson extraction; provider abstracted via
 init_chat_model; prompt caching on; per-role configuration.
 
+Service clients: every external service is reached through a client factory
+in rootcause_core.clients, configured only from Settings: chat models
+(Anthropic default, Azure OpenAI selectable per role), embeddings (Azure
+OpenAI or any OpenAI-compatible endpoint; used by catalog search and
+OpenViking), OpenViking HTTP, and Langfuse. Agents and services never build
+provider SDK clients directly.
+
+Database access: SQLAlchemy 2 (sync engine for admin and migrations, async
+engine for the API) with Alembic migrations for the app, catalog and audit
+schemas; customer database connections also go through SQLAlchemy dialects.
+
+Observability: Langfuse traces every agent run (LangChain callback handler
+on the DeepAgents graph, subagents and tool calls, with session = thread id
+and user/tenant tags) and is the prompt-management source when configured;
+prompts fall back to the versioned files in the repo when Langfuse is
+unavailable. Langfuse runs self-hosted via Docker Compose (optional profile)
+or as Langfuse Cloud. Trace payloads follow the same redaction rules as logs.
+
 Services: FastAPI mounted beside LangGraph Server; SQLAlchemy 2, sqlglot,
 pyarrow; pandas, numpy, scipy, statsmodels, ruptures, scikit-learn,
 statsforecast for detection; Postgres 16 + pgvector with hybrid search;
 OpenViking 0.3.x server in Docker behind a thin MemoryStore adapter.
 
 UI: Next.js 15, React, LangGraph JS SDK streaming, Tailwind, Recharts.
-Observability: OpenTelemetry spans, structured logs, optional LangSmith.
+Observability: Langfuse for agent traces and prompts, OpenTelemetry spans and
+structured logs for services. LangSmith is not used.
 Quality: pytest, ruff, mypy, Playwright, golden-case evaluation suite in CI.
 Deployment: Docker Compose single host for pilots; Kubernetes later.
 

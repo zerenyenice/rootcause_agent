@@ -204,6 +204,43 @@ tasks:
       **Acceptance criteria**
       - Four ADRs with context, decision, consequences, status Accepted.
 
+  - id: T008
+    epic: EP0
+    title: "Service clients layer: chat models, embeddings, OpenViking HTTP (Anthropic and Azure OpenAI)"
+    phase: 0
+    size: M
+    labels: [area:backend, area:agents]
+    depends_on: [T004]
+    body: |
+      `rootcause_core.clients` with one factory per external service, configured only from Settings (PROJECT.md section 6):
+      - `chat_model(role)` returning a LangChain chat model for roles orchestrator, fast, reasoning; providers `anthropic` (default) and `azure_openai` (endpoint, deployment, api version, key as SecretStr), timeouts and retries from settings.
+      - `embeddings()` returning LangChain `Embeddings` for Azure OpenAI or any OpenAI-compatible endpoint, with model, dimensions and batch size; used by catalog search (T025) and OpenViking.
+      - `openviking_http()` returning a configured `httpx.AsyncClient` (base URL, API key header, timeouts).
+      - All clients cached per process, closed on shutdown, and redact secrets in errors.
+      The orchestrator (T030) switches from `init_chat_model` to `chat_model("orchestrator")`.
+
+      **Acceptance criteria**
+      - Provider selection and required-setting validation covered by unit tests without network.
+      - No module outside `rootcause_core.clients` imports a provider SDK client directly (enforced by a test).
+  - id: T009
+    epic: EP0
+    title: "Langfuse observability and prompt management for agents"
+    phase: 0
+    size: M
+    labels: [area:backend, area:agents, area:devops]
+    depends_on: [T008, T030]
+    body: |
+      Langfuse traces every agent run and serves prompts (PROJECT.md section 6).
+      - `rootcause_core.clients.langfuse()` client and a `langfuse_callbacks(session_id, user_id, tags)` helper returning the LangChain callback handler; attached to orchestrator invocations so subagents and tool calls appear in one trace with session = thread id.
+      - Prompt registry: `get_prompt(name)` reads from Langfuse prompt management (label `production`) when configured, otherwise from the versioned prompt files; prompts are linked to traces.
+      - Redaction: trace inputs and outputs pass through the same credential redactor as logs; raw result rows are not sent.
+      - Optional `observability` profile in deploy/docker-compose.yml for self-hosted Langfuse; settings for Langfuse Cloud.
+      - ADR recording the choice of Langfuse over LangSmith.
+
+      **Acceptance criteria**
+      - With Langfuse disabled the system runs unchanged; with it enabled a scripted orchestrator run produces one trace containing the todo, tool and model spans (verified against a fake or local Langfuse).
+      - Prompt fallback to files when Langfuse is unreachable is tested.
+
   # ---------------- EP1 Connection service ----------------
   - id: T010
     epic: EP1
