@@ -3,7 +3,7 @@ name = "rootcause-connections"
 version = "0.1.0"
 description = "RootCause data source connections."
 requires-python = ">=3.12"
-dependencies = []
+dependencies = ["sqlglot>=25"]
 
 [build-system]
 requires = ["hatchling>=1.25"]
