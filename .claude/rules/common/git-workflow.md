@@ -4,6 +4,10 @@
 > decide how much of this file applies to a task. Where this file is
 > stricter than the task's tier, the tier wins. Non-negotiables in every
 > tier: coverage >= 80% in CI, trailers, no secrets, no test weakening.
+>
+> **Batched PRs:** a branch may carry several related tasks (CLAUDE.md
+> "Batching tasks into one PR"); each commit's `Task:` trailer names its own
+> task, and the PR closes every task's issue.
 
 Git is this system's audit trail. Anyone must be able to reconstruct from
 `git log` alone: what was asked, what was planned, which agent produced what,
