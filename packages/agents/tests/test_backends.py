@@ -20,6 +20,7 @@ def settings_for(environment: str) -> Settings:
 @pytest.mark.unit
 def test_build_backend_routes_memories_and_skills_to_store() -> None:
     from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
+
     from rootcause_agents.backends import build_backend
 
     backend = build_backend(InMemoryStore())
@@ -69,16 +70,43 @@ def test_build_checkpointer_in_memory_outside_prod(environment: str) -> None:
 
 
 @pytest.mark.unit
-def test_build_checkpointer_prod_is_postgres_factory_without_connecting() -> None:
-    from rootcause_agents.backends import build_checkpointer
+def test_postgres_checkpointer_cm_is_async_saver_cm_without_connecting() -> None:
+    from rootcause_agents.backends import postgres_checkpointer_cm
 
-    result = build_checkpointer(settings_for("prod"))
-    assert not isinstance(result, InMemorySaver)
-    gen = getattr(result, "gen", None)
-    labels = [
-        type(result).__name__,
-        type(result).__module__,
-        getattr(result, "__qualname__", ""),
-        getattr(gen, "__qualname__", ""),
-    ]
-    assert any("postgres" in label.lower() for label in labels), labels
+    cm = postgres_checkpointer_cm(settings_for("prod"))
+    assert hasattr(cm, "__aenter__")
+    assert hasattr(cm, "__aexit__")
+    labels = [type(cm).__name__, type(cm).__qualname__, type(cm).__module__]
+    labels += [getattr(getattr(cm, "gen", None), "__qualname__", "")]
+    labels += [getattr(getattr(cm, "func", None), "__qualname__", "")]
+    assert any("AsyncPostgresSaver" in label for label in labels), labels
+
+
+@pytest.mark.unit
+def test_prod_without_checkpointer_is_a_configuration_error(
+    scripted_model: Callable[..., Any],
+) -> None:
+    from rootcause_agents.orchestrator import build_orchestrator
+    from rootcause_core.errors import ConfigurationError
+
+    with pytest.raises(ConfigurationError):
+        build_orchestrator(
+            model=scripted_model(AIMessage(content="x")),
+            settings=settings_for("prod"),
+            store=InMemoryStore(),
+        )
+
+
+@pytest.mark.unit
+def test_prod_without_store_is_a_configuration_error(
+    scripted_model: Callable[..., Any],
+) -> None:
+    from rootcause_agents.orchestrator import build_orchestrator
+    from rootcause_core.errors import ConfigurationError
+
+    with pytest.raises(ConfigurationError):
+        build_orchestrator(
+            model=scripted_model(AIMessage(content="x")),
+            settings=settings_for("prod"),
+            checkpointer=InMemorySaver(),
+        )

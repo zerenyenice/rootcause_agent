@@ -5,6 +5,7 @@ from typing import Any
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.store.memory import InMemoryStore
 from langgraph.types import Command
@@ -50,7 +51,7 @@ def build(
     )
 
 
-def config(thread: str = "t1") -> dict[str, dict[str, str]]:
+def config(thread: str = "t1") -> RunnableConfig:
     return {"configurable": {"thread_id": thread}}
 
 
@@ -150,6 +151,7 @@ def test_extra_tools_are_available_to_the_model(
     scripted_model: Callable[..., Any], tool_call_message: Callable[..., Any]
 ) -> None:
     from langchain_core.tools import tool
+
     from rootcause_agents.orchestrator import build_orchestrator
 
     @tool
