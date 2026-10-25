@@ -3,7 +3,7 @@
 The extension, schemas and grants are created by ``rootcause-db bootstrap``
 (superuser), not here. Migrations connect as the migrator role and run under
 ``SET LOCAL ROLE <db_owner_role>`` so every object is owned by the NOLOGIN
-owner role, never by a login role (docs/adr/0006). They fail fast with a clear
+owner role, never by a login role (docs/adr/0007). They fail fast with a clear
 message when the database has not been bootstrapped, and in prod they refuse
 to run as a superuser. Concurrent runs are serialised by a transaction-scoped
 advisory lock.

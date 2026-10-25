@@ -1,4 +1,4 @@
-"""Superuser-only database preparation for the three-role model (docs/adr/0006).
+"""Superuser-only database preparation for the three-role model (docs/adr/0007).
 
 Roles (created beforehand, e.g. by ``deploy/postgres/init.sql``):
 

@@ -38,7 +38,7 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-rootcause}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/.env}
       # Read by postgres/init.sql (psql \getenv) for the migrator and runtime
-      # roles it creates on the first start (docs/adr/0006).
+      # roles it creates on the first start (docs/adr/0007).
       POSTGRES_MIGRATOR_PASSWORD: ${POSTGRES_MIGRATOR_PASSWORD:?set POSTGRES_MIGRATOR_PASSWORD in deploy/.env}
       POSTGRES_APP_PASSWORD: ${POSTGRES_APP_PASSWORD:?set POSTGRES_APP_PASSWORD in deploy/.env}
     ports:

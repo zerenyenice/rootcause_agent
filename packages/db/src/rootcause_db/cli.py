@@ -1,6 +1,6 @@
 """``rootcause-db`` command line: upgrade, downgrade, current, revision, bootstrap.
 
-URLs (docs/adr/0006):
+URLs (docs/adr/0007):
 
 - migration commands connect as the migrator role, from
   ``ROOTCAUSE_MIGRATION_DATABASE_URL``;

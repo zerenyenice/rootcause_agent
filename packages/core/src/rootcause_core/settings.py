@@ -97,7 +97,7 @@ class Settings(BaseSettings):
     log_level: LogLevel = "INFO"
     log_format: LogFormat = LogFormat.JSON
     database_url: SecretStr = Field(min_length=1)
-    # Three-role database model (docs/adr/0006): the runtime URL above connects
+    # Three-role database model (docs/adr/0007): the runtime URL above connects
     # as the app role; migrations and bootstrap use their own URLs.
     migration_database_url: SecretStr | None = None
     admin_database_url: SecretStr | None = None

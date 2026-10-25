@@ -1,8 +1,8 @@
 # ADR-0007: Three database roles for the application database; append-only audit log
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-10-25
-- Deciders: project owner, lead
+- Deciders: lead (architecture decision during T006 review; project owner may override)
 - Related: PROJECT.md section 7, ADR-0003, task T006 (plan amendment 2)
 
 ## Context

@@ -1,4 +1,4 @@
--- RootCause Postgres bootstrap (tasks T002, T006; docs/adr/0006).
+-- RootCause Postgres bootstrap (tasks T002, T006; docs/adr/0007).
 --
 -- Mounted into /docker-entrypoint-initdb.d/ and executed by the official
 -- postgres entrypoint exactly once: on the FIRST start against an empty data
