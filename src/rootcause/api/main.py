@@ -1,5 +1,8 @@
 """FastAPI application factory."""
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from limits import parse
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
@@ -12,7 +15,7 @@ from rootcause.api.middleware import (
     SecurityHeadersMiddleware,
     create_limiter,
 )
-from rootcause.api.routes import health
+from rootcause.api.routes import connections, health
 from rootcause.errors import ConfigurationError
 from rootcause.logging import configure_logging, get_logger
 from rootcause.settings import Environment, Settings, get_settings
@@ -29,6 +32,12 @@ def _configure_telemetry_once(settings: Settings) -> None:
         get_logger(__name__).warning("telemetry_already_configured")
 
 
+@asynccontextmanager
+async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+    yield
+    await connections.close_connection_repository(app)
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     """Build the application; ``settings`` defaults to the cached process settings."""
     resolved = settings if settings is not None else get_settings()
@@ -42,6 +51,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         docs_url=None if is_prod else "/docs",
         redoc_url=None if is_prod else "/redoc",
         openapi_url=None if is_prod else "/openapi.json",
+        lifespan=_lifespan,
     )
     app.state.settings = resolved
     app.state.limiter = create_limiter()
@@ -49,6 +59,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     register_exception_handlers(app)
     app.include_router(health.router)
+    app.include_router(connections.router)
 
     app.add_middleware(RateLimitMiddleware)
     app.add_middleware(SecurityHeadersMiddleware, hsts=is_prod)

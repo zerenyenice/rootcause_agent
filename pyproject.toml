@@ -25,6 +25,8 @@ dependencies = [
     "asyncpg>=0.30",
     "alembic>=1.14",
     "sqlglot>=30.24,<31",
+    # connection credentials encrypted at rest (Fernet)
+    "cryptography>=44",
     # API (rootcause.api)
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",

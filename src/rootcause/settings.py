@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Literal, Self
 from urllib.parse import quote, unquote, urlsplit
 
+from cryptography.fernet import Fernet
 from pydantic import (
     AnyHttpUrl,
     AnyUrl,
@@ -51,6 +52,17 @@ PLAINTEXT_HOST_ERROR = (
     "langfuse_host must use https unless it is a loopback address or a "
     "single-label service name (for example a compose service)"
 )
+
+SECRET_KEY_FORMAT_ERROR = "secret_key must be a Fernet key (32 url-safe base64-encoded bytes)"
+
+
+def is_fernet_key(value: str) -> bool:
+    """Whether ``value`` is a usable Fernet key (the key itself never leaves this function)."""
+    try:
+        Fernet(value.encode("utf-8"))
+    except (ValueError, TypeError):
+        return False
+    return True
 
 
 class MissingVariablesError(ValueError):
@@ -165,6 +177,8 @@ class Settings(BaseSettings):
     prompt_source: PromptSource = "files"
     prompt_label: str = Field(default="production", min_length=1)
     prompt_cache_ttl_s: int = Field(default=300, ge=0)
+    # Fernet key encrypting stored connection credentials; required to store or use them.
+    secret_key: SecretStr | None = None
 
     @field_validator("environment", mode="before")
     @classmethod
@@ -180,6 +194,14 @@ class Settings(BaseSettings):
         if match is None or int(match["count"]) < 1:
             raise ValueError("rate_limit must look like '<count>/<second|minute|hour|day>'")
         return value.strip()
+
+    @field_validator("secret_key")
+    @classmethod
+    def _validate_secret_key(cls, value: SecretStr | None) -> SecretStr | None:
+        """Require a usable Fernet key; the error never echoes the value."""
+        if value is not None and not is_fernet_key(value.get_secret_value()):
+            raise ValueError(SECRET_KEY_FORMAT_ERROR)
+        return value
 
     @field_validator("langfuse_host")
     @classmethod

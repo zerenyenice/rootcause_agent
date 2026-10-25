@@ -2807,6 +2807,7 @@ source = { editable = "." }
 dependencies = [
     { name = "alembic" },
     { name = "asyncpg" },
+    { name = "cryptography" },
     { name = "deepagents" },
     { name = "duckdb" },
     { name = "fastapi" },
@@ -2849,6 +2850,7 @@ dev = [
 requires-dist = [
     { name = "alembic", specifier = ">=1.14" },
     { name = "asyncpg", specifier = ">=0.30" },
+    { name = "cryptography", specifier = ">=44" },
     { name = "deepagents", specifier = ">=0.7" },
     { name = "duckdb", specifier = ">=1.1" },
     { name = "fastapi", specifier = ">=0.115" },
