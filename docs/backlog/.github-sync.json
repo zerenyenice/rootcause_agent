@@ -94,7 +94,9 @@
     "T105": 92,
     "T106": 93,
     "T107": 94,
-    "T108": 95
+    "T108": 95,
+    "T008": 108,
+    "T009": 109
   },
   "project_items": {
     "EP0": "PVTI_lAHOAMPHqM4BokopzhDRgGE",
@@ -191,6 +193,8 @@
     "T105": "PVTI_lAHOAMPHqM4BokopzhDRlwM",
     "T106": "PVTI_lAHOAMPHqM4BokopzhDRl0Q",
     "T107": "PVTI_lAHOAMPHqM4BokopzhDRl3w",
-    "T108": "PVTI_lAHOAMPHqM4BokopzhDRl8A"
+    "T108": "PVTI_lAHOAMPHqM4BokopzhDRl8A",
+    "T008": "PVTI_lAHOAMPHqM4BokopzhDWZYg",
+    "T009": "PVTI_lAHOAMPHqM4BokopzhDWZcs"
   }
 }
