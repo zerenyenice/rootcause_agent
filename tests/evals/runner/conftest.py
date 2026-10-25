@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import Any
 
 import pytest
@@ -27,6 +27,7 @@ from rootcause.evals.manufacturing.incidents.manifest import (
     MetricSpec,
 )
 from rootcause.evals.manufacturing.incidents.manifest import RootCause as TruthRootCause
+from rootcause.evals.runner import Investigate, question_for
 
 MIN_LEVELS = 3
 
@@ -85,9 +86,18 @@ def _level(answer: str, sql: str | None) -> WhyLevel:
     return WhyLevel(question="Why?", answer=answer, evidence=evidence, confidence=0.8)
 
 
+def _cited_answer(step: ChainStep) -> str:
+    """A level answer that states the cause and cites the tables and columns behind it."""
+    return f"{step.cause} ({', '.join((*step.evidence_tables, *step.evidence_columns))})"
+
+
 def valid_chain_for(case: CaseManifest) -> WhyChain:
-    """A rule-abiding chain that restates the ground truth (it should pass)."""
-    levels = [_level(step.cause, step.sql_hint) for step in case.chain]
+    """A rule-abiding chain that restates the ground truth (it should pass).
+
+    Each level answer states the planted cause and cites its evidence tables and
+    columns, as a careful analyst would.
+    """
+    levels = [_level(_cited_answer(step), step.sql_hint) for step in case.chain]
     levels += [_level("Confirmed by the data", "SELECT 1")] * (MIN_LEVELS - len(levels))
     return WhyChain(
         problem=_problem(case),
@@ -114,28 +124,60 @@ def wrong_cause_chain_for(case: CaseManifest) -> WhyChain:
     )
 
 
+GAMING_SQL = (
+    "SELECT * FROM maintenance_events, work_orders, downtime_events, business_events WHERE day = 1"
+)
+
+
+def gaming_chain_for(question: str, case: CaseManifest) -> WhyChain:
+    """The review's game: blame staff fatigue, echo the question in every answer and
+    name every event table in every level's evidence SQL."""
+    chain = wrong_cause_chain_for(case)
+    levels = tuple(_level(f"Looked at {question}", GAMING_SQL) for _ in range(MIN_LEVELS))
+    return chain.model_copy(update={"levels": levels})
+
+
+def oracle(cases: Iterable[CaseManifest], build: Callable[[CaseManifest], WhyChain]) -> Investigate:
+    """An agent that answers from a question-to-case lookup it closes over.
+
+    The runner passes the question only; the test, not the runner, holds the answer key.
+    """
+    lookup = {question_for(case): case for case in cases}
+
+    def investigate(question: str) -> WhyChain:
+        return build(lookup[question])
+
+    return investigate
+
+
 class FakeAgents:
-    """Investigate callables with the ``(question, case) -> WhyChain | None`` signature."""
+    """Factories of question-only investigate callables over the given ``cases``."""
 
     @staticmethod
-    def valid(question: str, case: CaseManifest) -> WhyChain:
-        return valid_chain_for(case)
+    def valid(cases: Iterable[CaseManifest]) -> Investigate:
+        return oracle(cases, valid_chain_for)
 
     @staticmethod
-    def invalid(question: str, case: CaseManifest) -> WhyChain:
-        return invalid_chain_for(case)
+    def invalid(cases: Iterable[CaseManifest]) -> Investigate:
+        return oracle(cases, invalid_chain_for)
 
     @staticmethod
-    def wrong_cause(question: str, case: CaseManifest) -> WhyChain:
-        return wrong_cause_chain_for(case)
+    def wrong_cause(cases: Iterable[CaseManifest]) -> Investigate:
+        return oracle(cases, wrong_cause_chain_for)
 
     @staticmethod
-    def raising(question: str, case: CaseManifest) -> WhyChain:
-        raise RuntimeError(f"agent crashed while reading {case.root_cause.statement}")
+    def raising(cases: Iterable[CaseManifest]) -> Investigate:
+        def investigate(question: str) -> WhyChain:
+            raise RuntimeError(f"agent crashed while reading {question}")
+
+        return investigate
 
     @staticmethod
-    def none(question: str, case: CaseManifest) -> None:
-        return None
+    def none(cases: Iterable[CaseManifest]) -> Investigate:
+        def investigate(question: str) -> None:
+            return None
+
+        return investigate
 
 
 @pytest.fixture
@@ -158,3 +200,17 @@ def case_factory() -> Callable[..., CaseManifest]:
 def valid_chain() -> Callable[[CaseManifest], WhyChain]:
     """``valid_chain_for``: a passing chain built from a case's ground truth."""
     return valid_chain_for
+
+
+class Chains:
+    """The chain builders, for tests that score chains without running an agent."""
+
+    valid = staticmethod(valid_chain_for)
+    invalid = staticmethod(invalid_chain_for)
+    wrong_cause = staticmethod(wrong_cause_chain_for)
+    gaming = staticmethod(gaming_chain_for)
+
+
+@pytest.fixture
+def chains() -> type[Chains]:
+    return Chains

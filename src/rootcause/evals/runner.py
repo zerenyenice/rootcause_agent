@@ -8,19 +8,29 @@ from __future__ import annotations
 
 import dataclasses
 import json
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
 from rootcause.agents.reports import WhyChain
 from rootcause.evals.manufacturing.incidents.manifest import CaseManifest, read_cases_json
+from rootcause.evals.question import question_for
 from rootcause.evals.scoring import CaseScore, score_case
 from rootcause.logging import get_logger
 
-Investigate = Callable[[str, CaseManifest], WhyChain | None]
+__all__ = [
+    "EvalReport",
+    "Investigate",
+    "LevelPassRate",
+    "load_cases",
+    "question_for",
+    "run_case",
+    "run_cases",
+]
 
-ID_SUFFIX = "_id"
-PERCENT = 100
+# The agent sees the analyst question only; the manifest is the answer key and stays
+# with the runner for scoring.
+Investigate = Callable[[str], WhyChain | None]
 
 _logger = get_logger(__name__)
 
@@ -28,32 +38,6 @@ _logger = get_logger(__name__)
 def load_cases(path: Path) -> tuple[CaseManifest, ...]:
     """Read ``cases.json`` written by the generator back into frozen manifests."""
     return read_cases_json(path)
-
-
-def _segment_phrase(filters: Mapping[str, str]) -> str:
-    """``{"line_id": "L03"}`` becomes ``" for line L03"``; empty filters give ``""``."""
-    parts = [f"{key.removesuffix(ID_SUFFIX)} {filters[key]}" for key in sorted(filters)]
-    return f" for {' and '.join(parts)}" if parts else ""
-
-
-def question_for(case: CaseManifest) -> str:
-    """The analyst question for ``case``: metric, direction, size, window and segment.
-
-    Built only from the observable symptom, so it never leaks the root cause, the
-    chain causes, the keywords, the decoys or any SQL hint.
-    """
-    effect = case.expected_effect
-    window = case.anomaly_window
-    when = (
-        f"on {window.start}"
-        if window.start == window.end
-        else f"between {window.start} and {window.end}"
-    )
-    size = round(effect.size * PERCENT)
-    return (
-        f"Why did {case.metric.name} go {effect.direction} by about {size}% "
-        f"{when}{_segment_phrase(case.segment_filters)}?"
-    )
 
 
 @dataclass(frozen=True)
@@ -116,7 +100,8 @@ class EvalReport:
         lines = [
             "# Evaluation report",
             "",
-            "| Case | Level | Passed | Chain valid | Keywords | Root cause hit | Issues | Error |",
+            "| Case | Level | Passed | Chain valid | Scored keywords | Root cause hit "
+            "| Issues | Error |",
             "| --- | --- | --- | --- | --- | --- | --- | --- |",
         ]
         lines += [
@@ -135,13 +120,15 @@ class EvalReport:
 
 
 def run_case(case: CaseManifest, investigate: Investigate) -> CaseScore:
-    """Ask ``investigate`` about one case and score the answer.
+    """Ask ``investigate`` the question for one case and score the answer.
+
+    The agent receives only the question; ``case`` is used for scoring alone.
 
     An exception from the agent becomes a failed score whose ``error`` is the
     exception type name only (messages may echo data, so they are not reported).
     """
     try:
-        result = investigate(question_for(case), case)
+        result = investigate(question_for(case))
     except Exception as exc:  # noqa: BLE001 - one failing case must not stop the run
         _logger.warning("eval_case_failed", case_id=case.case_id, error=type(exc).__name__)
         return score_case(case, None, error=type(exc).__name__)
@@ -152,6 +139,9 @@ def run_case(case: CaseManifest, investigate: Investigate) -> CaseScore:
 
 
 def run_cases(cases: Iterable[CaseManifest], investigate: Investigate) -> EvalReport:
-    """Run ``investigate`` over every case and collect the scores and pass rates."""
+    """Run ``investigate`` over every case and collect the scores and pass rates.
+
+    ``cases`` are the ground truth for scoring; they are never passed to the agent.
+    """
     scores = tuple(run_case(case, investigate) for case in cases)
     return EvalReport(scores=scores, pass_rates=_pass_rates(scores))

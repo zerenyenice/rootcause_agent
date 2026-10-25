@@ -1,7 +1,8 @@
 """Command line: ``python -m rootcause.evals.run --cases DIR/cases.json --agent mod:func``.
 
 Exit codes: 0 when every selected case passed, 1 when any failed, 2 for usage errors
-(bad arguments, unreadable cases file, unknown level, agent that cannot be imported).
+(bad arguments, unreadable cases file, unknown level or ``all`` mixed with levels, agent
+module that fails to import for any reason, ``--out`` that cannot be written).
 """
 
 from __future__ import annotations
@@ -47,8 +48,10 @@ def load_agent(spec: str) -> Investigate:
         raise UsageError(f"--agent must look like module:function, got {spec!r}")
     try:
         module = importlib.import_module(module_name)
-    except ImportError as exc:
-        raise UsageError(f"cannot import agent module {module_name!r}: {exc}") from exc
+    except Exception as exc:  # noqa: BLE001 - any import-time failure is a usage error
+        raise UsageError(
+            f"cannot import agent module {module_name!r}: {type(exc).__name__}: {exc}"
+        ) from exc
     target = getattr(module, attr, None)
     if not callable(target):
         raise UsageError(f"{module_name!r} has no callable {attr!r}")
@@ -57,11 +60,17 @@ def load_agent(spec: str) -> Investigate:
 
 
 def select_levels(cases: tuple[CaseManifest, ...], levels: str) -> tuple[CaseManifest, ...]:
-    """Cases at the requested levels; ``UsageError`` for an empty or unmatched level."""
-    if levels.strip() == ALL_LEVELS:
-        wanted = tuple(dict.fromkeys(case.level for case in cases))
-    else:
-        wanted = tuple(part.strip() for part in levels.split(",") if part.strip())
+    """Cases at the requested levels.
+
+    ``UsageError`` for an empty or unmatched level, or ``all`` combined with other levels.
+    """
+    parts = tuple(dict.fromkeys(part.strip() for part in levels.split(",") if part.strip()))
+    if ALL_LEVELS in parts and len(parts) > 1:
+        raise UsageError(
+            f"--levels {ALL_LEVELS!r} cannot be combined with other levels: {levels!r}"
+        )
+    all_present = tuple(dict.fromkeys(case.level for case in cases))
+    wanted = all_present if parts == (ALL_LEVELS,) else parts
     present = {case.level for case in cases}
     missing = [level for level in wanted if level not in present]
     if missing or not wanted:
@@ -77,6 +86,15 @@ def _load(path: Path) -> tuple[CaseManifest, ...]:
         raise UsageError(f"cannot load cases from {path}: {exc}") from exc
 
 
+def _write_report(path: Path, content: str) -> None:
+    """Write the JSON report, turning file system failures into ``UsageError``."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    except OSError as exc:
+        raise UsageError(f"cannot write report to {path}: {exc}") from exc
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Parse ``argv``, run the evaluation and return the process exit code."""
     args = build_parser().parse_args(argv)
@@ -87,10 +105,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_USAGE
     report = run_cases(cases, investigate)
-    if args.out is not None:
-        args.out.parent.mkdir(parents=True, exist_ok=True)
-        args.out.write_text(report.to_json(), encoding="utf-8")
     print(report.to_markdown(), end="")
+    if args.out is not None:
+        try:
+            _write_report(args.out, report.to_json())
+        except UsageError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return EXIT_USAGE
     return EXIT_PASSED if report.all_passed else EXIT_FAILED
 
 
