@@ -5,7 +5,9 @@ name: CI
 # configured in pyproject.toml). CI therefore has two concerns:
 #   1. Product quality — `python-quality` mirrors the local lint → format →
 #      typecheck → test commands and fails under 80% coverage (the Gate 2
-#      bar); `dependency-audit` checks locked runtime deps for known CVEs.
+#      bar); `dependency-audit` checks locked runtime deps for known CVEs;
+#      `db-migrations` migrates a service Postgres up/down/up and runs the
+#      integration tests against it.
 #   2. Harness integrity — generated surfaces must match their sources,
 #      shell/JSON config must parse and lint clean, and every commit must
 #      carry this project's git-protocol trailers.
@@ -327,6 +329,121 @@ jobs:
           path: coverage.xml
           if-no-files-found: warn
           retention-days: 7
+
+  # Migration gate (T006): the Alembic chain must apply to an empty
+  # Postgres 16 + pgvector, reverse cleanly to base and re-apply, and the
+  # integration tests (`-m integration`, skipped in python-quality where no
+  # server exists) must pass against a real server. The service image is the
+  # exact tag deploy/docker-compose.yml runs, so CI migrates the same server
+  # build the stack ships. Privileges mirror production: a superuser runs
+  # `rootcause-db bootstrap` once (vector extension, schemas, grants) and the
+  # migrations themselves run as a non-superuser app role that owns the
+  # database. Every credential here (POSTGRES_*, the app role password) is a
+  # throwaway value for a container that only lives for this job, so they
+  # are deliberately not secrets.
+  db-migrations:
+    name: db-migrations
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.7-pg16
+        env:
+          POSTGRES_USER: rootcause_ci
+          POSTGRES_PASSWORD: rootcause_ci
+          POSTGRES_DB: rootcause_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U rootcause_ci -d rootcause_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # Non-prod on purpose: `rootcause-db downgrade` refuses to run in prod.
+      ROOTCAUSE_ENVIRONMENT: test
+      # Migrations and the app run as the non-superuser owner role created
+      # below.
+      ROOTCAUSE_DATABASE_URL: postgresql://rootcause_app:ci-only@localhost:5432/rootcause_ci
+      # Superuser URL, used by `rootcause-db bootstrap` (which must act on
+      # the app database, hence /rootcause_ci) and by the integration
+      # conftest, which only uses it to CREATE/DROP per-test databases.
+      ROOTCAUSE_TEST_ADMIN_URL: postgresql://rootcause_ci:rootcause_ci@localhost:5432/rootcause_ci
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # cache-suffix keeps this job's cache key distinct from python-quality's
+      # (same uv.lock glob) so the jobs don't race to save one key.
+      - name: Install uv (cache keyed on uv.lock)
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: "0.13.5"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+          cache-suffix: db-migrations
+
+      - name: Install Python 3.12
+        run: uv python install 3.12
+
+      - name: Sync workspace from uv.lock (fails if lockfile is stale)
+        run: uv sync --locked
+
+      # psql runs inside the service container (the image ships it), so the
+      # step does not depend on a client being preinstalled on the runner.
+      - name: Create non-superuser app role owning the database
+        env:
+          PG_CONTAINER: ${{ job.services.postgres.id }}
+        run: |
+          set -euo pipefail
+          docker exec "$PG_CONTAINER" psql -v ON_ERROR_STOP=1 \
+            -U rootcause_ci -d rootcause_ci \
+            -c "CREATE ROLE rootcause_app LOGIN PASSWORD 'ci-only' NOSUPERUSER NOCREATEDB NOCREATEROLE" \
+            -c "ALTER DATABASE rootcause_ci OWNER TO rootcause_app"
+
+      - name: Bootstrap extension, schemas and grants as superuser
+        run: uv run rootcause-db bootstrap --admin-url "$ROOTCAUSE_TEST_ADMIN_URL"
+
+      - name: Migrate empty database to head (app role)
+        run: uv run rootcause-db upgrade head
+
+      - name: Downgrade to base (every migration must reverse; app role)
+        run: uv run rootcause-db downgrade base
+
+      - name: Re-apply migrations to head after downgrade (app role)
+        run: uv run rootcause-db upgrade head
+
+      # --no-cov: coverage is gated once, over the full suite, in
+      # python-quality; this subset alone would fail the 80% addopts gate.
+      - name: Run integration tests against the service Postgres
+        run: >
+          uv run pytest -m integration -q --no-cov -rs
+          --junitxml=integration-junit.xml
+          packages/db packages/core packages/connections packages/catalog
+
+      # The integration fixtures skip (rather than fail) when no usable
+      # Postgres/pgvector is reachable, which is right on a laptop but would
+      # turn this job into a vacuous green here. With the service container
+      # up, every selected test must actually run.
+      - name: Fail if any integration test was skipped or none ran
+        run: |
+          set -euo pipefail
+          python3 - <<'PYCHECK'
+          import sys
+          import xml.etree.ElementTree as ET
+          root = ET.parse("integration-junit.xml").getroot()
+          suites = [root] if root.tag == "testsuite" else list(root.iter("testsuite"))
+          tests = sum(int(s.get("tests", 0)) for s in suites)
+          skipped = sum(int(s.get("skipped", 0)) for s in suites)
+          if tests == 0:
+              sys.exit("::error::no integration tests were collected")
+          if skipped:
+              sys.exit(f"::error::{skipped} of {tests} integration tests were skipped; "
+                       "the service Postgres was not used (see the -rs reasons above)")
+          print(f"All {tests} integration tests ran against the service Postgres.")
+          PYCHECK
 
   # Supply-chain gate (rules/devops/security.md): export the locked *runtime*
   # dependency set of every workspace member — dev tooling (--no-dev) and the

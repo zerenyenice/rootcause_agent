@@ -9,7 +9,9 @@ therefore has two concerns:
    typecheck → test commands a developer runs locally and fails the job
    under 80% coverage (the Gate 2 bar from `rules/common/testing.md`);
    `dependency-audit` checks the locked runtime dependency set for known
-   vulnerabilities.
+   vulnerabilities; `db-migrations` applies, reverses and re-applies the
+   Alembic chain against a real Postgres 16 + pgvector and runs the
+   integration tests there.
 2. **Harness integrity** — generated agent surfaces must match their
    sources, tracked shell/workflow/JSON files must lint and parse clean, no
    secret ever lands in history, and every commit carries this project's
@@ -93,6 +95,82 @@ for a clean audit of a real dependency tree.
 **Why:** `rules/devops/security.md` requires a dependency audit in CI; new
 HIGH/CRITICAL advisories are review findings to act on (bump, pin, or an
 explicitly justified `--ignore-vuln`), not noise to silence.
+
+### `db-migrations`
+
+**What it checks:** the Alembic migration chain (T006) and the
+`-m integration` tests against a real Postgres. A `pgvector/pgvector:0.8.7-pg16`
+service container (the exact tag `deploy/docker-compose.yml` runs) is started
+with throwaway `POSTGRES_USER`/`POSTGRES_PASSWORD`/`POSTGRES_DB` values
+(`rootcause_ci`). They are plain YAML on purpose: the container lives only
+for the job, so they are not secrets. The job then runs, in order:
+
+1. `uv sync --locked`.
+2. **App role:** `psql` inside the service container (`docker exec` on
+   `job.services.postgres.id`, so no runner-side client is needed) creates
+   `rootcause_app` (`LOGIN`, `NOSUPERUSER NOCREATEDB NOCREATEROLE`, password
+   `ci-only`) and makes it the owner of `rootcause_ci`.
+3. **Bootstrap as superuser:**
+   `uv run rootcause-db bootstrap --admin-url "$ROOTCAUSE_TEST_ADMIN_URL"`
+   creates the `vector` extension, the `app`/`catalog`/`audit` schemas and
+   the grants to the app role (idempotent).
+4. **Migrate as the app role** (`ROOTCAUSE_DATABASE_URL` points at
+   `rootcause_app`): `rootcause-db upgrade head` → `downgrade base` →
+   `upgrade head`. The round trip proves every migration reverses and that
+   a downgraded database can be rebuilt. `ROOTCAUSE_ENVIRONMENT=test` is set
+   explicitly, because `downgrade` refuses to run in prod.
+5. `uv run pytest -m integration -q --no-cov -rs --junitxml=integration-junit.xml
+   packages/db packages/core packages/connections packages/catalog`. `--no-cov`
+   because coverage is gated once, over the full suite, in
+   `python-quality`, and this subset alone would trip the 80% `addopts`
+   gate.
+6. **No-skip guard:** parses `integration-junit.xml` and fails if no test
+   was collected or *any* was skipped. The integration fixtures skip (rather
+   than fail) when no usable Postgres/pgvector is reachable. That is right
+   on a laptop, but in CI it would turn this job into a vacuous green.
+
+Environment: `ROOTCAUSE_DATABASE_URL` is the app role on `rootcause_ci`.
+`ROOTCAUSE_TEST_ADMIN_URL` is the superuser, also on `rootcause_ci`:
+bootstrap has to act on the app database, and the integration conftest
+only uses this URL to `CREATE`/`DROP` per-test databases, which works from
+any database.
+
+**Why:** "CI runs migrations against a service Postgres before tests" is
+T006's acceptance criterion. Running migrations as a non-superuser after a
+separate bootstrap keeps CI's privileges the same as production's, so a
+migration that silently needs superuser fails here and not on deploy.
+
+**Reproduce locally (Docker):** the same image and steps as CI.
+
+```bash
+docker run -d --rm --name rc-ci-pg -p 55432:5432 \
+  -e POSTGRES_USER=rootcause_ci -e POSTGRES_PASSWORD=rootcause_ci -e POSTGRES_DB=rootcause_ci \
+  pgvector/pgvector:0.8.7-pg16
+docker exec rc-ci-pg psql -v ON_ERROR_STOP=1 -U rootcause_ci -d rootcause_ci \
+  -c "CREATE ROLE rootcause_app LOGIN PASSWORD 'ci-only' NOSUPERUSER NOCREATEDB NOCREATEROLE" \
+  -c "ALTER DATABASE rootcause_ci OWNER TO rootcause_app"
+export ROOTCAUSE_ENVIRONMENT=test \
+  ROOTCAUSE_DATABASE_URL=postgresql://rootcause_app:ci-only@localhost:55432/rootcause_ci \
+  ROOTCAUSE_TEST_ADMIN_URL=postgresql://rootcause_ci:rootcause_ci@localhost:55432/rootcause_ci
+uv run rootcause-db bootstrap --admin-url "$ROOTCAUSE_TEST_ADMIN_URL"
+uv run rootcause-db upgrade head && uv run rootcause-db downgrade base && uv run rootcause-db upgrade head
+uv run pytest -m integration -q --no-cov -rs packages/db packages/core packages/connections packages/catalog
+docker rm -f rc-ci-pg
+```
+
+**Reproduce locally (Homebrew, integration tests only):** without
+`ROOTCAUSE_TEST_ADMIN_URL`, the integration conftest starts a throwaway
+server through `pytest-postgresql` using a local `pg_ctl`. Homebrew's
+`pgvector` formula is not built for `postgresql@16`, so point the fixture
+at PostgreSQL 17 (with `pgvector` installed for it). Otherwise the tests
+skip with a "pgvector is not installed" reason:
+
+```bash
+PG_CTL=/opt/homebrew/opt/postgresql@17/bin/pg_ctl \
+  uv run pytest -m integration -q --no-cov -rs packages/db packages/core packages/connections packages/catalog
+```
+
+Locally a skip is informational. In CI the no-skip guard makes it a failure.
 
 ### `harness-sync`
 
@@ -297,8 +375,9 @@ actors):**
   values above exactly): `python-quality`, `dependency-audit`,
   `harness-sync`, `lint-shell`, `lint-workflows`, `validate-json`,
   `compose-config`, `secret-scan`, `commit-protocol` (the last enforces the
-  git-audit-trail guarantee the whole protocol depends on). `python-quality`
-  and `dependency-audit` were added in T003 and `compose-config` in T002;
+  git-audit-trail guarantee the whole protocol depends on), and
+  `db-migrations`. `python-quality` and `dependency-audit` were added in
+  T003, `compose-config` in T002 and `db-migrations` in T006;
   the Lead adds each to the ruleset after its PR merges (a check cannot be
   required before it exists on the base branch).
 - Require branches to be up to date before merging (strict policy).
