@@ -274,14 +274,16 @@ class ProductMixChange(Incident):
                 f"Average cycle time on line {line} rises by about a third during the window",
                 ("production_runs",),
                 ("line_id", "ts", "cycle_time_s", "units_produced"),
-                f"SELECT CAST(ts AS DATE), AVG(cycle_time_s) FROM production_runs "
+                # sql_hint is manifest text, never executed; values are generator IDs/dates
+                f"SELECT CAST(ts AS DATE), AVG(cycle_time_s) FROM production_runs "  # nosec B608
                 f"WHERE line_id = '{line}' GROUP BY 1",
             ),
             ChainStep(
                 f"Work orders on line {line} were switched to the highest-complexity family",
                 ("work_orders", "products"),
                 ("line_id", "product_id", "start_ts", "end_ts", "family_id", "complexity_score"),
-                f"SELECT w.product_id, p.family_id, p.complexity_score FROM work_orders w "
+                # sql_hint is manifest text, never executed; values are generator IDs/dates
+                f"SELECT w.product_id, p.family_id, p.complexity_score FROM work_orders w "  # nosec B608
                 f"JOIN products p USING (product_id) WHERE w.line_id = '{line}' "
                 f"AND w.start_ts < TIMESTAMP '{last} 23:59:59' AND w.end_ts >= TIMESTAMP '{first}'",
             ),
@@ -289,7 +291,8 @@ class ProductMixChange(Incident):
                 "The standard cycle time of the new family explains the longer cycle times",
                 ("products", "production_runs"),
                 ("product_id", "standard_cycle_time_s", "cycle_time_s"),
-                "SELECT p.family_id, AVG(p.standard_cycle_time_s), AVG(r.cycle_time_s) "
+                # sql_hint is manifest text, never executed; values are generator IDs/dates
+                "SELECT p.family_id, AVG(p.standard_cycle_time_s), AVG(r.cycle_time_s) "  # nosec B608
                 f"FROM production_runs r JOIN products p USING (product_id) "
                 f"WHERE r.line_id = '{line}' GROUP BY 1",
             ),
@@ -316,7 +319,8 @@ class ProductMixChange(Incident):
             counterfactual=Counterfactual(
                 "Relative to each product's standard cycle time the line is unchanged: the "
                 "ratio stays flat through the window, so the rise comes from the product mix",
-                f"SELECT CAST(r.ts AS DATE), AVG(r.cycle_time_s / p.standard_cycle_time_s) "
+                # sql_hint is manifest text, never executed; values are generator IDs/dates
+                f"SELECT CAST(r.ts AS DATE), AVG(r.cycle_time_s / p.standard_cycle_time_s) "  # nosec B608
                 f"FROM production_runs r JOIN products p USING (product_id) "
                 f"WHERE r.line_id = '{line}' GROUP BY 1 ORDER BY 1",
             ),

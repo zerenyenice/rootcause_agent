@@ -181,7 +181,8 @@ def write_duckdb(tables: Mapping[str, pd.DataFrame], path: Path) -> None:
         for name, frame in tables.items():
             selected = ", ".join(_duckdb_select(spec) for spec in table_specs(frame))
             connection.register("source_frame", frame)
-            connection.execute(f'CREATE TABLE "{name}" AS SELECT {selected} FROM source_frame')
+            # names come from the generator's own frames, never external input
+            connection.execute(f'CREATE TABLE "{name}" AS SELECT {selected} FROM source_frame')  # nosec B608
             connection.unregister("source_frame")
     finally:
         connection.close()

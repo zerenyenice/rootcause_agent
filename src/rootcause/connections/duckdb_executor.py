@@ -289,7 +289,8 @@ class DuckDBExecutor:
             raise UnknownTable()
         col = _quote_identifier(column)
         sql = (
-            f"SELECT DISTINCT CAST({col} AS VARCHAR) AS value "
+            # catalog-resolved names escaped by _quote_identifier; LIMIT is bound
+            f"SELECT DISTINCT CAST({col} AS VARCHAR) AS value "  # nosec B608
             f"FROM {_quote_identifier(resolved)} WHERE {col} IS NOT NULL ORDER BY 1 LIMIT ?"
         )
         fetched = self._execute(sql, (min(limit, self._max_rows),), None)
@@ -316,7 +317,8 @@ class DuckDBExecutor:
         return str(rows[0][0])
 
     def _row_count(self, table: str) -> int:
-        sql = f"SELECT count(*) FROM {_quote_identifier(table)}"
+        # name read from information_schema, escaped by _quote_identifier
+        sql = f"SELECT count(*) FROM {_quote_identifier(table)}"  # nosec B608
         return int(self._execute(sql, (), None).rows[0][0])
 
     def _execute(self, sql: str, params: Sequence[Any], limit: int | None) -> _Fetched:

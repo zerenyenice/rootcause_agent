@@ -143,14 +143,16 @@ class CoolantPumpFailure(Incident):
                 f"Scrap rate on line {line} triples during the window",
                 ("production_runs",),
                 ("line_id", "ts", "units_produced", "units_scrapped"),
-                f"SELECT CAST(ts AS DATE), SUM(units_scrapped) * 1.0 / SUM(units_produced) "
+                # sql_hint is manifest text, never executed; values are generator IDs/dates
+                f"SELECT CAST(ts AS DATE), SUM(units_scrapped) * 1.0 / SUM(units_produced) "  # nosec B608
                 f"FROM production_runs WHERE line_id = '{line}' GROUP BY 1",
             ),
             ChainStep(
                 f"Machine {machine} runs hot while the rest of line {line} is normal",
                 ("machine_telemetry", "machines"),
                 ("machine_id", "line_id", "ts", "temperature_c"),
-                f"SELECT CAST(t.ts AS DATE), t.machine_id, AVG(t.temperature_c) "
+                # sql_hint is manifest text, never executed; values are generator IDs/dates
+                f"SELECT CAST(t.ts AS DATE), t.machine_id, AVG(t.temperature_c) "  # nosec B608
                 f"FROM machine_telemetry t JOIN machines m USING (machine_id) "
                 f"WHERE m.line_id = '{line}' GROUP BY 1, 2",
             ),
@@ -158,7 +160,8 @@ class CoolantPumpFailure(Incident):
                 f"Machine {machine} has extra breakdown downtime on the last days of the window",
                 ("downtime_events", "machines"),
                 ("machine_id", "line_id", "start_ts", "end_ts", "reason_code"),
-                f"SELECT d.* FROM downtime_events d JOIN machines m USING (machine_id) "
+                # sql_hint is manifest text, never executed; values are generator IDs/dates
+                f"SELECT d.* FROM downtime_events d JOIN machines m USING (machine_id) "  # nosec B608
                 f"WHERE m.line_id = '{line}' AND d.machine_id = '{machine}' "
                 f"AND d.reason_code = 'breakdown'",
             ),
@@ -166,7 +169,8 @@ class CoolantPumpFailure(Incident):
                 "The maintenance log records an unplanned coolant pump replacement",
                 ("maintenance_events", "machines"),
                 ("machine_id", "line_id", "kind", "performed_date", "parts_replaced"),
-                f"SELECT e.* FROM maintenance_events e JOIN machines m USING (machine_id) "
+                # sql_hint is manifest text, never executed; values are generator IDs/dates
+                f"SELECT e.* FROM maintenance_events e JOIN machines m USING (machine_id) "  # nosec B608
                 f"WHERE m.line_id = '{line}' AND e.machine_id = '{machine}' "
                 f"AND e.parts_replaced = '{PUMP_PART}'",
             ),
@@ -188,7 +192,8 @@ class CoolantPumpFailure(Incident):
             counterfactual=Counterfactual(
                 f"Replacing the coolant pump of {machine} before the window would keep the "
                 f"scrap rate of line {line} inside the window at its level outside it",
-                f"SELECT CAST(ts AS DATE) BETWEEN DATE '{first}' AND DATE '{last}' AS in_window, "
+                # sql_hint is manifest text, never executed; values are generator IDs/dates
+                f"SELECT CAST(ts AS DATE) BETWEEN DATE '{first}' AND DATE '{last}' AS in_window, "  # nosec B608
                 f"SUM(units_scrapped) * 1.0 / SUM(units_produced) FROM production_runs "
                 f"WHERE line_id = '{line}' GROUP BY 1",
             ),
@@ -312,7 +317,8 @@ class PowerOutage(Incident):
                 f"Output of plant {plant} is zero for the {shift} shift on {day}",
                 ("production_runs", "production_lines"),
                 ("line_id", "plant_id", "ts", "shift", "units_produced"),
-                f"SELECT r.ts, SUM(r.units_produced) FROM production_runs r JOIN "
+                # sql_hint is manifest text, never executed; values are generator IDs/dates
+                f"SELECT r.ts, SUM(r.units_produced) FROM production_runs r JOIN "  # nosec B608
                 f"production_lines l USING (line_id) WHERE l.plant_id = '{plant}' "
                 f"AND CAST(r.ts AS DATE) = DATE '{day}' GROUP BY 1 ORDER BY 1",
             ),
@@ -320,7 +326,8 @@ class PowerOutage(Incident):
                 f"Every machine of plant {plant} has a power downtime event covering the shift",
                 ("downtime_events", "machines", "production_lines"),
                 ("machine_id", "line_id", "plant_id", "start_ts", "end_ts", "reason_code"),
-                "SELECT d.machine_id, d.start_ts, d.end_ts FROM downtime_events d "
+                # sql_hint is manifest text, never executed; values are generator IDs/dates
+                "SELECT d.machine_id, d.start_ts, d.end_ts FROM downtime_events d "  # nosec B608
                 "JOIN machines m USING (machine_id) JOIN production_lines l USING (line_id) "
                 f"WHERE l.plant_id = '{plant}' AND d.reason_code = 'power' "
                 f"AND CAST(d.start_ts AS DATE) = DATE '{day}'",
@@ -329,7 +336,8 @@ class PowerOutage(Incident):
                 f"A business event records the power outage at plant {plant}",
                 ("business_events",),
                 ("event_date", "event_type", "description", "plant_id"),
-                f"SELECT * FROM business_events WHERE event_type = '{OUTAGE_EVENT}' "
+                # sql_hint is manifest text, never executed; values are generator IDs/dates
+                f"SELECT * FROM business_events WHERE event_type = '{OUTAGE_EVENT}' "  # nosec B608
                 f"AND plant_id = '{plant}'",
             ),
         )
@@ -350,7 +358,8 @@ class PowerOutage(Incident):
                 f"With grid power available, plant {plant} would have produced in the {shift} "
                 f"shift what it usually produces on the same weekday: compare the outage day "
                 f"with the preceding {PRE_WINDOW_DAYS} days",
-                f"SELECT CAST(r.ts AS DATE) AS day, SUM(r.units_produced) FROM production_runs r "
+                # sql_hint is manifest text, never executed; values are generator IDs/dates
+                f"SELECT CAST(r.ts AS DATE) AS day, SUM(r.units_produced) FROM production_runs r "  # nosec B608
                 f"JOIN production_lines l USING (line_id) WHERE l.plant_id = '{plant}' "
                 f"AND r.shift = '{shift}' AND dayofweek(r.ts) = dayofweek(DATE '{day}') "
                 f"AND CAST(r.ts AS DATE) BETWEEN DATE '{day}' - INTERVAL {PRE_WINDOW_DAYS} DAY "
