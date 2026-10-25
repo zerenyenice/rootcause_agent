@@ -134,25 +134,25 @@ def test_limit_above_default_is_capped_with_warning(v, dialect: str) -> None:
     assert result.ok is True
     assert "LIMIT 10000" in result.sql.upper()
     assert "50000" not in result.sql
-    assert len(result.warnings) >= 1
+    assert "LIMIT_CAPPED" in _codes(result.warnings)
 
 
 @pytest.mark.unit
 @pytest.mark.parametrize("dialect", DIALECTS)
-def test_group_by_aggregate_is_not_limited(v, dialect: str) -> None:
+def test_group_by_aggregate_gets_default_limit(v, dialect: str) -> None:
     result = v.validate_sql("SELECT b, sum(a) FROM t GROUP BY b", dialect)
 
-    assert result.limit_injected is False
-    assert "LIMIT" not in result.sql.upper()
+    assert result.limit_injected is True
+    assert result.sql.upper().rstrip("; \n").endswith("LIMIT 10000")
 
 
 @pytest.mark.unit
 @pytest.mark.parametrize("dialect", DIALECTS)
-def test_scalar_aggregate_is_not_limited(v, dialect: str) -> None:
+def test_scalar_aggregate_gets_default_limit(v, dialect: str) -> None:
     result = v.validate_sql("SELECT count(*) FROM t", dialect)
 
-    assert result.limit_injected is False
-    assert "LIMIT" not in result.sql.upper()
+    assert result.limit_injected is True
+    assert result.sql.upper().rstrip("; \n").endswith("LIMIT 10000")
 
 
 @pytest.mark.unit
@@ -261,7 +261,7 @@ def test_catalog_ambiguous_bare_column_is_warning_not_error(v, catalog, dialect:
 
     assert result.ok is True
     assert result.errors == ()
-    assert len(result.warnings) >= 1
+    assert "AMBIGUOUS_COLUMN" in _codes(result.warnings)
 
 
 @pytest.mark.unit
@@ -314,6 +314,10 @@ def test_issue_code_enum_exposes_planned_members(v) -> None:
         "UNKNOWN_TABLE",
         "UNKNOWN_COLUMN",
         "UNSUPPORTED_DIALECT",
+        "LIMIT_CAPPED",
+        "AMBIGUOUS_COLUMN",
+        "AMBIGUOUS_TABLE",
+        "INPUT_TOO_LARGE",
     } <= names
 
 
@@ -326,12 +330,13 @@ def test_catalog_qualified_unknown_column_on_known_table_is_error(v, catalog) ->
 
 
 @pytest.mark.unit
-def test_postgres_limit_all_is_left_untouched(v) -> None:
+def test_postgres_limit_all_is_replaced_by_default_limit_with_warning(v) -> None:
     result = v.validate_sql("SELECT a FROM t LIMIT ALL", "postgres")
 
     assert result.ok is True
-    assert result.limit_injected is False
-    assert result.sql.upper().endswith("LIMIT ALL")
+    assert "LIMIT ALL" not in result.sql.upper()
+    assert result.sql.upper().rstrip("; \n").endswith("LIMIT 10000")
+    assert "LIMIT_CAPPED" in _codes(result.warnings)
 
 
 @pytest.mark.unit
