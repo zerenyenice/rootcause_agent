@@ -373,7 +373,7 @@ The test bed is a synthetic discrete-manufacturing warehouse with one year of re
 | `plants`, `production_lines`, `machines` | Dimension | ids, plant, line, machine type, install date | 2, 8, 40 |
 | `products`, `product_families` | Dimension | product id, family, complexity score, standard cycle time | 30, 5 |
 | `suppliers`, `materials`, `material_lots` | Dimension and lot | supplier id, material id, lot id, received date, spec measurement, certificate flag | 12, 20, 2,400 |
-| `operators`, `shift_assignments` | Dimension and daily | operator id, hire date, training certified date, line, shift, date | 200, 220k |
+| `operators`, `shift_assignments` | Dimension and daily | operator id, hire date, training certified date, line, shift, date | 200, 73k (one roster row per operator per day) |
 | `work_orders` | Per order | order id, product, line, planned qty, start, end | 9,000 |
 | `production_runs` | Hourly per line | timestamp, line, shift, product, work order, units produced, units scrapped, cycle time, material lot | 70k |
 | `quality_inspections` | Per inspection | inspection id, run, inspector, gauge id, measured value, pass flag, defect type, source system | 90k |
@@ -383,7 +383,7 @@ The test bed is a synthetic discrete-manufacturing warehouse with one year of re
 | `gauge_calibrations` | Per calibration | gauge id, due date, performed date, offset found | 400 |
 | `energy_meter_readings` | Hourly per line | timestamp, line, kWh | 70k |
 | `warranty_claims` | Per claim | claim id, product, production run id, claim date, defect type | 6,000 |
-| `business_events` | Per event | date, type (supplier change, firmware update, policy change, holiday), description | 60 |
+| `business_events` | Per event | date, type (supplier change, firmware update, policy change, holiday), description | 60 (32 in the baseline layer: holidays and maintenance windows; the rest come with the incident and benign-event layers) |
 
 A 10x scale variant (10-minute production grain, 5 plants) is generated for performance tests only.
 
