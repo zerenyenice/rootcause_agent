@@ -77,3 +77,41 @@ def test_upgrade_in_prod_as_a_superuser_is_refused(db_roles, monkeypatch, capsys
         ).scalar_one()
     engine.dispose()
     assert tables == 0, "nothing may be migrated"
+
+
+def test_upgrade_in_prod_as_a_member_of_a_superuser_group_is_refused(db_roles, monkeypatch, capsys):
+    import psycopg
+
+    from rootcause_core.settings import clear_settings_cache
+    from rootcause_db.bootstrap import bootstrap
+    from rootcause_db.cli import main
+
+    bootstrap(db_roles.admin_url, **db_roles.bootstrap_kwargs())  # granted afterwards
+    group = f"rc_sugroup_{db_roles.owner[-10:]}"
+    with psycopg.connect(db_roles.admin_url, autocommit=True) as connection:
+        connection.execute(f'CREATE ROLE "{group}" NOLOGIN SUPERUSER')
+        connection.execute(f'GRANT "{group}" TO "{db_roles.migrator}"')
+    try:
+        monkeypatch.setenv("ROOTCAUSE_ENVIRONMENT", "prod")
+        clear_settings_cache()
+
+        with pytest.raises(SystemExit) as raised:
+            main(["upgrade"])
+
+        assert raised.value.code not in (0, None)
+        err = capsys.readouterr().err.lower()
+        assert "superuser" in err
+        assert "bootstrap" not in err, "must be the superuser refusal, not a missing bootstrap"
+        engine = sa.create_engine(_sync(db_roles.admin_url))
+        with engine.connect() as connection:
+            tables = connection.execute(
+                sa.text(
+                    "SELECT count(*) FROM information_schema.tables "
+                    "WHERE table_schema = 'app' AND table_name = 'alembic_version'"
+                )
+            ).scalar_one()
+        engine.dispose()
+        assert tables == 0, "nothing may be migrated"
+    finally:
+        with psycopg.connect(db_roles.admin_url, autocommit=True) as connection:
+            connection.execute(f'DROP ROLE IF EXISTS "{group}"')

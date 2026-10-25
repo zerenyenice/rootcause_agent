@@ -185,6 +185,62 @@ def test_bootstrap_refuses_unsafe_app_or_migrator_roles(db_roles, unsafe_role, s
     _no_grants_made(db_roles, unsafe_role)
 
 
+PRIVILEGED_GROUPS = {
+    "nologin-superuser-group": "CREATE ROLE {name} NOLOGIN SUPERUSER",
+    "admin-superuser": None,
+    "pg_execute_server_program": None,
+    "pg_write_server_files": None,
+    "pg_read_server_files": None,
+}
+
+
+@pytest.fixture
+def privileged_group(request, db_roles):
+    """A privileged role that a bootstrap role can be made a member of."""
+    kind = request.param
+    if kind == "admin-superuser":
+        yield db_roles.admin_user
+        return
+    if kind.startswith("pg_"):
+        yield kind
+        return
+    name = f"rc_group_{db_roles.owner[-10:]}"
+    _admin_exec(db_roles, PRIVILEGED_GROUPS[kind].format(name=name))
+    try:
+        yield name
+    finally:
+        _admin_exec(db_roles, f"DROP ROLE IF EXISTS {name}")
+
+
+@pytest.mark.parametrize("slot", ["app", "migrator", "owner"])
+@pytest.mark.parametrize("privileged_group", list(PRIVILEGED_GROUPS), indirect=True)
+def test_bootstrap_refuses_roles_that_are_members_of_privileged_roles(
+    db_roles, privileged_group, slot
+):
+    from rootcause_db.bootstrap import bootstrap
+
+    member = getattr(db_roles, slot)
+    _admin_exec(db_roles, f'GRANT "{privileged_group}" TO "{member}"')
+
+    with pytest.raises(ConfigurationError):
+        bootstrap(db_roles.admin_url, **db_roles.bootstrap_kwargs())
+
+    _no_grants_made(db_roles, db_roles.app)
+    _no_grants_made(db_roles, db_roles.migrator)
+
+
+@pytest.mark.parametrize("attribute", ["CREATEROLE", "CREATEDB"])
+def test_bootstrap_refuses_an_app_role_that_can_create_roles_or_databases(db_roles, attribute):
+    from rootcause_db.bootstrap import bootstrap
+
+    _admin_exec(db_roles, f'ALTER ROLE "{db_roles.app}" {attribute}')
+
+    with pytest.raises(ConfigurationError):
+        bootstrap(db_roles.admin_url, **db_roles.bootstrap_kwargs())
+
+    _no_grants_made(db_roles, db_roles.app)
+
+
 def test_bootstrap_refuses_a_role_that_does_not_exist(db_roles):
     from rootcause_db.bootstrap import bootstrap
 

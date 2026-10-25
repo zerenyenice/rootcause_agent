@@ -60,6 +60,42 @@ def test_admin_url_with_a_password_is_rejected_and_points_to_the_safe_channels(c
     assert "admin.invalid" not in output, "no connection attempt, no host in the message"
 
 
+@pytest.mark.parametrize(
+    "query", ["password=x", "passfile=/tmp/x", "options=-c%20x%3Dy", "user=root", "host=evil"]
+)
+def test_admin_url_with_disallowed_query_keys_is_rejected(query, capsys):
+    url = f"postgresql://pgadmin@admin.invalid:5432/rootcause?{query}"
+
+    code, output = _run(["bootstrap", "--admin-url", url], capsys)
+
+    assert code not in (0, None)
+    assert "database operation failed" not in output, "rejected before any connection attempt"
+    assert "admin.invalid" not in output
+
+
+def test_admin_url_password_in_the_query_is_rejected_like_an_inline_password(capsys):
+    url = "postgresql://u@h/db?password=x"
+
+    code, output = _run(["bootstrap", "--admin-url", url], capsys)
+
+    assert code not in (0, None)
+    assert "ROOTCAUSE_ADMIN_DATABASE_URL" in output
+    assert "PGPASSWORD" in output
+
+
+@pytest.mark.parametrize(
+    "query",
+    ["sslmode=require", "sslrootcert=/etc/ca.pem", "connect_timeout=5", "application_name=x"],
+)
+def test_admin_url_with_allowed_query_keys_reaches_the_connection_attempt(query, capsys):
+    url = f"postgresql://pgadmin@admin.invalid:5432/rootcause?{query}"
+
+    code, output = _run(["bootstrap", "--admin-url", url], capsys)
+
+    assert code not in (0, None)
+    assert "database operation failed" in output
+
+
 def test_invalid_admin_url_in_the_environment_names_the_admin_variable(monkeypatch, capsys):
     monkeypatch.setenv("ROOTCAUSE_ADMIN_DATABASE_URL", "http://pgadmin:zz-secret@host/x")
 
