@@ -61,6 +61,7 @@ def _fresh_clients() -> Any:
 )
 def test_anthropic_chat_model_per_role(role: str, model: str) -> None:
     from langchain_anthropic import ChatAnthropic
+
     from rootcause_core.clients import chat_model
 
     client = chat_model(cast(Any, role), _anthropic())
@@ -74,21 +75,28 @@ def test_anthropic_chat_model_per_role(role: str, model: str) -> None:
 
 @pytest.mark.parametrize("model", ["anthropic:claude-opus-5", "claude-opus-5"])
 def test_anthropic_prefix_is_accepted_and_stripped(model: str) -> None:
+    from langchain_anthropic import ChatAnthropic
+
     from rootcause_core.clients import chat_model
 
     client = chat_model("orchestrator", _anthropic(orchestrator_model=model))
 
+    assert isinstance(client, ChatAnthropic)
     assert client.model == "claude-opus-5"
 
 
 def test_default_settings_models_build_for_anthropic() -> None:
+    from langchain_anthropic import ChatAnthropic
+
     from rootcause_core.clients import chat_model
 
     settings = Settings(
         _env_file=None, database_url="postgresql://u:p@localhost/db", anthropic_api_key=SENTINEL
     )
+    client = chat_model("fast", settings)
 
-    assert chat_model("fast", settings).model == "claude-sonnet-5"
+    assert isinstance(client, ChatAnthropic)
+    assert client.model == "claude-sonnet-5"
 
 
 @pytest.mark.parametrize(
@@ -97,6 +105,7 @@ def test_default_settings_models_build_for_anthropic() -> None:
 )
 def test_azure_chat_model_per_role(role: str, deployment: str) -> None:
     from langchain_openai import AzureChatOpenAI
+
     from rootcause_core.clients import chat_model
 
     client = chat_model(cast(Any, role), _azure())
@@ -142,12 +151,16 @@ def test_reset_clients_drops_the_cache() -> None:
 def test_chat_model_defaults_to_get_settings(
     monkeypatch: pytest.MonkeyPatch, base_env: None
 ) -> None:
+    from langchain_anthropic import ChatAnthropic
+
     from rootcause_core.clients import chat_model
 
     monkeypatch.setenv("ROOTCAUSE_ANTHROPIC_API_KEY", SENTINEL)
     monkeypatch.setenv("ROOTCAUSE_FAST_MODEL", "claude-from-env")
+    client = chat_model("fast")
 
-    assert chat_model("fast").model == "claude-from-env"
+    assert isinstance(client, ChatAnthropic)
+    assert client.model == "claude-from-env"
 
 
 def test_unknown_role_is_rejected() -> None:
@@ -167,3 +180,58 @@ def test_anthropic_without_key_raises_configuration_error_naming_variable() -> N
 
     assert "ROOTCAUSE_ANTHROPIC_API_KEY" in str(caught.value)
     assert "ROOTCAUSE_ANTHROPIC_API_KEY" in caught.value.variables
+
+
+def test_fast_role_can_use_azure_while_orchestrator_stays_anthropic() -> None:
+    from langchain_anthropic import ChatAnthropic
+    from langchain_openai import AzureChatOpenAI
+
+    from rootcause_core.clients import chat_model
+
+    settings = _anthropic(
+        fast_provider="azure_openai",
+        azure_openai_endpoint=ENDPOINT,
+        azure_openai_api_key=SENTINEL,
+        fast_model="dep-fast",
+    )
+
+    fast = chat_model("fast", settings)
+    orchestrator = chat_model("orchestrator", settings)
+
+    assert isinstance(fast, AzureChatOpenAI)
+    assert fast.deployment_name == "dep-fast"
+    assert isinstance(orchestrator, ChatAnthropic)
+    assert orchestrator.model == "claude-orch"
+
+
+def test_role_provider_override_can_select_anthropic_over_azure_default() -> None:
+    from langchain_anthropic import ChatAnthropic
+    from langchain_openai import AzureChatOpenAI
+
+    from rootcause_core.clients import chat_model
+
+    settings = _azure(reasoning_provider="anthropic", anthropic_api_key=SENTINEL)
+
+    reasoning = chat_model("reasoning", settings)
+
+    assert isinstance(reasoning, ChatAnthropic)
+    assert isinstance(chat_model("fast", settings), AzureChatOpenAI)
+
+
+def test_role_providers_default_to_none() -> None:
+    settings = _anthropic()
+
+    assert settings.orchestrator_provider is None
+    assert settings.fast_provider is None
+    assert settings.reasoning_provider is None
+
+
+def test_zero_max_retries_is_accepted_by_chat_model() -> None:
+    from langchain_anthropic import ChatAnthropic
+
+    from rootcause_core.clients import chat_model
+
+    client = chat_model("fast", _anthropic(llm_max_retries=0))
+
+    assert isinstance(client, ChatAnthropic)
+    assert client.max_retries == 0

@@ -123,7 +123,7 @@ def test_unknown_llm_provider_is_rejected(monkeypatch: pytest.MonkeyPatch, base_
     assert "ROOTCAUSE_LLM_PROVIDER" in str(caught.value)
 
 
-@pytest.mark.parametrize("name", ["LLM_TIMEOUT_S", "LLM_MAX_RETRIES", "LLM_MAX_TOKENS"])
+@pytest.mark.parametrize("name", ["LLM_TIMEOUT_S", "LLM_MAX_TOKENS"])
 def test_non_positive_llm_limits_are_rejected(
     monkeypatch: pytest.MonkeyPatch, base_env: None, name: str
 ) -> None:
@@ -133,3 +133,52 @@ def test_non_positive_llm_limits_are_rejected(
         get_settings()
 
     assert f"ROOTCAUSE_{name}" in str(caught.value)
+
+
+def test_llm_max_retries_accepts_zero_and_rejects_negative(
+    monkeypatch: pytest.MonkeyPatch, base_env: None
+) -> None:
+    assert Settings(_env_file=None, database_url=DB, llm_max_retries=0).llm_max_retries == 0
+
+    monkeypatch.setenv("ROOTCAUSE_LLM_MAX_RETRIES", "-1")
+    with pytest.raises(ConfigurationError) as caught:
+        get_settings()
+
+    assert "ROOTCAUSE_LLM_MAX_RETRIES" in str(caught.value)
+
+
+@pytest.mark.parametrize("role", ["ORCHESTRATOR", "FAST", "REASONING"])
+def test_role_provider_azure_requires_endpoint_and_key(
+    monkeypatch: pytest.MonkeyPatch, base_env: None, role: str
+) -> None:
+    monkeypatch.setenv(f"ROOTCAUSE_{role}_PROVIDER", "azure_openai")
+
+    with pytest.raises(ConfigurationError) as caught:
+        get_settings()
+
+    assert {"ROOTCAUSE_AZURE_OPENAI_ENDPOINT", "ROOTCAUSE_AZURE_OPENAI_API_KEY"} <= set(
+        caught.value.variables
+    )
+    assert SENTINEL not in str(caught.value)
+
+
+def test_role_provider_azure_with_credentials_is_valid() -> None:
+    settings = Settings(
+        _env_file=None,
+        database_url=DB,
+        fast_provider="azure_openai",
+        azure_openai_endpoint="https://x.openai.azure.com",
+        azure_openai_api_key=SENTINEL,
+    )
+
+    assert settings.fast_provider == "azure_openai"
+    assert settings.llm_provider == "anthropic"
+
+
+def test_unknown_role_provider_is_rejected(monkeypatch: pytest.MonkeyPatch, base_env: None) -> None:
+    monkeypatch.setenv("ROOTCAUSE_FAST_PROVIDER", "bedrock")
+
+    with pytest.raises(ConfigurationError) as caught:
+        get_settings()
+
+    assert "ROOTCAUSE_FAST_PROVIDER" in str(caught.value)

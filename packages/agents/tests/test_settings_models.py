@@ -52,3 +52,14 @@ def test_scan_row_threshold_rejects_non_integer() -> None:
 @pytest.mark.unit
 def test_scan_row_threshold_accepts_boundary_one() -> None:
     assert make(scan_row_threshold=1).scan_row_threshold == 1
+
+
+@pytest.mark.unit
+def test_agent_models_dataclass_is_removed() -> None:
+    import importlib
+
+    try:
+        module = importlib.import_module("rootcause_agents.config")
+    except ModuleNotFoundError:
+        return
+    assert not hasattr(module, "AgentModels")

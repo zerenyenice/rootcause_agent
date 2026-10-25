@@ -55,6 +55,7 @@ def _fresh_clients() -> Any:
 
 def test_azure_embeddings() -> None:
     from langchain_openai import AzureOpenAIEmbeddings
+
     from rootcause_core.clients import embeddings
 
     client = embeddings(_azure())
@@ -63,10 +64,12 @@ def test_azure_embeddings() -> None:
     assert client.deployment == "emb-model"
     assert client.dimensions == 256
     assert client.chunk_size == 17
+    assert client.check_embedding_ctx_length is False
 
 
 def test_openai_compatible_embeddings() -> None:
     from langchain_openai import OpenAIEmbeddings
+
     from rootcause_core.clients import embeddings
 
     client = embeddings(_compatible())
@@ -76,10 +79,12 @@ def test_openai_compatible_embeddings() -> None:
     assert str(client.openai_api_base).startswith("http://embeddings.local:8080/v1")
     assert client.dimensions == 256
     assert client.chunk_size == 17
+    assert client.check_embedding_ctx_length is False
 
 
 def test_azure_embeddings_are_not_the_openai_class() -> None:
     from langchain_openai import AzureOpenAIEmbeddings
+
     from rootcause_core.clients import embeddings
 
     assert isinstance(embeddings(_azure()), AzureOpenAIEmbeddings)
