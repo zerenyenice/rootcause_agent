@@ -1,11 +1,20 @@
-"""Extraction of the tables and columns a query references."""
+"""Scope-aware extraction of the tables and columns a query references.
+
+sqlglot's scope analysis decides, per SELECT, which sources are physical tables and
+which are CTEs, derived tables or table functions, so a CTE or subquery alias never
+hides a physical table of the same name in another scope.
+"""
 
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from types import MappingProxyType
 from typing import NamedTuple
 
 from sqlglot import exp
+from sqlglot.optimizer.scope import Scope, traverse_scope
+
+_CLAUSES_RESOLVING_ALIASES = (exp.Order, exp.Group, exp.Having, exp.Qualify)
 
 
 class TableRef(NamedTuple):
@@ -14,16 +23,36 @@ class TableRef(NamedTuple):
     name: str
     alias: str
 
+    @property
+    def qualifier(self) -> str:
+        """The lower-cased name columns use to refer to this table."""
+        return (self.alias or self.name.rsplit(".", 1)[-1]).lower()
+
 
 class ColumnRef(NamedTuple):
-    """A column as written in the query, with its qualifier (table name or alias)."""
+    """A column as written in the query, with whatever qualifiers were given."""
 
     name: str
     qualifier: str
+    db: str = ""
+    catalog: str = ""
 
     @property
     def display(self) -> str:
-        return f"{self.qualifier}.{self.name}" if self.qualifier else self.name
+        return ".".join(part for part in (self.catalog, self.db, self.qualifier, self.name) if part)
+
+
+class ScopeRefs(NamedTuple):
+    """What one SELECT scope contributes to catalog checking."""
+
+    tables: tuple[TableRef, ...]
+    columns: tuple[ColumnRef, ...]
+    #: lower-cased qualifier -> physical table, or ``None`` for derived/CTE/function sources
+    qualifiers: Mapping[str, TableRef | None]
+    #: output column names of derived sources whose columns are known
+    derived_columns: frozenset[str]
+    #: True when a source's columns cannot be determined (star, table function, ...)
+    opaque: bool
 
 
 class References(NamedTuple):
@@ -31,45 +60,153 @@ class References(NamedTuple):
 
     tables: tuple[TableRef, ...]
     columns: tuple[ColumnRef, ...]
-    derived_names: frozenset[str]
+    scopes: tuple[ScopeRefs, ...]
 
 
 def extract_references(statement: exp.Expr) -> References:
-    """Collect physical tables, columns, and derived (CTE/subquery) names from ``statement``."""
-    derived = _derived_names(statement)
+    """Collect physical tables, columns, and per-scope checking data from ``statement``."""
+    scopes = traverse_scope(statement)
+    physical = {id(table): scope for scope in scopes for table in _physical_tables(scope)}
     tables = _unique(
-        TableRef(_table_name(table), table.alias)
-        for table in statement.find_all(exp.Table)
-        if table.name.lower() not in derived
+        _table_ref(table)
+        for table in statement.find_all(exp.Table, bfs=False)
+        if id(table) in physical
     )
-    columns = _unique(
-        ColumnRef(column.name, column.table) for column in statement.find_all(exp.Column)
-    )
-    return References(tables, columns, derived)
+    columns = _unique(_column_ref(column) for column in statement.find_all(exp.Column, bfs=False))
+    return References(tables, columns, _scope_refs(statement, scopes))
 
 
-def alias_map(tables: Iterable[TableRef]) -> Mapping[str, str]:
-    """Map lower-cased alias and table names to the table name as written."""
-    mapping: dict[str, str] = {}
-    for table in tables:
-        mapping.setdefault(table.name.lower(), table.name)
-        mapping.setdefault(table.name.rsplit(".", 1)[-1].lower(), table.name)
-        if table.alias:
-            mapping.setdefault(table.alias.lower(), table.name)
-    return mapping
+def _physical_tables(scope: Scope) -> tuple[exp.Table, ...]:
+    """Tables read from storage: not CTE references, derived tables or table functions."""
+    ctes = _visible_ctes(scope)
+    return tuple(table for table in scope.tables if _is_physical(table, ctes))
 
 
-def _derived_names(statement: exp.Expr) -> frozenset[str]:
-    cte_names = {cte.alias.lower() for cte in statement.find_all(exp.CTE) if cte.alias}
-    subquery_aliases = {
-        subquery.alias.lower() for subquery in statement.find_all(exp.Subquery) if subquery.alias
-    }
-    return frozenset(cte_names | subquery_aliases)
+def _visible_ctes(scope: Scope) -> frozenset[str]:
+    return frozenset(name.lower() for name in scope.cte_sources)
 
 
-def _table_name(table: exp.Table) -> str:
+def _is_physical(table: exp.Table, ctes: frozenset[str]) -> bool:
+    if not isinstance(table.this, exp.Identifier):
+        return False
+    # A CTE only shadows unqualified names: ``hr.recent`` is never the CTE ``recent``.
+    return bool(table.db or table.catalog) or table.name.lower() not in ctes
+
+
+def _table_ref(table: exp.Table) -> TableRef:
     parts = (table.catalog, table.db, table.name)
-    return ".".join(part for part in parts if part)
+    return TableRef(".".join(part for part in parts if part), table.alias)
+
+
+def _column_ref(column: exp.Column) -> ColumnRef:
+    return ColumnRef(column.name, column.table, column.db, column.catalog)
+
+
+def _scope_refs(statement: exp.Expr, scopes: list[Scope]) -> tuple[ScopeRefs, ...]:
+    by_expression = {id(scope.expression): index for index, scope in enumerate(scopes)}
+    owned: dict[int, list[ColumnRef]] = {}
+    for column, owner in _owned_columns(statement, scopes, by_expression):
+        owned.setdefault(owner, []).append(_column_ref(column))
+    qualifiers: dict[int, Mapping[str, TableRef | None]] = {}
+    return tuple(
+        _build_scope(scope, tuple(owned.get(index, ())), qualifiers)
+        for index, scope in enumerate(scopes)
+        if isinstance(scope.expression, exp.Select)
+    )
+
+
+def _owned_columns(
+    statement: exp.Expr, scopes: list[Scope], by_expression: Mapping[int, int]
+) -> Iterable[tuple[exp.Column, int]]:
+    """Pair each checkable column with the scope that owns it (nearest enclosing scope)."""
+    for column in statement.find_all(exp.Column):
+        if isinstance(column.this, exp.Star):
+            continue
+        owner, in_alias_clause = _owner(column, by_expression)
+        if owner is None:
+            continue
+        select = scopes[owner].expression
+        if in_alias_clause and not column.table and _is_projection_alias(select, column.name):
+            continue
+        yield column, owner
+
+
+def _owner(column: exp.Column, by_expression: Mapping[int, int]) -> tuple[int | None, bool]:
+    in_alias_clause = False
+    node = column.parent
+    while node is not None:
+        if id(node) in by_expression:
+            return by_expression[id(node)], in_alias_clause
+        in_alias_clause = in_alias_clause or isinstance(node, _CLAUSES_RESOLVING_ALIASES)
+        node = node.parent
+    return None, False
+
+
+def _is_projection_alias(select: exp.Expr, name: str) -> bool:
+    lowered = name.lower()
+    return any(
+        isinstance(projection, exp.Alias) and projection.alias.lower() == lowered
+        for projection in select.expressions
+    )
+
+
+def _build_scope(
+    scope: Scope,
+    columns: tuple[ColumnRef, ...],
+    cache: dict[int, Mapping[str, TableRef | None]],
+) -> ScopeRefs:
+    tables = tuple(_table_ref(table) for table in _physical_tables(scope))
+    derived_columns, opaque = _derived_sources(scope)
+    return ScopeRefs(
+        tables=tables,
+        columns=_unique(columns),
+        qualifiers=_qualifiers(scope, cache),
+        derived_columns=derived_columns,
+        opaque=opaque,
+    )
+
+
+def _qualifiers(
+    scope: Scope, cache: dict[int, Mapping[str, TableRef | None]]
+) -> Mapping[str, TableRef | None]:
+    """Names usable as column qualifiers here: this scope's sources plus enclosing ones."""
+    if id(scope) in cache:
+        return cache[id(scope)]
+    inherited = dict(_qualifiers(scope.parent, cache)) if scope.parent else {}
+    local: dict[str, TableRef | None] = {name.lower(): None for name in scope.sources}
+    for table in _physical_tables(scope):
+        ref = _table_ref(table)
+        local[ref.qualifier] = ref
+    merged: Mapping[str, TableRef | None] = MappingProxyType({**inherited, **local})
+    cache[id(scope)] = merged
+    return merged
+
+
+def _derived_sources(scope: Scope) -> tuple[frozenset[str], bool]:
+    """Output columns of derived/CTE sources, and whether any source is unknowable."""
+    ctes = _visible_ctes(scope)
+    names: set[str] = set()
+    opaque = False
+    for node, source in scope.selected_sources.values():
+        if isinstance(node, exp.Table) and _is_physical(node, ctes):
+            continue
+        known = _output_columns(node, source)
+        if known is None:
+            opaque = True
+        else:
+            names |= known
+    return frozenset(names), opaque
+
+
+def _output_columns(node: exp.Expr, source: exp.Table | Scope) -> frozenset[str] | None:
+    if isinstance(source, Scope) and isinstance(source.expression, (exp.Select, exp.Union)):
+        declared = source.outer_columns or source.expression.named_selects
+    elif isinstance(node, exp.Table):
+        declared = node.alias_column_names
+    else:
+        return None
+    lowered = frozenset(name.lower() for name in declared)
+    return None if not lowered or "*" in lowered else lowered
 
 
 def _unique[T](items: Iterable[T]) -> tuple[T, ...]:

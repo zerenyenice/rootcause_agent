@@ -472,7 +472,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "sqlglot", specifier = ">=25" }]
+requires-dist = [{ name = "sqlglot", specifier = ">=30.24,<31" }]
 
 [[package]]
 name = "rootcause-core"

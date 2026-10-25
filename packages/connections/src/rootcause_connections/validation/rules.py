@@ -1,7 +1,8 @@
-"""Structural rules: dialect support, statement count, read-only shape, forbidden calls."""
+"""Structural rules: dialect support, statement count, read-only shape, hints, comments."""
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterator, Sequence
 from typing import Final
 
@@ -10,6 +11,8 @@ from sqlglot import exp
 from sqlglot.errors import ParseError, TokenError
 
 from rootcause_connections.validation.result import IssueCode, ValidationIssue
+
+_logger = logging.getLogger(__name__)
 
 SUPPORTED_DIALECTS: Final[frozenset[str]] = frozenset(
     {"postgres", "duckdb", "mysql", "tsql", "snowflake", "bigquery", "clickhouse"}
@@ -46,28 +49,41 @@ FORBIDDEN_EXPRESSIONS: Final[tuple[type[exp.Expr], ...]] = (
     exp.Uncache,
     exp.Refresh,
     exp.Declare,
+    exp.Hint,
+    exp.QueryOption,
+    exp.WithTableHint,
+    exp.ObjectIdentifier,
+    exp.UnicodeString,
 )
 
-#: Lower-cased function names that sleep, touch the file system, or control sessions.
-FORBIDDEN_FUNCTIONS: Final[frozenset[str]] = frozenset(
+#: Unquoted aliases that are really the start of a second statement with its separator
+#: missing (T-SQL accepts ``SELECT 1 DELETE FROM t`` as two statements).
+STATEMENT_KEYWORD_ALIASES: Final[frozenset[str]] = frozenset(
     {
-        "pg_sleep",
-        "pg_sleep_for",
-        "pg_sleep_until",
-        "sleep",
-        "benchmark",
-        "load_file",
-        "pg_read_file",
-        "pg_read_binary_file",
-        "pg_ls_dir",
-        "pg_terminate_backend",
-        "pg_cancel_backend",
-        "lo_import",
-        "lo_export",
-        "xp_cmdshell",
-        "system",
+        "delete",
+        "drop",
+        "insert",
+        "update",
+        "truncate",
+        "alter",
+        "create",
+        "merge",
+        "exec",
+        "execute",
+        "grant",
+        "revoke",
+        "shutdown",
+        "waitfor",
+        "kill",
+        "backup",
+        "restore",
+        "dbcc",
+        "declare",
     }
 )
+
+#: Comment openers that dialects execute (MySQL ``/*! */``) or treat as hints (``/*+ */``).
+EXECUTABLE_COMMENT_OPENERS: Final[tuple[str, ...]] = ("/*!", "/*+")
 
 #: Top-level expression classes accepted as a read-only query.
 READ_ONLY_ROOTS: Final[tuple[type[exp.Expr], ...]] = (
@@ -89,17 +105,43 @@ def dialect_issue(dialect: str) -> ValidationIssue | None:
     )
 
 
+class _CommandFallbackFilter(logging.Filter):
+    """Drop sqlglot's Command-fallback warning, which embeds raw SQL text."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return "Falling back to parsing as a 'Command'" not in record.getMessage()
+
+
+logging.getLogger("sqlglot").addFilter(_CommandFallbackFilter())
+
+
+def executable_comment_issue(sql: str) -> ValidationIssue | None:
+    """Reject executable comments and optimizer hints before sqlglot discards them."""
+    if any(opener in sql for opener in EXECUTABLE_COMMENT_OPENERS):
+        return ValidationIssue(
+            IssueCode.NOT_READ_ONLY,
+            "Executable comments and optimizer hints (/*! ... */, /*+ ... */) are not permitted.",
+        )
+    return None
+
+
 def parse_statements(sql: str, dialect: str) -> tuple[exp.Expr, ...] | ValidationIssue:
     """Parse ``sql`` into real statements, dropping comment-only and empty fragments.
 
     sqlglot's tokenizer discards comments before statements are split, so a comment
     can never hide a trailing statement; a comment left after a ``;`` surfaces as an
-    empty ``Semicolon`` pseudo-statement, which is not counted.
+    empty ``Semicolon`` pseudo-statement, which is not counted. Every failure mode of
+    the parser, including pathological nesting, is reported as ``PARSE_ERROR``.
     """
     try:
         parsed = sqlglot.parse(sql, read=dialect)
     except (ParseError, TokenError) as error:
         return ValidationIssue(IssueCode.PARSE_ERROR, _first_line(str(error)))
+    except RecursionError:
+        return ValidationIssue(IssueCode.PARSE_ERROR, "SQL is nested too deeply to parse.")
+    except Exception as error:  # sqlglot may raise anything on hostile input
+        _logger.warning("sqlglot failed to parse input: %s", type(error).__name__)
+        return ValidationIssue(IssueCode.PARSE_ERROR, "Unable to parse SQL.")
     return tuple(
         statement
         for statement in parsed
@@ -121,38 +163,61 @@ def statement_count_issue(statements: Sequence[exp.Expr]) -> ValidationIssue | N
 
 def read_only_issues(statement: exp.Expr) -> Iterator[ValidationIssue]:
     """Yield an issue for the top-level shape and for every forbidden node in the tree."""
-    body = statement.this if isinstance(statement, exp.With) else statement
-    if not isinstance(body, READ_ONLY_ROOTS):
+    if not isinstance(statement, READ_ONLY_ROOTS):
         yield ValidationIssue(
             IssueCode.NOT_READ_ONLY,
-            f"Only SELECT queries are allowed, got {type(body).__name__.upper()}.",
+            f"Only SELECT queries are allowed, got {type(statement).__name__.upper()}.",
         )
     seen: set[str] = set()
     for node in statement.walk():
-        if isinstance(node, FORBIDDEN_EXPRESSIONS) and node.key not in seen:
-            seen.add(node.key)
+        description = _forbidden_description(node)
+        if description is not None and description not in seen:
+            seen.add(description)
             yield ValidationIssue(
-                IssueCode.NOT_READ_ONLY,
-                f"{_describe(node)} is not permitted in a read-only query.",
+                IssueCode.NOT_READ_ONLY, f"{description} is not permitted in a read-only query."
             )
 
 
-def forbidden_function_issues(statement: exp.Expr) -> Iterator[ValidationIssue]:
-    """Yield an issue for every call to a function on the deny list."""
+def statement_keyword_alias_issues(statement: exp.Expr) -> Iterator[ValidationIssue]:
+    """Flag unquoted aliases that look like a second statement whose separator is missing."""
     seen: set[str] = set()
-    for node in statement.find_all(exp.Func):
-        name = _function_name(node)
-        if name in FORBIDDEN_FUNCTIONS and name not in seen:
+    for node in statement.find_all(exp.Alias, exp.TableAlias):
+        alias = node.args.get("alias") if isinstance(node, exp.Alias) else node.this
+        if not isinstance(alias, exp.Identifier) or alias.quoted:
+            continue
+        name = alias.name.lower()
+        if name in STATEMENT_KEYWORD_ALIASES and name not in seen:
             seen.add(name)
             yield ValidationIssue(
-                IssueCode.FORBIDDEN_FUNCTION, f"Function {name}() is not permitted."
+                IssueCode.MULTIPLE_STATEMENTS,
+                f"Alias {alias.name!r} looks like a second statement with a missing "
+                "separator; quote it if it is meant as a name.",
             )
 
 
-def _function_name(node: exp.Func) -> str:
-    if isinstance(node, exp.Anonymous):
-        return node.name.lower()
-    return node.sql_name().lower()
+def _forbidden_description(node: exp.Expr) -> str | None:
+    if isinstance(node, FORBIDDEN_EXPRESSIONS):
+        return _describe(node)
+    if isinstance(node, exp.PropertyEQ) and isinstance(node.this, exp.Parameter):
+        return "User-variable assignment"
+    if isinstance(node, exp.Select):
+        return _select_clause_description(node)
+    return None
+
+
+def _select_clause_description(select: exp.Select) -> str | None:
+    if select.args.get("settings"):
+        return "SETTINGS clause"
+    if select.args.get("format"):
+        return "FORMAT clause"
+    if any(_is_variable_assignment(projection) for projection in select.expressions):
+        return "User-variable assignment"
+    return None
+
+
+def _is_variable_assignment(projection: exp.Expr) -> bool:
+    """T-SQL ``SELECT @v = expr`` assigns instead of comparing."""
+    return isinstance(projection, exp.EQ) and isinstance(projection.this, exp.Parameter)
 
 
 def _describe(node: exp.Expr) -> str:
@@ -160,6 +225,10 @@ def _describe(node: exp.Expr) -> str:
         return "SELECT ... INTO"
     if isinstance(node, exp.Command):
         return f"Command {node.name.upper()}"
+    if isinstance(node, exp.Hint):
+        return "Optimizer hint"
+    if isinstance(node, exp.UnicodeString):
+        return "Unicode-escape string literal (U&'...')"
     return type(node).__name__.upper()
 
 

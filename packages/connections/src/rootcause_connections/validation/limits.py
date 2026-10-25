@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
-from typing import NamedTuple
+from typing import Final, NamedTuple
 
 from sqlglot import exp
 
 from rootcause_connections.validation.result import IssueCode, ValidationIssue
+
+#: Longest digit string parsed as an int; anything longer is far above any sane cap.
+_MAX_LITERAL_DIGITS: Final = 18
 
 
 class LimitOutcome(NamedTuple):
@@ -17,48 +20,48 @@ class LimitOutcome(NamedTuple):
     warning: ValidationIssue | None
 
 
-def outer_select(query: exp.Query) -> exp.Select | None:
-    """Return the outermost SELECT when the query is a (possibly CTE-wrapped) SELECT."""
-    body = query.this if isinstance(query, exp.With) else query
-    return body if isinstance(body, exp.Select) else None
-
-
-def is_aggregate_only(query: exp.Query) -> bool:
-    """True when the outermost SELECT groups or aggregates, so a LIMIT adds nothing safe."""
-    select = outer_select(query)
-    if select is None:
-        return False
-    if select.args.get("group") is not None:
-        return True
-    return any(
-        isinstance(node, exp.AggFunc) and node.find_ancestor(exp.Window, exp.Subquery) is None
-        for projection in select.expressions
-        for node in projection.walk()
-    )
-
-
-def existing_limit(query: exp.Query) -> int | None:
-    """Return the integer value of an existing outermost LIMIT, if any."""
-    limit = query.args.get("limit")
-    if not isinstance(limit, exp.Limit):
-        return None
-    value = limit.expression
-    if isinstance(value, exp.Literal) and value.is_int:
-        return int(value.this)
-    return None
-
-
 def apply_limit(query: exp.Query, default_limit: int) -> LimitOutcome:
-    """Inject ``default_limit`` when absent, cap larger limits, never mutate ``query``."""
-    current = existing_limit(query)
-    if current is None:
-        if is_aggregate_only(query) or query.args.get("limit") is not None:
-            return LimitOutcome(query, injected=False, warning=None)
+    """Guarantee an outermost ``LIMIT`` of at most ``default_limit``; never mutate ``query``.
+
+    A missing limit is injected. An existing limit survives only when it is an integer
+    literal in ``[0, default_limit]``; ``ALL``, ``NULL``, expressions, placeholders,
+    subqueries, casts, floats, negatives, percentages, ``WITH TIES`` and non-literal or
+    oversized ``FETCH`` clauses are replaced and reported as ``LIMIT_CAPPED``.
+    """
+    clause = query.args.get("limit")
+    if clause is None:
         return LimitOutcome(query.limit(default_limit), injected=True, warning=None)
-    if current <= default_limit:
+    if _is_within_cap(clause, default_limit):
         return LimitOutcome(query, injected=False, warning=None)
     warning = ValidationIssue(
-        IssueCode.NOT_READ_ONLY,
-        f"LIMIT {current} exceeds the maximum of {default_limit} and was capped.",
+        IssueCode.LIMIT_CAPPED,
+        f"The row limit is not an integer literal of at most {default_limit}; "
+        f"it was replaced with LIMIT {default_limit}.",
     )
     return LimitOutcome(query.limit(default_limit), injected=False, warning=warning)
+
+
+def _is_within_cap(clause: exp.Expr, cap: int) -> bool:
+    if isinstance(clause, exp.Limit):
+        value = clause.expression
+    elif isinstance(clause, exp.Fetch):
+        value = clause.args.get("count")
+    else:
+        return False
+    options = clause.args.get("limit_options")
+    if isinstance(options, exp.LimitOptions) and (
+        options.args.get("percent") or options.args.get("with_ties")
+    ):
+        return False
+    count = _integer_literal(value)
+    return count is not None and 0 <= count <= cap
+
+
+def _integer_literal(value: exp.Expr | None) -> int | None:
+    while isinstance(value, exp.Paren):
+        value = value.this
+    if not isinstance(value, exp.Literal) or value.is_string or not value.is_int:
+        return None
+    if len(value.name) > _MAX_LITERAL_DIGITS:
+        return None
+    return int(value.name)

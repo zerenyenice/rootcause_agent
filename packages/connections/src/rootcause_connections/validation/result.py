@@ -17,6 +17,10 @@ class IssueCode(Enum):
     UNKNOWN_TABLE = "unknown_table"
     UNKNOWN_COLUMN = "unknown_column"
     UNSUPPORTED_DIALECT = "unsupported_dialect"
+    LIMIT_CAPPED = "limit_capped"
+    AMBIGUOUS_COLUMN = "ambiguous_column"
+    AMBIGUOUS_TABLE = "ambiguous_table"
+    INPUT_TOO_LARGE = "input_too_large"
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,7 +36,9 @@ class ValidationResult:
     """Outcome of validating one SQL statement.
 
     ``sql`` holds the normalised statement (transpiled to the requested dialect,
-    with LIMIT applied) when validation succeeded and the original text otherwise.
+    comments stripped, LIMIT applied) when validation succeeded and the original text
+    otherwise. Executors must run ``sql`` only when ``ok`` is true and never the
+    original input string.
     """
 
     ok: bool

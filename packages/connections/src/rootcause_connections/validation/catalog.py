@@ -7,105 +7,161 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import NamedTuple
 
-from rootcause_connections.validation.references import ColumnRef, References, alias_map
+from rootcause_connections.validation.references import ColumnRef, References, ScopeRefs
 from rootcause_connections.validation.result import IssueCode, ValidationIssue
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, init=False)
 class CatalogSnapshot:
-    """Immutable, case-insensitive view of table names to their column names.
+    """Immutable, hashable, case-insensitive view of table names to their column names.
 
-    Keys may be bare (``orders``) or schema-qualified (``public.orders``); lookups
-    accept either form and fall back to matching on the bare table name.
+    Keys may be bare (``orders``) or schema-qualified (``sales.orders``). A bare query
+    name resolves against every key whose last part matches; a qualified query name
+    matches only the exact key, or a bare key when the snapshot has no qualified keys.
     """
 
-    tables: Mapping[str, frozenset[str]] = field(init=False)
-    _by_bare_name: Mapping[str, frozenset[str]] = field(init=False, repr=False)
+    tables: tuple[tuple[str, tuple[str, ...]], ...]
+    _columns: Mapping[str, frozenset[str]] = field(repr=False, compare=False)
+    _by_bare: Mapping[str, tuple[str, ...]] = field(repr=False, compare=False)
+    _has_qualified: bool = field(repr=False, compare=False)
 
     def __init__(self, tables: Mapping[str, Iterable[str]]) -> None:
-        normalised = {
-            name.lower(): frozenset(column.lower() for column in columns)
-            for name, columns in tables.items()
-        }
-        by_bare: dict[str, frozenset[str]] = {}
-        for name, columns in normalised.items():
-            bare = name.rsplit(".", 1)[-1]
-            by_bare[bare] = by_bare.get(bare, frozenset()) | columns
-        object.__setattr__(self, "tables", MappingProxyType(normalised))
-        object.__setattr__(self, "_by_bare_name", MappingProxyType(by_bare))
+        merged: dict[str, frozenset[str]] = {}
+        for name, columns in tables.items():
+            key = name.strip().lower()
+            merged[key] = merged.get(key, frozenset()) | {c.lower() for c in columns}
+        by_bare: dict[str, list[str]] = {}
+        for key in sorted(merged):
+            by_bare.setdefault(key.rsplit(".", 1)[-1], []).append(key)
+        object.__setattr__(
+            self, "tables", tuple((key, tuple(sorted(merged[key]))) for key in sorted(merged))
+        )
+        object.__setattr__(self, "_columns", MappingProxyType(merged))
+        object.__setattr__(
+            self, "_by_bare", MappingProxyType({k: tuple(v) for k, v in by_bare.items()})
+        )
+        object.__setattr__(self, "_has_qualified", any("." in key for key in merged))
 
-    def columns_of(self, table: str) -> frozenset[str] | None:
-        """Return the lower-cased columns of ``table`` or ``None`` when it is unknown."""
-        key = table.lower()
-        exact = self.tables.get(key)
-        if exact is not None:
-            return exact
-        return self._by_bare_name.get(key.rsplit(".", 1)[-1])
+    def resolve(self, table: str) -> tuple[str, ...]:
+        """Return the catalog keys ``table`` may refer to: none, one, or several (ambiguous)."""
+        name = table.lower()
+        if name in self._columns:
+            return (name,)
+        parts = name.split(".")
+        if len(parts) == 1:
+            return self._by_bare.get(name, ())
+        if len(parts) > 2 and (schema_table := ".".join(parts[-2:])) in self._columns:
+            return (schema_table,)
+        return () if self._has_qualified else self._by_bare.get(parts[-1], ())
 
-    def has_table(self, table: str) -> bool:
-        return self.columns_of(table) is not None
-
-    def has_column(self, table: str, column: str) -> bool:
-        return column.lower() in (self.columns_of(table) or frozenset())
+    def columns_of(self, keys: Iterable[str]) -> frozenset[str]:
+        """Union of the lower-cased columns of the given catalog keys."""
+        return frozenset().union(*(self._columns.get(key, frozenset()) for key in keys))
 
 
 class CatalogFindings(NamedTuple):
-    """Errors (unknown tables/columns) and warnings (ambiguous bare columns)."""
+    """Errors (unknown tables/columns) and warnings (ambiguous names)."""
 
     errors: tuple[ValidationIssue, ...]
     warnings: tuple[ValidationIssue, ...]
 
 
+_WARNING_CODES = frozenset({IssueCode.AMBIGUOUS_COLUMN, IssueCode.AMBIGUOUS_TABLE})
+
+
 def catalog_issues(catalog: CatalogSnapshot, references: References) -> CatalogFindings:
     """Check every referenced table and column against ``catalog``."""
-    table_errors = tuple(
-        ValidationIssue(IssueCode.UNKNOWN_TABLE, f"Unknown table {table.name!r}.")
-        for table in references.tables
-        if not catalog.has_table(table.name)
+    resolved = {table.name: catalog.resolve(table.name) for table in references.tables}
+    issues = (
+        *(_table_issue(name, keys) for name, keys in resolved.items()),
+        *(
+            _column_issue(catalog, column, scope, resolved)
+            for scope in references.scopes
+            for column in scope.columns
+        ),
     )
-    known = tuple(table for table in references.tables if catalog.has_table(table.name))
-    aliases = alias_map(known)
-    findings = tuple(
-        _column_findings(catalog, column, aliases, references.derived_names)
-        for column in references.columns
+    found = tuple(issue for issue in issues if issue is not None)
+    return CatalogFindings(
+        errors=tuple(i for i in found if i.code not in _WARNING_CODES),
+        warnings=tuple(i for i in found if i.code in _WARNING_CODES),
     )
-    errors = tuple(issue for issue, is_warning in findings if issue and not is_warning)
-    warnings = tuple(issue for issue, is_warning in findings if issue and is_warning)
-    return CatalogFindings(table_errors + errors, warnings)
 
 
-def _column_findings(
+def _table_issue(name: str, keys: tuple[str, ...]) -> ValidationIssue | None:
+    if not name:
+        return ValidationIssue(IssueCode.UNKNOWN_TABLE, "Empty table name.")
+    if not keys:
+        return ValidationIssue(IssueCode.UNKNOWN_TABLE, f"Unknown table {name!r}.")
+    if len(keys) > 1:
+        message = f"Table {name!r} is ambiguous; it matches {', '.join(keys)}."
+        return ValidationIssue(IssueCode.AMBIGUOUS_TABLE, message)
+    return None
+
+
+def _column_issue(
     catalog: CatalogSnapshot,
     column: ColumnRef,
-    aliases: Mapping[str, str],
-    derived: frozenset[str],
-) -> tuple[ValidationIssue | None, bool]:
-    """Return ``(issue, is_warning)`` for one column; ``(None, False)`` when it resolves."""
+    scope: ScopeRefs,
+    resolved: Mapping[str, tuple[str, ...]],
+) -> ValidationIssue | None:
     if column.qualifier:
-        return _qualified_issue(catalog, column, aliases, derived), False
-    owners = tuple(
-        table for table in dict.fromkeys(aliases.values()) if catalog.has_column(table, column.name)
-    )
-    if len(owners) > 1:
-        message = f"Column {column.name!r} is ambiguous; found in {', '.join(owners)}."
-        return ValidationIssue(IssueCode.UNKNOWN_COLUMN, message), True
-    if owners or derived:
-        return None, False
-    message = f"Unknown column {column.name!r} in referenced tables."
-    return ValidationIssue(IssueCode.UNKNOWN_COLUMN, message), False
+        return _qualified_issue(catalog, column, scope, resolved)
+    return _bare_issue(catalog, column, scope, resolved)
 
 
 def _qualified_issue(
     catalog: CatalogSnapshot,
     column: ColumnRef,
-    aliases: Mapping[str, str],
-    derived: frozenset[str],
+    scope: ScopeRefs,
+    resolved: Mapping[str, tuple[str, ...]],
 ) -> ValidationIssue | None:
     qualifier = column.qualifier.lower()
-    if qualifier in derived:
-        return None
-    table = aliases.get(qualifier)
-    if table is None or catalog.has_column(table, column.name):
-        return None
-    message = f"Unknown column {column.display!r} on table {table!r}."
+    if qualifier not in scope.qualifiers:
+        if _is_struct_column(catalog, qualifier, scope, resolved):
+            return None  # ``col.field`` on a struct column, not a table qualifier
+        message = f"Unknown table or alias {column.qualifier!r}."
+        return ValidationIssue(IssueCode.UNKNOWN_TABLE, message)
+    table = scope.qualifiers[qualifier]
+    if table is None:
+        return None  # derived, CTE or function source: columns are not in the catalog
+    keys = resolved.get(table.name, ())
+    if not keys or column.name.lower() in catalog.columns_of(keys):
+        return None  # unknown table (reported once) or a known column
+    message = f"Unknown column {column.display!r} on table {table.name!r}."
     return ValidationIssue(IssueCode.UNKNOWN_COLUMN, message)
+
+
+def _bare_issue(
+    catalog: CatalogSnapshot,
+    column: ColumnRef,
+    scope: ScopeRefs,
+    resolved: Mapping[str, tuple[str, ...]],
+) -> ValidationIssue | None:
+    name = column.name.lower()
+    if name in scope.derived_columns:
+        return None
+    table_keys = tuple(resolved.get(table.name, ()) for table in scope.tables)
+    if any(not keys for keys in table_keys):
+        return None  # an unknown table makes the column unverifiable; the table is reported
+    owners = tuple(
+        table.name
+        for table, keys in zip(scope.tables, table_keys, strict=True)
+        if name in catalog.columns_of(keys)
+    )
+    if len(owners) > 1:
+        message = f"Column {column.name!r} is ambiguous; found in {', '.join(owners)}."
+        return ValidationIssue(IssueCode.AMBIGUOUS_COLUMN, message)
+    if owners or scope.opaque:
+        return None
+    return ValidationIssue(
+        IssueCode.UNKNOWN_COLUMN, f"Unknown column {column.name!r} in referenced tables."
+    )
+
+
+def _is_struct_column(
+    catalog: CatalogSnapshot,
+    qualifier: str,
+    scope: ScopeRefs,
+    resolved: Mapping[str, tuple[str, ...]],
+) -> bool:
+    return any(qualifier in catalog.columns_of(resolved.get(t.name, ())) for t in scope.tables)
