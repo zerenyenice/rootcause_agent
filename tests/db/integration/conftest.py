@@ -13,6 +13,7 @@ import shutil
 import uuid
 from collections.abc import Iterator
 from dataclasses import dataclass
+from typing import Any
 
 import psycopg
 import pytest
@@ -79,20 +80,19 @@ def _conninfo(url: URL) -> str:
     )
 
 
-@pytest.fixture
-def fresh_database_url(request: pytest.FixtureRequest) -> Iterator[str]:
-    """URL (plain ``postgresql://``) of an empty database, dropped after the test."""
-    admin = _admin_url(request)
+def _throwaway_database(admin: URL, *, require_pgvector: bool) -> Iterator[str]:
+    """Create an empty database on ``admin``'s server, yield its URL, drop it afterwards."""
     name = f"rc_test_{uuid.uuid4().hex[:12]}"
     with psycopg.connect(_conninfo(admin), autocommit=True) as connection:
-        available = connection.execute(
-            "SELECT 1 FROM pg_available_extensions WHERE name = 'vector'"
-        ).fetchone()
-        if available is None:
-            pytest.skip(
-                "pgvector is not installed for this Postgres server "
-                "(no 'vector' in pg_available_extensions)"
-            )
+        if require_pgvector:
+            available = connection.execute(
+                "SELECT 1 FROM pg_available_extensions WHERE name = 'vector'"
+            ).fetchone()
+            if available is None:
+                pytest.skip(
+                    "pgvector is not installed for this Postgres server "
+                    "(no 'vector' in pg_available_extensions)"
+                )
         connection.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(name)))
     try:
         yield admin.set(database=name).render_as_string(hide_password=False)
@@ -101,6 +101,18 @@ def fresh_database_url(request: pytest.FixtureRequest) -> Iterator[str]:
             connection.execute(
                 sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(sql.Identifier(name))
             )
+
+
+@pytest.fixture
+def fresh_database_url(request: pytest.FixtureRequest) -> Iterator[str]:
+    """URL (plain ``postgresql://``) of an empty database, dropped after the test."""
+    yield from _throwaway_database(_admin_url(request), require_pgvector=True)
+
+
+@pytest.fixture
+def plain_database_url(request: pytest.FixtureRequest) -> Iterator[str]:
+    """Like ``fresh_database_url`` but without the pgvector requirement (customer DBs)."""
+    yield from _throwaway_database(_admin_url(request), require_pgvector=False)
 
 
 # --- three-role fixtures (plan amendment 2) ---------------------------------
@@ -214,3 +226,132 @@ def migrated_roles(bootstrapped_url: str, db_roles: DbRoles) -> DbRoles:
 
     upgrade(bootstrapped_url, "head")
     return db_roles
+
+
+# --- customer database for the connections API / Postgres executor ----------
+
+CUSTOMER_PASSWORD = "SENTINEL-customer-pw-7"  # gitleaks:allow
+ORDERS_ROWS = 300
+BIG_ROWS = 2000
+ORDER_STATUSES = ("closed", "open", "void")
+
+
+@dataclass(frozen=True)
+class CustomerDb:
+    """A seeded customer database plus login roles with different privileges.
+
+    ``reader`` can only SELECT; ``writer`` may INSERT into ``public.orders``;
+    ``creator`` may CREATE in schema ``public``; ``guc_writer`` has INSERT but
+    ``default_transaction_read_only = on``; ``admin_*`` is a superuser.
+    """
+
+    host: str
+    port: int
+    database: str
+    admin_user: str
+    admin_password: str
+    reader: str
+    writer: str
+    creator: str
+    guc_writer: str
+    password: str
+    admin_url: str
+
+    def params(self, user: str | None = None) -> dict[str, Any]:
+        """Keyword arguments for ``PostgresExecutor`` connecting as ``user`` (reader)."""
+        login = user or self.reader
+        is_admin = login == self.admin_user
+        return {
+            "host": self.host,
+            "port": self.port,
+            "database": self.database,
+            "user": login,
+            "password": self.admin_password if is_admin else self.password,
+            "sslmode": "disable",
+        }
+
+
+_CUSTOMER_SEED = (
+    "CREATE TABLE public.orders (id integer PRIMARY KEY, amount numeric(12, 2) NOT NULL, "
+    "status text)",
+    f"INSERT INTO public.orders SELECT i, i * 1.5, (ARRAY['closed','open','void'])[1 + i % 3] "
+    f"FROM generate_series(1, {ORDERS_ROWS}) AS i",
+    "CREATE TABLE public.big (i integer)",
+    f"INSERT INTO public.big SELECT generate_series(1, {BIG_ROWS})",
+    "CREATE SCHEMA sales",
+    "CREATE TABLE sales.regions (code text NOT NULL, name text)",
+    "INSERT INTO sales.regions VALUES ('TR', 'Turkey'), ('DE', 'Germany')",
+    "REVOKE CREATE ON SCHEMA public FROM PUBLIC",
+    "ANALYZE",
+)
+
+
+def _grant_reader(connection: psycopg.Connection, role: str, database: str) -> None:
+    ident = sql.Identifier
+    connection.execute(
+        sql.SQL("GRANT CONNECT ON DATABASE {} TO {}").format(ident(database), ident(role))
+    )
+    for schema in ("public", "sales"):
+        connection.execute(
+            sql.SQL("GRANT USAGE ON SCHEMA {} TO {}").format(ident(schema), ident(role))
+        )
+        connection.execute(
+            sql.SQL("GRANT SELECT ON ALL TABLES IN SCHEMA {} TO {}").format(
+                ident(schema), ident(role)
+            )
+        )
+
+
+@pytest.fixture
+def customer_db(plain_database_url: str) -> Iterator[CustomerDb]:
+    """Seeded database (orders, big, sales.regions) and four login roles, dropped afterwards."""
+    url = make_url(plain_database_url)
+    database = url.database
+    assert database is not None
+    suffix = uuid.uuid4().hex[:8]
+    reader, writer, creator, guc_writer = (
+        f"rc_{kind}_{suffix}" for kind in ("reader", "writer", "creator", "gucw")
+    )
+    server = make_url(admin_url_for(plain_database_url, "postgres"))
+    ident, lit = sql.Identifier, sql.Literal
+    with psycopg.connect(_conninfo(server), autocommit=True) as connection:
+        for role in (reader, writer, creator, guc_writer):
+            connection.execute(
+                sql.SQL("CREATE ROLE {} LOGIN PASSWORD {}").format(
+                    ident(role), lit(CUSTOMER_PASSWORD)
+                )
+            )
+        connection.execute(
+            sql.SQL("ALTER ROLE {} SET default_transaction_read_only = on").format(
+                ident(guc_writer)
+            )
+        )
+    with psycopg.connect(_conninfo(url), autocommit=True) as connection:
+        for statement in _CUSTOMER_SEED:
+            connection.execute(statement)
+        for role in (reader, writer, creator, guc_writer):
+            _grant_reader(connection, role, database)
+        for role in (writer, guc_writer):
+            connection.execute(sql.SQL("GRANT INSERT ON public.orders TO {}").format(ident(role)))
+        connection.execute(sql.SQL("GRANT CREATE ON SCHEMA public TO {}").format(ident(creator)))
+    try:
+        yield CustomerDb(
+            host=url.host or "127.0.0.1",
+            port=url.port or 5432,
+            database=database,
+            admin_user=url.username or "",
+            admin_password=url.password or "",
+            reader=reader,
+            writer=writer,
+            creator=creator,
+            guc_writer=guc_writer,
+            password=CUSTOMER_PASSWORD,
+            admin_url=plain_database_url,
+        )
+    finally:
+        with psycopg.connect(_conninfo(server), autocommit=True) as connection:
+            connection.execute(
+                sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(ident(database))
+            )
+            for role in (reader, writer, creator, guc_writer):
+                connection.execute(sql.SQL("DROP ROLE IF EXISTS {}").format(ident(role)))
