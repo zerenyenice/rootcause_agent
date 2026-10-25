@@ -1,4 +1,4 @@
-"""Workspace-level tests for the T001 monorepo scaffold."""
+"""Repository-level tests: one installable ``rootcause`` package with a src layout."""
 
 import importlib
 import tomllib
@@ -7,19 +7,10 @@ from typing import Any
 
 import pytest
 
-# (directory relative to repo root, distribution/module name)
-PACKAGES = [
-    ("apps/api", "rootcause_api"),
-    ("packages/core", "rootcause_core"),
-    ("packages/agents", "rootcause_agents"),
-    ("packages/tools", "rootcause_tools"),
-    ("packages/catalog", "rootcause_catalog"),
-    ("packages/connections", "rootcause_connections"),
-    ("packages/anomaly", "rootcause_anomaly"),
-    ("packages/memory", "rootcause_memory"),
-    ("packages/evals", "rootcause_evals"),
-]
-MODULE_NAMES = [name for _, name in PACKAGES]
+# Subpackages of the single ``rootcause`` distribution, with the tests/ area for each.
+SUBPACKAGES = ["agents", "api", "catalog", "connections", "db", "evals"]
+MODULE_NAMES = ["rootcause", *(f"rootcause.{name}" for name in SUBPACKAGES)]
+SMOKE_TEST_AREAS = ["core", "agents", "api", "catalog", "connections", "evals"]
 
 
 def _load_root_pyproject(repo_root: Path) -> dict[str, Any]:
@@ -38,13 +29,12 @@ def test_package_is_importable_and_exposes_version(module_name: str) -> None:
 
 
 @pytest.mark.unit
-def test_root_pyproject_declares_workspace_members(repo_root: Path) -> None:
+def test_root_pyproject_declares_the_single_rootcause_package(repo_root: Path) -> None:
     data = _load_root_pyproject(repo_root)
 
-    members = data["tool"]["uv"]["workspace"]["members"]
-
-    assert "apps/api" in members
-    assert "packages/*" in members
+    assert data["project"]["name"] == "rootcause"
+    assert data["tool"]["hatch"]["build"]["targets"]["wheel"]["packages"] == ["src/rootcause"]
+    assert "workspace" not in data["tool"].get("uv", {})
 
 
 @pytest.mark.unit
@@ -76,25 +66,25 @@ def test_root_pytest_config_registers_test_markers(repo_root: Path) -> None:
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
-    ("directory", "dist"),
-    PACKAGES,
-    ids=MODULE_NAMES,
-)
-@pytest.mark.parametrize(
     "relative_file",
     [
         "pyproject.toml",
-        "src/{dist}/__init__.py",
-        "src/{dist}/py.typed",
-        "tests/test_smoke.py",
+        "src/rootcause/__init__.py",
+        "src/rootcause/py.typed",
+        *(f"src/rootcause/{name}/__init__.py" for name in SUBPACKAGES),
+        *(f"tests/{area}/test_smoke.py" for area in SMOKE_TEST_AREAS),
     ],
 )
-def test_package_has_required_file(
-    repo_root: Path, directory: str, dist: str, relative_file: str
-) -> None:
-    target = repo_root / directory / relative_file.format(dist=dist)
+def test_package_has_required_file(repo_root: Path, relative_file: str) -> None:
+    target = repo_root / relative_file
 
-    assert target.is_file(), f"missing {target.relative_to(repo_root)}"
+    assert target.is_file(), f"missing {relative_file}"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("legacy_dir", ["apps", "packages"])
+def test_legacy_workspace_directories_are_gone(repo_root: Path, legacy_dir: str) -> None:
+    assert not (repo_root / legacy_dir).exists()
 
 
 @pytest.mark.unit
@@ -106,7 +96,7 @@ def test_python_version_file_pins_312(repo_root: Path) -> None:
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("placeholder", ["apps/web/README.md", "deploy/README.md"])
+@pytest.mark.parametrize("placeholder", ["web/README.md", "deploy/README.md"])
 def test_placeholder_readme_exists(repo_root: Path, placeholder: str) -> None:
     assert (repo_root / placeholder).is_file()
 

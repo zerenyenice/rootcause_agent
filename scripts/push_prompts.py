@@ -16,10 +16,10 @@ import argparse
 import sys
 from collections.abc import Sequence
 
-from rootcause_agents.prompts import PROMPT_NAMES, load_packaged_prompt
-from rootcause_core.clients.langfuse import push_prompt
-from rootcause_core.errors import ConfigurationError
-from rootcause_core.settings import get_settings
+from rootcause.agents.prompts import PROMPT_NAMES, load_packaged_prompt
+from rootcause.clients.langfuse import push_prompt
+from rootcause.errors import ConfigurationError
+from rootcause.settings import get_settings
 
 EXIT_OK = 0
 EXIT_UPLOAD_FAILED = 1

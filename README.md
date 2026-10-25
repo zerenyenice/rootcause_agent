@@ -202,19 +202,19 @@ build-mvp) automatically.
 
 ## Development
 
-The repository is a Python monorepo managed as a [`uv`](https://docs.astral.sh/uv/)
-workspace. Python 3.12 is pinned in `.python-version`; `uv` installs it on
-demand if it is missing.
+The repository is one installable Python package, `rootcause` (src layout,
+managed with [`uv`](https://docs.astral.sh/uv/)). Python 3.12 is pinned in
+`.python-version`; `uv` installs it on demand if it is missing.
 
 ```bash
-uv sync                 # create .venv and install every workspace package (editable) + dev tools
+uv sync                 # create .venv and install the rootcause package (editable) + dev tools
 uv run pytest           # run all tests with coverage (fails under 80%)
 uv run pytest --no-cov -k <expr>   # focused run; the 80% coverage gate applies to full runs only
 uv run ruff check .     # lint
 uv run ruff format --check .
-uv run mypy             # strict type-check of every src/ tree
-uv run uvicorn --factory rootcause_api.main:create_app --reload   # serve the API (needs ROOTCAUSE_DATABASE_URL)
-(cd apps/api && uv run --with "langgraph-cli[inmem]" langgraph dev)   # LangGraph Server, placeholder graph
+uv run mypy             # strict type-check of src/ and tests/
+uv run uvicorn --factory rootcause.api.main:create_app --reload   # serve the API (needs ROOTCAUSE_DATABASE_URL)
+uv run --with "langgraph-cli[inmem]" langgraph dev   # LangGraph Server (root langgraph.json), placeholder graph
 ```
 
 The API exposes an application factory, so always start it with `--factory`.
@@ -225,17 +225,23 @@ so the real client address is taken from trusted proxies only.
 Layout:
 
 ```
-apps/
-├── api/        — rootcause_api: the FastAPI service (/health, /version) and langgraph.json
-└── web/        — placeholder for the Next.js UI (lands in T070; not runnable yet)
-packages/       — one installable distribution each: core, agents, tools, catalog,
-                  connections, anomaly, memory, evals (src/ layout, py.typed)
+src/rootcause/  — the single installable package (py.typed)
+├── settings.py, logging.py, telemetry.py, errors.py, prompts.py — shared foundation
+├── clients/        — the only place provider SDKs and HTTP clients are built
+├── observability/  — Langfuse tracing, masking and export
+├── db/             — declarative base, engines, Alembic migrations, bootstrap, rootcause-db CLI
+├── connections/    — data source connections and the SQL validator
+├── catalog/        — catalog version models
+├── agents/         — orchestrator, backends, prompts and agent tools
+├── api/            — the FastAPI service (/health, /version) and the LangGraph placeholder graph
+└── evals/          — evaluation harness (manufacturing warehouse generator)
+tests/          — one tree mirrored by area (core, db, connections, catalog, agents, api, evals)
+web/            — placeholder for the Next.js UI (lands in T070; not runnable yet)
 docs/           — PRD, backlog, plans and process documentation
-deploy/         — placeholder for the Docker Compose stack (lands in T002)
-tests/          — workspace-level tests; each package also has its own tests/
+deploy/         — Docker Compose stack, Postgres bootstrap and dev-only alembic.ini
+langgraph.json  — LangGraph Server config for the placeholder graph
 ```
 
-Every distribution under `apps/api` and `packages/*` is a workspace member and is
-installed in editable mode by `uv sync`, so changes are importable without a
+`uv sync` installs `rootcause` in editable mode, so changes are importable without a
 reinstall. Shared tooling (ruff, mypy, pytest, coverage) is configured once in the
 root `pyproject.toml`.

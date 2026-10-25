@@ -1,10 +1,56 @@
 [project]
-name = "rootcause-workspace"
+name = "rootcause"
 version = "0.1.0"
-description = "uv workspace root for the RootCause monorepo (apps/ and packages/)."
+description = "RootCause: root-cause analysis agents over manufacturing data (API, agents, connections, database, evals)."
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    # settings, logging, telemetry
+    "pydantic-settings>=2.6",
+    "structlog>=24",
+    "opentelemetry-sdk>=1.27",
+    "opentelemetry-exporter-otlp-proto-http>=1.27",
+    # service clients (rootcause.clients)
+    "langchain-anthropic>=0.3",
+    "langchain-openai>=0.3",
+    "httpx>=0.27",
+    # Exact pin: the client patches two private SDK internals
+    # (CallbackHandler._get_error_level_and_status_message and
+    # langfuse._client.propagation._detach_context_token_safely); bump deliberately
+    # and re-run test_langfuse_pii_hardening.py, which checks both still exist.
+    "langfuse==5.0.4",
+    # database (rootcause.db) and connections
+    "sqlalchemy[asyncio]>=2.0",
+    "psycopg[binary]>=3.2",
+    "asyncpg>=0.30",
+    "alembic>=1.14",
+    "sqlglot>=30.24,<31",
+    # API (rootcause.api)
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "limits>=3.13,<6",
+    "opentelemetry-instrumentation-fastapi>=0.48b0",
+    # agents (rootcause.agents)
+    "deepagents>=0.7",
+    "langchain>=1.0",
+    "langgraph>=0.6",
+    "langgraph-checkpoint-postgres>=2.0",
+    # eval harness (rootcause.evals)
+    "numpy>=2",
+    "pandas>=3.0",
+    "duckdb>=1.1",
+    "pyarrow>=17",
+]
+
+[project.scripts]
+rootcause-db = "rootcause.db.cli:main"
+
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/rootcause"]
 
 [dependency-groups]
 dev = [
@@ -16,45 +62,11 @@ dev = [
     "pytest-postgresql>=6",
     "psycopg[binary]>=3.2",
 ]
-# Workspace members are installed editable by `uv sync` through this default
-# group so the root project itself carries no runtime dependencies.
-workspace = [
-    "rootcause-api",
-    "rootcause-core",
-    "rootcause-agents",
-    "rootcause-tools",
-    "rootcause-catalog",
-    "rootcause-connections",
-    "rootcause-anomaly",
-    "rootcause-memory",
-    "rootcause-evals",
-    "rootcause-db",
-]
-
-[tool.uv]
-package = false
-default-groups = ["dev", "workspace"]
-
-[tool.uv.workspace]
-members = ["apps/api", "packages/*"]
-
-[tool.uv.sources]
-rootcause-api = { workspace = true }
-rootcause-core = { workspace = true }
-rootcause-agents = { workspace = true }
-rootcause-tools = { workspace = true }
-rootcause-catalog = { workspace = true }
-rootcause-connections = { workspace = true }
-rootcause-anomaly = { workspace = true }
-rootcause-memory = { workspace = true }
-rootcause-evals = { workspace = true }
-rootcause-db = { workspace = true }
 
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-# Workspace src/ trees so isort classifies rootcause_* imports as first-party.
-src = [".", "apps/api/src", "packages/*/src"]
+src = [".", "src"]
 # Pre-existing template/harness tooling, not part of the product codebase.
 extend-exclude = [".claude", "setup-harness.py"]
 
@@ -67,37 +79,26 @@ strict = true
 # Teaches mypy pydantic's synthesized __init__ (BaseSettings fields are
 # optional kwargs because they are populated from the environment).
 plugins = ["pydantic.mypy"]
-# Every tests/ dir has a test_smoke.py and no __init__.py, so mypy needs explicit
-# package bases to give them distinct module names (packages.core.tests.test_smoke
-# etc.). The src/ roots are listed as bases so library modules keep their real
-# names (rootcause_core, ...); mypy_path does not expand globs, hence the list.
+# tests/ has no __init__.py and several areas share basenames (test_smoke.py,
+# conftest.py), so mypy needs explicit package bases to give them distinct module
+# names (tests.core.test_smoke etc.); src/ is a base so the library keeps its
+# real name (rootcause).
 explicit_package_bases = true
-mypy_path = [
-    "apps/api/src",
-    "packages/agents/src",
-    "packages/anomaly/src",
-    "packages/catalog/src",
-    "packages/connections/src",
-    "packages/core/src",
-    "packages/db/src",
-    "packages/evals/src",
-    "packages/memory/src",
-    "packages/tools/src",
-]
-files = ["apps/api/src", "packages/*/src", "tests", "apps/api/tests", "packages/*/tests"]
+mypy_path = ["src"]
+files = ["src", "tests"]
 
 # Tests are checked with relaxed rules: fixtures and test functions may omit
 # annotations, but their bodies are still checked.
 [[tool.mypy.overrides]]
-module = ["tests.*", "*.tests.*"]
+module = ["tests.*"]
 disallow_untyped_defs = false
 disallow_incomplete_defs = false
 check_untyped_defs = true
 
 [tool.pytest.ini_options]
-testpaths = ["tests", "apps", "packages"]
-# importlib mode lets every package keep its own tests/test_smoke.py without
-# basename collisions; the --cov flags enforce the 80% gate from the rules.
+testpaths = ["tests"]
+# importlib mode lets every test area keep its own test_smoke.py/conftest.py
+# without basename collisions; the --cov flags enforce the 80% gate from the rules.
 addopts = "--import-mode=importlib --cov --cov-report=term-missing --cov-fail-under=80"
 markers = [
     "unit: fast isolated tests",
@@ -106,8 +107,7 @@ markers = [
 ]
 
 [tool.coverage.run]
-source = ["apps", "packages"]
-omit = ["*/tests/*"]
+source = ["src"]
 
 [tool.coverage.report]
 show_missing = true

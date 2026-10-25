@@ -146,7 +146,7 @@ docker compose -f deploy/docker-compose.yml --profile observability ps   # all "
 ```
 
 - Server **v4** (`langfuse/langfuse:4.70.0`, `langfuse/langfuse-worker:4.70.0`).
-  The Python SDK 5.x pinned in `packages/core` supports self-hosted
+  The Python SDK 5.x pinned in `pyproject.toml` supports self-hosted
   Langfuse v4.59.0 or later only; v3 servers are not supported.
 - Six services: `langfuse-web` (UI + API, `127.0.0.1:${LANGFUSE_PORT:-3000}`),
   `langfuse-worker`, `langfuse-postgres` (its own database, separate from
