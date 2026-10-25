@@ -14,7 +14,12 @@ interface ChatState {
   messages: Message[];
 }
 
-export function Chat() {
+interface ChatProps {
+  /** Database connection the agent should query; omitted means no run context. */
+  connectionId?: string | null;
+}
+
+export function Chat({ connectionId }: ChatProps) {
   const [transport] = useState(() => new AgentThreadTransport(AGENT_URL));
   // Controlled so "New thread" can clear the conversation: with a custom transport
   // useStream resets its state when threadId changes (it has no switchThread then).
@@ -40,11 +45,15 @@ export function Chat() {
     wasPending.current = isApprovalPending;
   }, [isApprovalPending]);
 
+  const context = connectionId ? { connection_id: connectionId } : undefined;
+
   function send() {
     const content = draft.trim();
     if (!content || stream.isLoading || isApprovalPending) return;
     setDraft("");
-    void stream.submit({ messages: [{ type: "human", content }] });
+    const input = { messages: [{ type: "human" as const, content }] };
+    if (context) void stream.submit(input, { context });
+    else void stream.submit(input);
     inputRef.current?.focus();
   }
 
@@ -61,9 +70,9 @@ export function Chat() {
   }
 
   function decide(type: DecisionType) {
-    void stream.submit(null, {
-      command: { resume: buildResume(type, approval?.length ?? 1) },
-    });
+    const command = { resume: buildResume(type, approval?.length ?? 1) };
+    if (context) void stream.submit(null, { command, context });
+    else void stream.submit(null, { command });
   }
 
   function newThread() {
@@ -76,7 +85,7 @@ export function Chat() {
   }
 
   return (
-    <main className="mx-auto flex h-screen max-w-3xl flex-col gap-3 p-4">
+    <main className="mx-auto flex h-full min-h-0 w-full max-w-3xl flex-1 flex-col gap-3 p-4">
       <header className="flex items-center justify-between">
         <h1 className="text-xl font-semibold">RootCause</h1>
         <button
