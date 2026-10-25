@@ -1,5 +1,7 @@
 """Tests for rootcause_core.settings."""
 
+from pathlib import Path
+
 import pytest
 
 from rootcause_core.settings import Settings
@@ -155,3 +157,74 @@ def test_empty_database_url_is_treated_as_invalid(
 
     with pytest.raises(ConfigurationError):
         _load()
+
+
+@pytest.mark.usefixtures("base_env")
+def test_log_level_is_case_insensitive_and_normalised_to_upper(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ROOTCAUSE_LOG_LEVEL", "info")
+
+    settings = _load()
+
+    assert settings.log_level == "INFO"
+
+
+@pytest.mark.usefixtures("base_env")
+def test_invalid_otel_endpoint_raises_configuration_error_naming_variable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rootcause_core.errors import ConfigurationError
+
+    monkeypatch.setenv("ROOTCAUSE_OTEL_ENDPOINT", "not-a-url")
+
+    with pytest.raises(ConfigurationError) as excinfo:
+        _load()
+
+    assert "ROOTCAUSE_OTEL_ENDPOINT" in str(excinfo.value)
+
+
+@pytest.mark.usefixtures("base_env")
+def test_valid_otel_endpoint_is_kept(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ROOTCAUSE_OTEL_ENDPOINT", "http://otel:4318")
+
+    settings = _load()
+
+    assert str(settings.otel_endpoint).rstrip("/") == "http://otel:4318"
+
+
+def test_dotenv_file_is_ignored_in_prod(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    from rootcause_core.errors import ConfigurationError
+
+    (tmp_path / ".env").write_text(f"ROOTCAUSE_DATABASE_URL={database_url}\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ROOTCAUSE_ENVIRONMENT", "prod")
+
+    with pytest.raises(ConfigurationError) as excinfo:
+        _load()
+
+    assert "ROOTCAUSE_DATABASE_URL" in str(excinfo.value)
+
+
+def test_dotenv_file_is_honoured_in_dev(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    (tmp_path / ".env").write_text(f"ROOTCAUSE_DATABASE_URL={database_url}\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ROOTCAUSE_ENVIRONMENT", "dev")
+
+    settings = _load()
+
+    assert settings.database_url.get_secret_value() == database_url
+
+
+def test_configuration_error_does_not_retain_pydantic_error_on_chain() -> None:
+    from rootcause_core.errors import ConfigurationError
+
+    with pytest.raises(ConfigurationError) as excinfo:
+        _load()
+
+    assert excinfo.value.__context__ is None
+    assert excinfo.value.__cause__ is None

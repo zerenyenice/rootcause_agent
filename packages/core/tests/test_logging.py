@@ -128,3 +128,18 @@ def test_log_level_filters_lower_severity_messages(
 
     assert "quiet" not in output
     assert "loud" in output
+
+
+def test_stdlib_logger_extra_fields_are_rendered_in_json(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], database_url: str
+) -> None:
+    import logging
+
+    from rootcause_core.logging import configure_logging
+
+    configure_logging(_settings(monkeypatch, database_url, log_format="json"))
+
+    logging.getLogger("x").info("hi", extra={"request_id": "r1"})
+    record = _last_json_line(_output(capsys))
+
+    assert record["request_id"] == "r1"

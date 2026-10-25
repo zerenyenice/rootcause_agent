@@ -124,3 +124,58 @@ def test_none_exporter_installs_provider_that_exports_nothing(
     assert isinstance(provider, TracerProvider)
     assert is_valid  # trace ids still exist so logs can be correlated
     assert "silent-span" not in captured.out + captured.err
+
+
+def test_configure_after_shutdown_raises_because_global_provider_cannot_be_replaced(
+    monkeypatch: pytest.MonkeyPatch, database_url: str
+) -> None:
+    from rootcause_core.errors import ConfigurationError
+    from rootcause_core.telemetry import configure_telemetry, shutdown_telemetry
+
+    settings = _settings(monkeypatch, database_url, otel_exporter="console")
+    configure_telemetry(settings)
+    shutdown_telemetry()
+
+    with pytest.raises(ConfigurationError):
+        configure_telemetry(settings)
+
+
+@pytest.mark.parametrize(
+    ("base", "expected"),
+    [
+        ("http://c:4318", "http://c:4318/v1/traces"),
+        ("http://c:4318/", "http://c:4318/v1/traces"),
+        ("http://c:4318/v1/traces", "http://c:4318/v1/traces"),
+        ("http://c:4318/v1/traces/", "http://c:4318/v1/traces"),
+    ],
+)
+def test_traces_endpoint_resolves_otlp_traces_url(base: str, expected: str) -> None:
+    from rootcause_core.telemetry import traces_endpoint
+
+    assert traces_endpoint(base) == expected
+
+
+def test_otlp_exporter_registers_batch_processor_and_exports_nothing_to_stdout(
+    monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str], database_url: str
+) -> None:
+    from rootcause_core.telemetry import (
+        configure_telemetry,
+        get_tracer,
+        shutdown_telemetry,
+    )
+
+    provider = configure_telemetry(
+        _settings(
+            monkeypatch,
+            database_url,
+            otel_exporter="otlp",
+            otel_endpoint="http://127.0.0.1:1",
+        )
+    )
+    processors = provider._active_span_processor._span_processors  # noqa: SLF001
+    with get_tracer("t").start_as_current_span("otlp-span"):
+        pass
+    shutdown_telemetry()
+
+    assert "BatchSpanProcessor" in [type(p).__name__ for p in processors]
+    assert "otlp-span" not in capfd.readouterr().out
