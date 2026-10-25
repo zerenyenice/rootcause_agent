@@ -1,16 +1,15 @@
 """Visibility check: a planted anomaly must stand out from the baseline noise.
 
-The statistic is the unscaled, direction-signed robust z of the window median
-against the ``PRE_WINDOW_DAYS`` (56) days before the window::
+For a window of ``L`` days, the statistic is the direction-signed robust z of the window
+mean against every rolling ``L``-day mean inside the ``PRE_WINDOW_DAYS`` (56) days before it::
 
-    z = sign * (median(window) - median(pre)) / (1.4826 * MAD(pre))
+    z = sign * (mean(window) - median(R)) / (1.4826 * max(MAD(R), 0.01 * |median(R)|))
 
-where the series is the incident's daily metric, optionally divided by the pre-window
-median of the same weekday first (``weekday_adjusted``), ``MAD`` is the median absolute
-deviation of the pre-window, and ``sign`` is +1 for an expected rise and -1 for a drop.
-The z is not scaled by the window length: it is the shift in units of single-day
-noise, so a longer window does not make a weak effect look visible. An incident is
-visible when ``z >= 3``.
+where ``R`` holds the rolling ``L``-day means of the pre-window, the series is optionally
+divided by the pre-window median of the same weekday first (``weekday_adjusted``), and
+``sign`` is +1 for an expected rise and -1 for a drop. Noise is thus measured at the same
+aggregation level as the window, so neither a long window nor a single noisy day distorts
+the score. An incident is visible when ``z >= 3``.
 """
 
 from __future__ import annotations
@@ -30,7 +29,7 @@ from rootcause_evals.manufacturing.incidents.base import (
 Z_THRESHOLD = 3.0
 MAD_TO_SIGMA = 1.4826
 MIN_PRE_DAYS = 7
-SCALE_FLOOR = 1e-9
+MAD_FLOOR_SHARE = 0.01
 
 
 @dataclass(frozen=True)
@@ -67,22 +66,25 @@ def _normalised(
 
 
 def robust_z(incident: PlantedIncident, series: pd.Series[float]) -> float:
-    """Signed robust z of the window median against the preceding ``PRE_WINDOW_DAYS`` days."""
+    """Signed robust z of the window mean against rolling window-length means of the pre-window."""
     start, end_exclusive = window_bounds(incident.window)
     index = pd.DatetimeIndex(series.index)
     pre = series[(index >= start - pd.Timedelta(days=PRE_WINDOW_DAYS)) & (index < start)].dropna()
     window = series[(index >= start) & (index < end_exclusive)].dropna()
-    if len(pre) < MIN_PRE_DAYS or window.empty:
+    length = (incident.window[1] - incident.window[0]).days + 1
+    if len(pre) < max(MIN_PRE_DAYS, length) or window.empty:
         return 0.0
     pre_n, win_n = _normalised(pre, window, incident.weekday_adjusted)
     pre_n, win_n = pre_n.dropna(), win_n.dropna()
-    if pre_n.empty or win_n.empty:
+    if len(pre_n) < length or win_n.empty:
         return 0.0
-    center = float(pre_n.median())
-    mad = float((pre_n - center).abs().median())
-    scale = max(MAD_TO_SIGMA * mad, SCALE_FLOOR)
+    rolling = pre_n.rolling(length).mean().dropna().to_numpy(dtype=float)
+    center = float(np.median(rolling))
+    mad = max(float(np.median(np.abs(rolling - center))), MAD_FLOOR_SHARE * abs(center))
+    if mad == 0.0:
+        return 0.0
     sign = 1.0 if incident.direction == "up" else -1.0
-    return float(sign * (float(win_n.median()) - center) / scale)
+    return float(sign * (float(win_n.mean()) - center) / (MAD_TO_SIGMA * mad))
 
 
 def assert_visible(tables: Tables, incident: PlantedIncident) -> VisibilityReport:

@@ -50,19 +50,25 @@ def choose_replacements(
     ``old_cycle_sum`` and ``runs`` are each order's in-window cycle time total and run
     count before the switch. An order moved to a product with ratio ``r = new_std /
     old_std`` contributes ``r * old_cycle_sum``; each order takes the family product that
-    keeps the window mean cycle time closest to ``target_mean`` (wide single-order
+    keeps the window mean cycle time closest to ``target_mean`` (capped at the family's
+    ceiling, so a line with little headroom gets the largest rise possible; wide single-order
     deviations from ``CYCLE_TIME_FACTOR`` are mildly discouraged), so the window mean
     lands as near the target as the family allows.
     """
     picks = np.zeros(len(old_std), dtype=np.int64)
     total_cycle = total_runs = 0.0
+    penalty = RATIO_PENALTY
+    if runs.sum() > 0:
+        ceiling = float((old_cycle_sum * family_std.max() / old_std).sum() / runs.sum())
+        if target_mean >= ceiling:  # unreachable target: every order takes its slowest product
+            target_mean, penalty = ceiling, 0.0
     for k in range(len(old_std)):
         ratios = family_std / old_std[k]
         if runs[k] == 0:  # touches the window without a run in it: nothing to calibrate
             picks[k] = int(np.abs(ratios - CYCLE_TIME_FACTOR).argmin())
             continue
         running = (total_cycle + ratios * old_cycle_sum[k]) / (total_runs + runs[k])
-        cost = np.abs(running - target_mean) / target_mean + RATIO_PENALTY * np.abs(
+        cost = np.abs(running - target_mean) / target_mean + penalty * np.abs(
             ratios - CYCLE_TIME_FACTOR
         )
         picks[k] = int(cost.argmin())
@@ -248,10 +254,18 @@ class ProductMixChange(Incident):
         )
 
     def manifest_entry(self, tables: Tables | None = None) -> CaseManifest:
-        """Ground truth; with ``tables`` the effect size is the achieved window ratio minus one."""
+        """Ground truth; the effect size is the achieved window/pre ratio minus one.
+
+        Measured on ``tables`` when given, else the value the registry measured on the baseline
+        at placement (``params["expected_effect"]``), else the target.
+        """
         line = self.segment["line_id"]
         first, last = (d.isoformat() for d in self.window)
-        size = CYCLE_TIME_FACTOR - 1.0 if tables is None else self.achieved_effect(tables)
+        size = (
+            float(self.params.get("expected_effect", CYCLE_TIME_FACTOR - 1.0))
+            if tables is None
+            else self.achieved_effect(tables)
+        )
         family = self.params.get("family_id") or (
             top_family(tables["products"]) if tables is not None else None
         )
