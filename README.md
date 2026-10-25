@@ -214,8 +214,49 @@ uv run ruff check .     # lint
 uv run ruff format --check .
 uv run mypy             # strict type-check of src/ and tests/
 uv run uvicorn --factory rootcause.api.main:create_app --reload   # serve the API (needs ROOTCAUSE_DATABASE_URL)
-uv run --with "langgraph-cli[inmem]" langgraph dev   # LangGraph Server (root langgraph.json), placeholder graph
+uv run --with "langgraph-cli[inmem]" langgraph dev   # LangGraph Server (root langgraph.json), "rootcause" graph
 ```
+
+### Running the MVP end to end
+
+1. Generate the synthetic manufacturing warehouse (DuckDB file plus the planted
+   cases in `cases.json`); `data/` is gitignored:
+
+   ```bash
+   uv run python -m rootcause.evals.manufacturing generate --out data/warehouse --incidents E1,E2,E3 --days 120
+   ```
+
+2. Point the agent at it and give it a model key (in `.env` or the shell):
+
+   ```bash
+   ROOTCAUSE_DATABASE_URL=postgresql://...            # required by the settings
+   ROOTCAUSE_WAREHOUSE_PATH=data/warehouse/warehouse.duckdb
+   ROOTCAUSE_ANTHROPIC_API_KEY=...                    # or the Azure OpenAI variables
+   ```
+
+   Without `ROOTCAUSE_WAREHOUSE_PATH` the graph still starts, but with no SQL
+   tools and no `root-cause` subagent it can only frame the problem.
+
+3. Start LangGraph Server and the chat UI (two terminals):
+
+   ```bash
+   uv run --with "langgraph-cli[inmem]" langgraph dev
+   cd web && npm run dev
+   ```
+
+   The orchestrator frames the problem (what, when, where, impact), delegates
+   the why-questions to the `root-cause` subagent and presents its WhyChain report.
+
+4. Run the evaluation unattended. The runner hands the agent only the question;
+   `investigate()` tells the orchestrator no user is available, runs on a fresh
+   thread, stops after `ROOTCAUSE_INVESTIGATION_MAX_STEPS` graph steps (default 80)
+   or `ROOTCAUSE_INVESTIGATION_TIMEOUT_SECONDS` (default 600, checked between
+   approval rounds) and rejects every large-scan approval. The root-cause subagent
+   may make `ROOTCAUSE_INVESTIGATION_MAX_TOOL_CALLS` tool calls per run (default 40):
+
+   ```bash
+   uv run python -m rootcause.evals.run --cases data/warehouse/cases.json --levels easy --agent rootcause.agents.investigate:investigate
+   ```
 
 The API exposes an application factory, so always start it with `--factory`.
 Rate limiting keys on the peer address (`X-Forwarded-For` is never read). Behind
@@ -233,13 +274,13 @@ src/rootcause/  — the single installable package (py.typed)
 ├── connections/    — data source connections and the SQL validator
 ├── catalog/        — catalog version models
 ├── agents/         — orchestrator, backends, prompts and agent tools
-├── api/            — the FastAPI service (/health, /version) and the LangGraph placeholder graph
+├── api/            — the FastAPI service (/health, /version) and the LangGraph `rootcause` graph factory
 └── evals/          — evaluation harness (manufacturing warehouse generator)
 tests/          — one tree mirrored by area (core, db, connections, catalog, agents, api, evals)
-web/            — placeholder for the Next.js UI (lands in T070; not runnable yet)
+web/            — Next.js chat UI (streams from LangGraph Server; see web/README.md)
 docs/           — PRD, backlog, plans and process documentation
 deploy/         — Docker Compose stack, Postgres bootstrap and dev-only alembic.ini
-langgraph.json  — LangGraph Server config for the placeholder graph
+langgraph.json  — LangGraph Server config registering the `rootcause` graph
 ```
 
 `uv sync` installs `rootcause` in editable mode, so changes are importable without a

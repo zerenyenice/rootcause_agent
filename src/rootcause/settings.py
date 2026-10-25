@@ -124,6 +124,12 @@ class Settings(BaseSettings):
     fast_model: str = Field(default="anthropic:claude-sonnet-5", min_length=1)
     reasoning_model: str = Field(default="anthropic:claude-opus-5", min_length=1)
     scan_row_threshold: int = Field(default=5_000_000, gt=0)
+    # LangGraph recursion limit (graph steps) for one unattended investigate() run.
+    investigation_max_steps: int = Field(default=80, gt=0)
+    # Tool calls one root-cause subagent run may make before further calls are blocked.
+    investigation_max_tool_calls: int = Field(default=40, gt=0)
+    # Wall-clock budget (seconds) of one investigate() run, checked between resumes.
+    investigation_timeout_seconds: int = Field(default=600, gt=0)
     # DuckDB warehouse file the agent queries read-only; ``None`` means none is configured.
     warehouse_path: Path | None = None
     db_pool_size: int = Field(default=5, gt=0)

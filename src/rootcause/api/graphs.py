@@ -1,28 +1,73 @@
-"""Placeholder LangGraph registered in ``langgraph.json`` (replaced in T030)."""
+"""Graph factory registered in ``langgraph.json`` as ``rootcause``.
 
-from typing import TypedDict
+Importing this module builds nothing; LangGraph Server calls :func:`make_graph`
+and injects its own checkpointer and store.
+"""
 
-from langgraph.graph import END, START, StateGraph
+import atexit
+import threading
+from pathlib import Path
+from typing import Any
+
+from langgraph.graph.state import CompiledStateGraph
+
+from rootcause.agents.orchestrator import build_orchestrator
+from rootcause.agents.tools.sql import QueryExecutor
+from rootcause.connections.duckdb_executor import executor_from_settings
+from rootcause.evals.manufacturing.table_docs import TABLE_DOCS
+from rootcause.logging import get_logger
+from rootcause.settings import Settings, get_settings
+
+_logger = get_logger(__name__)
+# One warehouse executor per configured path for the process lifetime; ``None`` is
+# cached too (no warehouse configured). Closed at interpreter exit.
+_executors: dict[Path | None, QueryExecutor | None] = {}
+_executors_lock = threading.Lock()
+_close_registered = False
 
 
-class EchoState(TypedDict):
-    messages: list[str]
+def make_graph() -> CompiledStateGraph[Any, Any, Any, Any]:
+    """Build the orchestrator from settings, without a checkpointer.
+
+    With ``ROOTCAUSE_WAREHOUSE_PATH`` set it gets the SQL and schema tools and the
+    root-cause subagent; without it the orchestrator can only frame the problem.
+    The warehouse is opened once per path and reused by every graph built here;
+    it stays open for the server process's lifetime and closes at exit.
+
+    Raises:
+        ConfigurationError: the settings are invalid or the warehouse file is missing.
+    """
+    settings = get_settings()
+    return build_orchestrator(
+        settings=settings,
+        checkpointer=False,
+        executor=_shared_executor(settings),
+        table_docs=TABLE_DOCS,
+    ).graph
 
 
-def echo(state: EchoState) -> EchoState:
-    """Append ``echo: <last message>``; an empty history is returned unchanged."""
-    messages = state["messages"]
-    if not messages:
-        return {"messages": list(messages)}
-    return {"messages": [*messages, f"echo: {messages[-1]}"]}
+def _shared_executor(settings: Settings) -> QueryExecutor | None:
+    global _close_registered
+    key = settings.warehouse_path
+    with _executors_lock:
+        if key not in _executors:
+            _executors[key] = executor_from_settings(settings)
+            if not _close_registered:
+                atexit.register(_close_executors)
+                _close_registered = True
+        return _executors[key]
 
 
-def build_graph() -> StateGraph[EchoState, None, EchoState, EchoState]:
-    builder = StateGraph(EchoState)
-    builder.add_node("echo", echo)
-    builder.add_edge(START, "echo")
-    builder.add_edge("echo", END)
-    return builder
-
-
-graph = build_graph().compile()
+def _close_executors() -> None:
+    with _executors_lock:
+        executors = list(_executors.values())
+        _executors.clear()
+    for executor in executors:
+        # ``QueryExecutor`` has no ``close``; one without it owns its lifetime.
+        close = getattr(executor, "close", None)
+        if close is None:
+            continue
+        try:
+            close()
+        except Exception:  # noqa: BLE001 - interpreter exit: report and close the rest
+            _logger.warning("warehouse_close_failed", exc_info=True)
