@@ -119,11 +119,11 @@ def test_upgrade_head_twice_is_idempotent(bootstrapped_url, engine):
 def test_models_match_the_migrated_schema_including_server_defaults(bootstrapped_url, engine):
     from alembic.autogenerate import compare_metadata
     from alembic.migration import MigrationContext
-    from rootcause_db.migrate import upgrade
 
     import rootcause_catalog.models  # noqa: F401
     import rootcause_connections.models  # noqa: F401
     from rootcause_core.db.base import Base
+    from rootcause_db.migrate import upgrade
 
     upgrade(bootstrapped_url, "head")
 
@@ -149,10 +149,10 @@ def test_models_match_the_migrated_schema_including_server_defaults(bootstrapped
 
 
 def test_connection_and_audit_rows_round_trip(bootstrapped_url, engine):
-    from rootcause_db.migrate import upgrade
     from sqlalchemy.orm import Session
 
     from rootcause_connections.models import Connection, QueryAuditLog, QueryStatus
+    from rootcause_db.migrate import upgrade
 
     upgrade(bootstrapped_url, "head")
     connection_id = uuid.uuid4()
@@ -223,10 +223,10 @@ def test_connection_id_is_generated_by_the_database(bootstrapped_url, engine):
 
 
 def test_updated_at_advances_on_orm_update(bootstrapped_url, engine):
-    from rootcause_db.migrate import upgrade
     from sqlalchemy.orm import Session
 
     from rootcause_connections.models import Connection
+    from rootcause_db.migrate import upgrade
 
     upgrade(bootstrapped_url, "head")
     connection_id = _insert_connection(engine)

@@ -2,8 +2,9 @@
 
 
 def test_base_is_a_sqlalchemy_declarative_base():
-    from rootcause_core.db.base import Base
     from sqlalchemy.orm import DeclarativeBase
+
+    from rootcause_core.db.base import Base
 
     assert issubclass(Base, DeclarativeBase)
 
@@ -22,8 +23,9 @@ def test_naming_convention_pins_pk_fk_and_unique_templates():
 
 def test_naming_convention_names_constraints_of_a_new_table():
     import sqlalchemy as sa
-    from rootcause_core.db.base import Base
     from sqlalchemy.schema import CreateTable
+
+    from rootcause_core.db.base import Base
 
     metadata = sa.MetaData(naming_convention=Base.metadata.naming_convention)
     sa.Table("parent", metadata, sa.Column("id", sa.Integer, primary_key=True))

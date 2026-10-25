@@ -33,13 +33,15 @@ def log_id(engine: sa.Engine) -> int:
             ),
             {"id": connection_id},
         )
-        return connection.execute(
-            sa.text(
-                "INSERT INTO audit.query_log (connection_id, sql, started_at, status) "
-                "VALUES (:id, 'SELECT 1', now(), 'ok') RETURNING id"
-            ),
-            {"id": connection_id},
-        ).scalar_one()
+        return int(
+            connection.execute(
+                sa.text(
+                    "INSERT INTO audit.query_log (connection_id, sql, started_at, status) "
+                    "VALUES (:id, 'SELECT 1', now(), 'ok') RETURNING id"
+                ),
+                {"id": connection_id},
+            ).scalar_one()
+        )
 
 
 def test_insert_still_works(engine, log_id):
