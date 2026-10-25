@@ -168,14 +168,21 @@ def test_error_responses_carry_request_id_header(client: "TestClient") -> None:
 
 @pytest.mark.unit
 def test_internal_error_log_carries_request_id(
-    client: "TestClient", capsys: pytest.CaptureFixture[str]
+    capsys: pytest.CaptureFixture[str], make_app: Callable[..., Any]
 ) -> None:
+    from fastapi.testclient import TestClient
+
+    app = make_app()
+    app.include_router(_test_router())
+    client = TestClient(app, raise_server_exceptions=False)
+    capsys.readouterr()
     response = client.get("/_t/crash")
 
     request_id = response.headers["X-Request-ID"]
+    captured = capsys.readouterr()
     events = [
         event
-        for event in _json_log_lines(capsys.readouterr().out)
+        for event in _json_log_lines(captured.out + captured.err)
         if event.get("event") == "internal_error"
     ]
     assert events

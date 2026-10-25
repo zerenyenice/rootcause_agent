@@ -38,3 +38,15 @@ def test_invalid_rate_limit_is_rejected_naming_the_variable(
 
     assert "ROOTCAUSE_RATE_LIMIT" in str(raised.value)
     assert "ROOTCAUSE_RATE_LIMIT" in raised.value.variables
+
+
+@pytest.mark.unit
+def test_non_ascii_digit_rate_limit_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ROOTCAUSE_DATABASE_URL", DB_URL)
+    monkeypatch.setenv("ROOTCAUSE_RATE_LIMIT", "٣/minute")
+    clear_settings_cache()
+
+    with pytest.raises(ConfigurationError) as raised:
+        get_settings()
+
+    assert "ROOTCAUSE_RATE_LIMIT" in raised.value.variables

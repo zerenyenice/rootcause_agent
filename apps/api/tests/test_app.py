@@ -42,7 +42,10 @@ def test_create_app_twice_warns_about_telemetry_without_raising(
 ) -> None:
     from fastapi import FastAPI
 
+    from rootcause_core.telemetry import shutdown_telemetry
+
     first = make_app()
+    shutdown_telemetry()
     capsys.readouterr()
     second = make_app()
 
