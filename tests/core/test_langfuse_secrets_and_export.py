@@ -24,6 +24,7 @@ SECRET_VALUES = {
     "embedding_api_key": "EMBEDDINGSENTINEL0123456789",
     "openviking_api_key": "OPENVIKINGSENTINEL0123456789",
     "langfuse_secret_key": "sk-lf-LFSECRETSENTINEL",
+    "secret_key": "cm9vdGNhdXNlLXRlc3QtZmVybmV0LWtleS0zMmJ5dCE=",  # gitleaks:allow
 }
 MIGRATION_PASSWORD = "MIGPW-SENTINEL-5821"  # gitleaks:allow
 ADMIN_PASSWORD = "ADMPW-SENTINEL-9937"  # gitleaks:allow
