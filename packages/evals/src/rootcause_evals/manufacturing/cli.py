@@ -11,6 +11,13 @@ from pathlib import Path
 import pandas as pd
 
 from rootcause_evals.manufacturing.config import GeneratorConfig
+from rootcause_evals.manufacturing.incidents import (
+    ARCHETYPES,
+    Incident,
+    assert_visible,
+    instantiate,
+    write_cases_json,
+)
 from rootcause_evals.manufacturing.writers import (
     write_csv,
     write_data_dictionary,
@@ -20,6 +27,8 @@ from rootcause_evals.manufacturing.writers import (
 
 EXIT_OK = 0
 EXIT_INVALID_CONFIG = 2
+EXIT_NOT_VISIBLE = 3
+CASES_FILENAME = "cases.json"
 DUCKDB_FILENAME = "warehouse.duckdb"
 SQL_FILENAME = "warehouse.sql"
 CSV_DIRNAME = "csv"
@@ -40,7 +49,33 @@ def build_parser() -> argparse.ArgumentParser:
     generate.add_argument(
         "--scale", type=int, default=defaults.scale, help="1 (hourly) or 10 (10-minute grain)"
     )
+    generate.add_argument(
+        "--incidents",
+        default="none",
+        help="planted incidents: all, none or a comma-separated archetype list such as E1,E2",
+    )
+    generate.add_argument(
+        "--no-visibility-check",
+        action="store_true",
+        help="report incident visibility but do not fail when an incident is not visible",
+    )
     return parser
+
+
+def parse_incident_selection(value: str) -> tuple[str, ...]:
+    """Archetype ids for ``--incidents`` (``all``, ``none`` or ``E1,E2``); ValueError if unknown."""
+    text = value.strip()
+    if text == "all":
+        return tuple(ARCHETYPES)
+    if text == "none":
+        return ()
+    ids = tuple(part.strip() for part in text.split(",") if part.strip())
+    unknown = [i for i in ids if i not in ARCHETYPES]
+    if unknown or not ids:
+        raise ValueError(
+            f"unknown incident archetype(s) {unknown or [value]}; known: {sorted(ARCHETYPES)}"
+        )
+    return ids
 
 
 def write_outputs(tables: dict[str, pd.DataFrame], out_dir: Path) -> None:
@@ -52,14 +87,39 @@ def write_outputs(tables: dict[str, pd.DataFrame], out_dir: Path) -> None:
     write_data_dictionary(out_dir)
 
 
-def run_generate(config: GeneratorConfig, out_dir: Path) -> int:
+def report_visibility(
+    tables: dict[str, pd.DataFrame], incidents: tuple[Incident, ...], enforce: bool
+) -> int:
+    """Print the robust z of every incident; nonzero exit code if enforced and one is hidden."""
+    code = EXIT_OK
+    for incident in incidents:
+        report = assert_visible(tables, incident)
+        print(f"visibility {report.case_id}: z={report.z:.1f} visible={report.visible}")
+        if enforce and not report.visible:
+            print(f"error: incident {report.case_id} is not visible", file=sys.stderr)
+            code = EXIT_NOT_VISIBLE
+    return code
+
+
+def run_generate(
+    config: GeneratorConfig,
+    out_dir: Path,
+    archetypes: tuple[str, ...] = (),
+    enforce_visibility: bool = True,
+) -> int:
     """Generate the warehouse, write all outputs and print a per-table summary."""
     from rootcause_evals.manufacturing import generate
 
     started = time.perf_counter()
-    tables = generate(config)
+    incidents = instantiate(config, archetypes=archetypes) if archetypes else ()
+    tables = generate(config, incidents, check_visibility=False)
     generated = time.perf_counter() - started
+    code = report_visibility(tables, incidents, enforce_visibility)
+    if code != EXIT_OK:
+        return code
     write_outputs(tables, out_dir)
+    if incidents:
+        write_cases_json([i.manifest_entry(tables) for i in incidents], out_dir / CASES_FILENAME)
     total = time.perf_counter() - started
     width = max(len(name) for name in tables)
     for name, frame in tables.items():
@@ -76,4 +136,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     except ValueError as exc:
         print(f"error: invalid configuration: {exc}", file=sys.stderr)
         return EXIT_INVALID_CONFIG
-    return run_generate(config, args.out)
+    try:
+        archetypes = parse_incident_selection(args.incidents)
+        return run_generate(config, args.out, archetypes, not args.no_visibility_check)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_INVALID_CONFIG
