@@ -14,6 +14,7 @@ from rootcause.connections import duckdb_executor as duckdb_executor_module
 from rootcause.connections.duckdb_executor import (
     ColumnInfo,
     DuckDBExecutor,
+    QueryFailed,
     QueryRejected,
     QueryTimeout,
     TableInfo,
@@ -338,10 +339,7 @@ def test_real_warehouse_with_e1_incident(tmp_path: Path) -> None:
 
 
 # --- Hardening round (security review HIGH: memory exhaustion past the timeout) (RED) ---
-# TODO(remove with GREEN): QueryFailed, memory_limit_mb and max_result_bytes do not exist yet;
-# they are resolved dynamically / via ``Any`` so ruff and mypy stay clean until they land.
 
-_executor_module: Any = duckdb_executor_module
 _SENSITIVE_VALUE = "SENSITIVEVALUE42"
 _SLOW_BUDGET_SECONDS = 1.0
 
@@ -371,7 +369,7 @@ def wide_db(tmp_path: Path) -> Path:
 
 @pytest.mark.unit
 def test_settings_snapshot_reports_memory_limit_from_constructor(small_db: Path) -> None:
-    with DuckDBExecutor(small_db, memory_limit_mb=256) as ex:  # type: ignore[call-arg]
+    with DuckDBExecutor(small_db, memory_limit_mb=256) as ex:
         value = str(ex.settings_snapshot()["memory_limit"])
     # DuckDB renders 256 MB as "244.1 MiB"; accept any 24x MiB / 256 MB spelling, not 1 GB.
     assert value.startswith(("244", "245", "256", "0.2")), value
@@ -437,7 +435,7 @@ def test_generator_functions_are_rejected_fast_and_executor_stays_usable(
 
 @pytest.mark.unit
 def test_result_over_byte_budget_is_rejected(wide_db: Path) -> None:
-    with DuckDBExecutor(wide_db, max_result_bytes=1000) as ex:  # type: ignore[call-arg]
+    with DuckDBExecutor(wide_db, max_result_bytes=1000) as ex:
         with pytest.raises(QueryRejected) as caught:
             ex.run("select string_agg(b, ',') from t", "too big")
         assert "result_too_large" in caught.value.codes
@@ -488,9 +486,7 @@ def test_runtime_database_error_is_wrapped_without_leaking_value_or_sql(tmp_path
     con.execute("CREATE TABLE t (a INTEGER, batch_code VARCHAR)")
     con.execute(f"INSERT INTO t VALUES (42, '{_SENSITIVE_VALUE}')")
     con.close()
-    query_failed: Any = getattr(_executor_module, "QueryFailed", None)
-    assert query_failed is not None, "QueryFailed is not defined yet"
-    with DuckDBExecutor(path) as ex, pytest.raises(query_failed) as caught:
+    with DuckDBExecutor(path) as ex, pytest.raises(QueryFailed) as caught:
         ex.run("select batch_code::int from t where a = 42", "bad cast")
     message = str(caught.value)
     assert _SENSITIVE_VALUE not in message
@@ -505,16 +501,14 @@ def test_runtime_database_error_is_wrapped_without_leaking_value_or_sql(tmp_path
 
 @pytest.mark.unit
 def test_query_failed_is_a_root_cause_error() -> None:
-    query_failed: Any = getattr(_executor_module, "QueryFailed", None)
-    assert query_failed is not None, "QueryFailed is not defined yet"
-    assert issubclass(query_failed, RootCauseError)
+    assert issubclass(QueryFailed, RootCauseError)
 
 
 @pytest.mark.unit
 def test_explain_fails_closed_when_plan_has_no_cardinality(
     executor: DuckDBExecutor, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(_executor_module, "_plan_cardinalities", lambda _node: [])
+    monkeypatch.setattr(duckdb_executor_module, "_plan_cardinalities", lambda _node: [])
     with pytest.raises(Exception) as caught:  # noqa: B017 - exact type is the coder's choice
         executor.explain("select * from production")
     assert not isinstance(caught.value, AssertionError)

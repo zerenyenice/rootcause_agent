@@ -1,18 +1,29 @@
-"""Read-only, locked-down DuckDB warehouse executor.
+"""Read-only, locked-down, bounded DuckDB warehouse executor.
 
 Defence in depth for agent-authored SQL:
 
-1. Every statement passes :func:`validate_sql`; only the regenerated, LIMIT-capped
-   ``result.sql`` is executed, never the caller's text.
-2. The connection is opened ``read_only``; external access (files, URLs,
-   ``ATTACH``), extension auto-install/auto-load and Python replacement scans are
-   then disabled, ``lock_configuration`` is set last so no statement can undo it,
-   and the resulting settings are re-read and verified (fail closed). The options
-   are applied with ``SET`` rather than as connect-time config because DuckDB
-   refuses a second in-process connection to the same file whose connect config
-   differs; they are GLOBAL settings, so such connections inherit the lockdown.
-3. Each execution runs under a :class:`threading.Timer` that interrupts the
-   connection, and a lock serialises access to the single connection.
+1. Every statement passes :func:`validate_sql` with a :class:`CatalogSnapshot` of the
+   warehouse's base tables (taken once at open; the file is opened read-only, so it
+   cannot go stale). System views (``pg_*``, ``duckdb_*``, ``pragma_*``,
+   ``sqlite_*``, ``information_schema.*``) and unknown tables are rejected. Only the
+   regenerated, LIMIT-capped ``result.sql`` is executed, never the caller's text.
+2. Generator functions (``range``, ``generate_series``, ``unnest``, ``repeat``) are
+   rejected in any position before anything runs, because they can blow up a tiny
+   input into an unbounded intermediate result.
+3. The connection is opened ``read_only`` and hardened by
+   :mod:`rootcause.connections.duckdb_lockdown`: no external access (files, URLs,
+   ``ATTACH``), no extension auto-install/auto-load, no Python replacement scans, no
+   persistent secrets, a memory limit, two threads and no temp-file spill.
+   ``lock_configuration`` is set last and the values are re-read and verified (fail
+   closed). The options are applied with ``SET`` rather than as connect-time config
+   because DuckDB refuses a second in-process connection to the same file whose
+   connect config differs. All of them are instance-wide (GLOBAL) settings that
+   other in-process connections to the same file inherit, except
+   ``python_enable_replacements``, which DuckDB keeps per connection: it applies to
+   this executor's connection only.
+4. Each execution runs under a :class:`threading.Timer` that interrupts the
+   connection, and a lock serialises access to the single connection. Results are
+   fetched in chunks against a byte budget, so an oversized result is cut off early.
 
 Schema introspection (``list_tables``/``describe_table``/``distinct_values``)
 looks names up in ``information_schema`` with bound parameters and only quotes
@@ -20,7 +31,8 @@ the catalog's own spelling of a name as an identifier; caller input is never
 interpolated into SQL.
 
 Exceptions raised here never carry SQL text, row values or names supplied by the
-caller, so they are safe to log and to surface as tool errors.
+caller, so they are safe to log and to surface as tool errors: database errors are
+re-raised as :class:`QueryFailed` without the original exception chained.
 """
 
 from __future__ import annotations
@@ -34,9 +46,18 @@ from types import MappingProxyType, TracebackType
 from typing import Any, Self
 
 import duckdb
+from sqlglot.errors import SqlglotError
 
 from rootcause.agents.tools.sql import QueryEstimate, QueryResult
-from rootcause.connections.validation import validate_sql
+from rootcause.connections.duckdb_guards import (
+    GENERATOR_FUNCTION_CODE,
+    RESULT_TOO_LARGE_CODE,
+    ResultBudget,
+    ResultTooLarge,
+    generator_function_found,
+)
+from rootcause.connections.duckdb_lockdown import SETTINGS_SQL, SNAPSHOT_SETTINGS, open_locked
+from rootcause.connections.validation import CatalogSnapshot, IssueCode, validate_sql
 from rootcause.errors import ConfigurationError, RootCauseError
 from rootcause.settings import ENV_PREFIX, Settings
 
@@ -44,21 +65,20 @@ DIALECT = "duckdb"
 DEFAULT_MAX_ROWS = 10_000
 DEFAULT_TIMEOUT_SECONDS = 30.0
 DEFAULT_DISTINCT_LIMIT = 50
+
+DEFAULT_MEMORY_LIMIT_MB = 1024
+DEFAULT_MAX_RESULT_BYTES = 16 * 1024 * 1024
 WAREHOUSE_PATH_VARIABLE = f"{ENV_PREFIX}WAREHOUSE_PATH"
 
-# Hardening applied right after connecting; ``lock_configuration`` is set last.
-_LOCKDOWN: Mapping[str, str] = MappingProxyType(
-    {
-        "enable_external_access": "false",
-        "autoinstall_known_extensions": "false",
-        "autoload_known_extensions": "false",
-        "python_enable_replacements": "false",
-    }
+_FETCH_CHUNK_ROWS = 128
+_CATALOG_SQL = (
+    "SELECT c.table_schema, c.table_name, c.column_name "
+    "FROM information_schema.columns AS c JOIN information_schema.tables AS t "
+    "ON c.table_catalog = t.table_catalog AND c.table_schema = t.table_schema "
+    "AND c.table_name = t.table_name "
+    "WHERE t.table_catalog = current_database() AND t.table_schema = current_schema() "
+    "AND t.table_type = 'BASE TABLE' ORDER BY c.table_name, c.ordinal_position"
 )
-_LOCK_SETTING = "lock_configuration"
-_SNAPSHOT_SETTINGS = (*_LOCKDOWN, _LOCK_SETTING)
-_EXPECTED_SETTINGS: Mapping[str, str] = MappingProxyType({**_LOCKDOWN, _LOCK_SETTING: "true"})
-_SETTINGS_SQL = "SELECT name, value FROM duckdb_settings() WHERE name IN ?"
 _TABLES_SQL = (
     "SELECT table_name FROM information_schema.tables "
     "WHERE table_catalog = current_database() AND table_schema = current_schema() "
@@ -95,6 +115,21 @@ class QueryTimeout(RootCauseError):
 
     def __init__(self, timeout_seconds: float) -> None:
         super().__init__(f"Query interrupted after {timeout_seconds:g} seconds.")
+
+
+class QueryFailed(RootCauseError):
+    """The database raised while executing a validated statement.
+
+    The message is generic; ``error_type`` names the DuckDB exception class for
+    server-side logging only. The original exception is never chained, since its
+    message can embed SQL text, identifiers and row values.
+    """
+
+    code = "query_failed"
+
+    def __init__(self, error_type: str) -> None:
+        super().__init__("The warehouse query failed.")
+        self.error_type = error_type
 
 
 class UnknownTable(RootCauseError):
@@ -155,18 +190,26 @@ class DuckDBExecutor:
         *,
         max_rows: int = DEFAULT_MAX_ROWS,
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+        memory_limit_mb: int = DEFAULT_MEMORY_LIMIT_MB,
+        max_result_bytes: int = DEFAULT_MAX_RESULT_BYTES,
     ) -> None:
         if max_rows < 1:
             raise ValueError("max_rows must be at least 1")
         if timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be positive")
+        if memory_limit_mb < 1:
+            raise ValueError("memory_limit_mb must be at least 1")
+        if max_result_bytes < 1:
+            raise ValueError("max_result_bytes must be at least 1")
         if not Path(path).is_file():
             # read_only never creates the file; checking first keeps the path out of errors.
             raise FileNotFoundError("The warehouse database file does not exist.")
         self._max_rows = max_rows
         self._timeout = timeout_seconds
+        self._max_result_bytes = max_result_bytes
         self._lock = threading.Lock()
-        self._connection: duckdb.DuckDBPyConnection | None = _open_locked(Path(path))
+        connection, self._catalog = _open_with_catalog(Path(path), memory_limit_mb)
+        self._connection: duckdb.DuckDBPyConnection | None = connection
 
     def __enter__(self) -> Self:
         return self
@@ -203,20 +246,24 @@ class DuckDBExecutor:
         )
 
     def explain(self, sql: str) -> QueryEstimate:
-        """Planner estimate for ``sql``: the largest node cardinality and their sum."""
+        """Planner estimate for ``sql``: the largest node cardinality and their sum.
+
+        Raises:
+            QueryFailed: when the plan carries no cardinality estimate (fail closed).
+        """
         validated = self._validated(sql)
         fetched = self._execute(f"EXPLAIN (FORMAT JSON) {validated}", (), None)
-        cardinalities = [
-            value for _, plan in fetched.rows for value in _plan_cardinalities(json.loads(plan))
-        ]
+        cardinalities = _cardinalities(fetched.rows)
+        if not cardinalities:
+            raise QueryFailed("MissingEstimate")
         return QueryEstimate(
-            estimated_rows=max(cardinalities, default=0),
+            estimated_rows=max(cardinalities),
             estimated_cost=float(sum(cardinalities)),
         )
 
     def settings_snapshot(self) -> Mapping[str, str]:
         """Current values of the lockdown settings (for verification and audit)."""
-        fetched = self._execute(_SETTINGS_SQL, (list(_SNAPSHOT_SETTINGS),), None)
+        fetched = self._execute(SETTINGS_SQL, (list(SNAPSHOT_SETTINGS),), None)
         return MappingProxyType({str(name): str(value) for name, value in fetched.rows})
 
     def list_tables(self) -> tuple[TableInfo, ...]:
@@ -249,10 +296,17 @@ class DuckDBExecutor:
         return tuple(str(row[0]) for row in fetched.rows)
 
     def _validated(self, sql: str) -> str:
+        """Validate against the catalog, then reject generator functions (both fail closed)."""
         # The extra row lets ``run`` tell "exactly max_rows" apart from "more were cut".
-        result = validate_sql(sql, DIALECT, default_limit=self._max_rows + 1)
+        result = validate_sql(sql, DIALECT, catalog=self._catalog, default_limit=self._max_rows + 1)
         if not result.ok:
             raise QueryRejected([issue.code.value for issue in result.errors])
+        try:
+            has_generator = generator_function_found(result.sql, DIALECT)
+        except (SqlglotError, RecursionError):
+            raise QueryRejected([IssueCode.PARSE_ERROR.value]) from None
+        if has_generator:
+            raise QueryRejected([GENERATOR_FUNCTION_CODE])
         return result.sql
 
     def _resolve_table(self, name: str) -> str:
@@ -266,7 +320,7 @@ class DuckDBExecutor:
         return int(self._execute(sql, (), None).rows[0][0])
 
     def _execute(self, sql: str, params: Sequence[Any], limit: int | None) -> _Fetched:
-        """Run one trusted statement under the lock and the interrupt timer."""
+        """Run one trusted statement under the lock, the interrupt timer and the byte budget."""
         with self._lock:
             connection = self._connection
             if connection is None:
@@ -276,45 +330,70 @@ class DuckDBExecutor:
             timer.start()
             try:
                 connection.execute(sql, list(params))
-                raw = connection.fetchall() if limit is None else connection.fetchmany(limit)
+                rows = self._fetch(connection, limit)
                 columns = tuple(str(d[0]) for d in connection.description or ())
             except duckdb.InterruptException:
                 raise QueryTimeout(self._timeout) from None
+            except duckdb.Error as error:
+                raise QueryFailed(type(error).__name__) from None
+            except ResultTooLarge:
+                raise QueryRejected([RESULT_TOO_LARGE_CODE]) from None
             finally:
                 timer.cancel()
                 timer.join()
-        return _Fetched(columns=columns, rows=tuple(tuple(row) for row in raw))
+        return _Fetched(columns=columns, rows=rows)
+
+    def _fetch(
+        self, connection: duckdb.DuckDBPyConnection, limit: int | None
+    ) -> tuple[tuple[Any, ...], ...]:
+        """Fetch up to ``limit`` rows (all when ``None``) in chunks, charging the byte budget."""
+        budget = ResultBudget(self._max_result_bytes)
+        rows: list[tuple[Any, ...]] = []
+        while limit is None or len(rows) < limit:
+            wanted = (
+                _FETCH_CHUNK_ROWS if limit is None else min(_FETCH_CHUNK_ROWS, limit - len(rows))
+            )
+            chunk = connection.fetchmany(wanted)
+            if not chunk:
+                break
+            for row in chunk:
+                budget.charge(row)
+                rows.append(tuple(row))
+        return tuple(rows)
 
 
-def _current_settings(connection: duckdb.DuckDBPyConnection) -> dict[str, str]:
-    rows = connection.execute(_SETTINGS_SQL, [list(_SNAPSHOT_SETTINGS)]).fetchall()
-    return {str(name): str(value).lower() for name, value in rows}
-
-
-def _apply_lockdown(connection: duckdb.DuckDBPyConnection) -> None:
-    """Disable risky features, lock the configuration last, then verify (fail closed).
-
-    Setting names and values are module constants; nothing here comes from input.
-    An already locked instance with the hardened values is accepted unchanged.
-    """
-    current = _current_settings(connection)
-    for name, value in _LOCKDOWN.items():
-        if current.get(name) != value:
-            connection.execute(f"SET {name} = {value}")
-    if current.get(_LOCK_SETTING) != "true":
-        connection.execute(f"SET {_LOCK_SETTING} = true")
-    if _current_settings(connection) != dict(_EXPECTED_SETTINGS):
-        raise RuntimeError("The warehouse connection could not be locked down.")
-
-
-def _open_locked(path: Path) -> duckdb.DuckDBPyConnection:
-    connection = duckdb.connect(str(path), read_only=True)
+def _cardinalities(rows: Sequence[tuple[Any, ...]]) -> list[int]:
+    """Cardinalities of every ``EXPLAIN (FORMAT JSON)`` plan row; ``QueryFailed`` if unreadable."""
     try:
-        _apply_lockdown(connection)
+        plans = [json.loads(plan) for _, plan in rows]
+    except (TypeError, ValueError):
+        raise QueryFailed("MalformedPlan") from None
+    # Looked up through the module namespace on every call (tests substitute it).
+    return [value for plan in plans for value in _plan_cardinalities(plan)]
+
+
+def _load_catalog(connection: duckdb.DuckDBPyConnection) -> CatalogSnapshot:
+    """Schema-qualified base tables of the current schema and their columns.
+
+    Keys are ``schema.table``: bare names resolve by their last part and ``main.t``
+    matches exactly, while any other qualifier (``information_schema.tables``) does
+    not fall back to a bare match.
+    """
+    columns: dict[str, list[str]] = {}
+    for schema, table, column in connection.execute(_CATALOG_SQL).fetchall():
+        columns.setdefault(f"{schema}.{table}", []).append(str(column))
+    return CatalogSnapshot(columns)
+
+
+def _open_with_catalog(
+    path: Path, memory_limit_mb: int
+) -> tuple[duckdb.DuckDBPyConnection, CatalogSnapshot]:
+    connection = open_locked(str(path), memory_limit_mb)
+    try:
+        return connection, _load_catalog(connection)
     except BaseException:
         connection.close()
         raise
-    return connection
 
 
 def executor_from_settings(settings: Settings) -> DuckDBExecutor | None:
