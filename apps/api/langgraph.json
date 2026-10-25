@@ -1,0 +1,7 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "placeholder": "./src/rootcause_api/graphs.py:graph"
+  },
+  "env": ".env"
+}

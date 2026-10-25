@@ -6,6 +6,7 @@ get a message that names the offending variables without leaking their values.
 """
 
 import os
+import re
 from enum import StrEnum
 from functools import lru_cache
 from typing import Literal
@@ -20,6 +21,8 @@ ENVIRONMENT_VARIABLE = f"{ENV_PREFIX}ENVIRONMENT"
 DOTENV_FILE = ".env"
 
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+
+RATE_LIMIT_PATTERN = re.compile(r"^(?P<count>\d+)/(?:second|minute|hour|day)$")
 
 # (environment variable name, pydantic error type) pairs extracted from a
 # ValidationError; deliberately value-free so they can be surfaced anywhere.
@@ -77,12 +80,22 @@ class Settings(BaseSettings):
     otel_exporter: OtelExporter = OtelExporter.NONE
     otel_endpoint: AnyHttpUrl | None = None
     service_name: str = Field(default="rootcause", min_length=1)
+    rate_limit: str = "120/minute"
 
     @field_validator("environment", mode="before")
     @classmethod
     def _normalise_environment(cls, value: object) -> object:
         """Accept ``PROD``/``Dev``/``test`` alike; the enum check runs after."""
         return value.lower() if isinstance(value, str) else value
+
+    @field_validator("rate_limit")
+    @classmethod
+    def _validate_rate_limit(cls, value: str) -> str:
+        """Require ``<positive int>/<second|minute|hour|day>``."""
+        match = RATE_LIMIT_PATTERN.fullmatch(value.strip())
+        if match is None or int(match["count"]) < 1:
+            raise ValueError("rate_limit must look like '<count>/<second|minute|hour|day>'")
+        return value.strip()
 
     @field_validator("log_level", mode="before")
     @classmethod
