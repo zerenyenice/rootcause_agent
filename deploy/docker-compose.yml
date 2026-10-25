@@ -459,8 +459,7 @@ services:
     restart: unless-stopped
     command: ["uvicorn", "--factory", "rootcause.agent_service.main:create_app", "--host", "0.0.0.0", "--port", "8100"]
     depends_on:
-      migrate:
-        condition: service_completed_successfully
+      <<: *app-depends-on
       agent-setup:
         condition: service_completed_successfully
     env_file: *app-env-file
