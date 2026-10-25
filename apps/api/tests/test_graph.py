@@ -59,3 +59,11 @@ def test_graph_handles_empty_messages() -> None:
     result = graph.invoke({"messages": []})
 
     assert isinstance(result["messages"], list)
+
+
+@pytest.mark.unit
+def test_langgraph_dependencies_include_api_and_core_packages() -> None:
+    dependencies = json.loads(LANGGRAPH_JSON.read_text())["dependencies"]
+
+    assert "." in dependencies
+    assert "../../packages/core" in dependencies

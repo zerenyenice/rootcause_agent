@@ -57,3 +57,18 @@ def test_default_limit_allows_normal_traffic(make_client: Callable[..., Any]) ->
     statuses = {client.get("/version").status_code for _ in range(10)}
 
     assert statuses == {200}
+
+
+@pytest.mark.unit
+def test_rate_limit_is_one_bucket_across_all_paths(make_client: Callable[..., Any]) -> None:
+    client = make_client(rate_limit="3/minute")
+
+    statuses = [client.get(path).status_code for path in ("/version", "/health", "/nope-1")]
+    limited = client.get("/nope-2")
+
+    body = limited.json()
+    assert 429 not in statuses
+    assert limited.status_code == 429
+    assert body["error"]["code"] == "rate_limited"
+    assert "Retry-After" in limited.headers
+    assert "X-Request-ID" in limited.headers
