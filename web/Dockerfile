@@ -28,12 +28,8 @@ WORKDIR /app
 # host's published ports; there is no server-side proxy in the MVP).
 ARG NEXT_PUBLIC_API_URL=http://localhost:8000
 ARG NEXT_PUBLIC_AGENT_URL=http://localhost:8100
-# NEXT_PUBLIC_LANGGRAPH_API_URL is transitional: the current chat UI still
-# reads the LangGraph Server URL, so it points at the agent service until the
-# frontend switches to NEXT_PUBLIC_AGENT_URL.
 ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL} \
     NEXT_PUBLIC_AGENT_URL=${NEXT_PUBLIC_AGENT_URL} \
-    NEXT_PUBLIC_LANGGRAPH_API_URL=${NEXT_PUBLIC_AGENT_URL} \
     NEXT_TELEMETRY_DISABLED=1
 
 COPY --from=deps /app/node_modules ./node_modules

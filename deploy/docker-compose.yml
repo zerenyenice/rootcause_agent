@@ -417,6 +417,21 @@ services:
       # The only service that gets the migrator URL (DDL rights).
       ROOTCAUSE_MIGRATION_DATABASE_URL: postgresql://rootcause_migrator:${POSTGRES_MIGRATOR_PASSWORD:?set POSTGRES_MIGRATOR_PASSWORD in deploy/.env}@postgres:5432/${POSTGRES_DB:-rootcause}
 
+  # One-shot after migrate: creates the LangGraph checkpointer/store tables in
+  # the app schema as the owner role (the app role cannot run DDL).
+  agent-setup:
+    build: *app-build
+    image: rootcause-app:dev
+    restart: "no"
+    command: ["python", "-m", "rootcause.agent_service.persistence"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    env_file: *app-env-file
+    environment:
+      <<: [*app-environment, *app-env-scrub]
+      ROOTCAUSE_MIGRATION_DATABASE_URL: postgresql://rootcause_migrator:${POSTGRES_MIGRATOR_PASSWORD:?set POSTGRES_MIGRATOR_PASSWORD in deploy/.env}@postgres:5432/${POSTGRES_DB:-rootcause}
+
   api:
     build: *app-build
     image: rootcause-app:dev
@@ -443,7 +458,11 @@ services:
     image: rootcause-app:dev
     restart: unless-stopped
     command: ["uvicorn", "--factory", "rootcause.agent_service.main:create_app", "--host", "0.0.0.0", "--port", "8100"]
-    depends_on: *app-depends-on
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      agent-setup:
+        condition: service_completed_successfully
     env_file: *app-env-file
     environment:
       <<: [*app-environment, *app-env-scrub]
