@@ -10,7 +10,7 @@ configuration. ``input`` may carry only ``messages`` and ``command`` only
 
 from typing import Any, Final, Self
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
 MAX_INPUT_MESSAGES: Final = 50
 CONNECTION_ID_PATTERN: Final = r"^[A-Za-z0-9._\-]{1,128}$"
@@ -48,6 +48,10 @@ class RunRequest(BaseModel):
     input: RunInput | None = None
     context: RunContext | None = None
     command: RunCommand | None = None
+    # The SDK sends ``streamSubgraphs``; subagent events are streamed unless it is false.
+    stream_subgraphs: bool = Field(
+        default=True, validation_alias=AliasChoices("streamSubgraphs", "stream_subgraphs")
+    )
 
     @model_validator(mode="after")
     def _one_of_input_or_command(self) -> Self:
@@ -62,3 +66,12 @@ class ThreadCreated(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     thread_id: str
+
+
+class ThreadSearch(BaseModel):
+    """Body of ``POST /threads/search`` (mirrors LangGraph's ``threads.search``)."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    limit: int = Field(default=20, ge=1, le=100)
+    offset: int = Field(default=0, ge=0)

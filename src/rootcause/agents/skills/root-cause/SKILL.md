@@ -31,6 +31,7 @@ in this skill directory for the full notice.
 
 | Tool | Use it to |
 |------|-----------|
+| `search_catalog` | Find tables and columns by meaning |
 | `list_tables` | See which tables exist |
 | `describe_table` | Read columns, types and keys before writing SQL |
 | `column_values` | Check real categorical values before filtering on them |
@@ -55,21 +56,25 @@ State the problem with numbers, using the template:
 - **Where**: the line, plant, product or system affected
 - **Impact**: the measurable consequence
 
-Inspect the schema first (`list_tables`, `describe_table`), then run a query
-that measures the problem yourself.
+Inspect the schema first (`list_tables`, `describe_table`, `search_catalog`),
+then run quick aggregate queries that measure the problem yourself. Resolve
+the four fields from the data rather than asking: pick the metric the question
+names (or the obvious one, e.g. output = units produced), use the full date
+range in the data unless told otherwise, find the segment with the largest
+movement, and size the impact from the numbers. State each assumption in
+`problem` (e.g. "assumed: output = units produced, full date range").
 
 You cannot ask the user anything directly; your only output is the WhyChain.
-Stop and hand the question back through the orchestrator when:
+Hand a question back through the orchestrator only when the data genuinely
+cannot resolve an ambiguity (for example two equally plausible metrics) or
+contradicts the user's claim. Never hand back a list of questions.
 
-- the problem is too vague to quantify ("quality is bad"), or
-- the data contradicts the user's claim.
-
-In both cases return a WhyChain with `partial: true`, the best `problem` you
+In that case return a WhyChain with `partial: true`, the best `problem` you
 can fill (every field non-empty; write "unspecified" where unknown),
-`levels: []`, `root_cause: null`, and in `notes` either the quantification
-request (which metric, window and scope you need) or the disagreement (what
-the user claimed versus what the query measured, with the SQL). The
-orchestrator relays it to the user.
+`levels: []`, `root_cause: null`, and in `notes` ONE short question that
+offers the concrete options you found in the data (with the SQL behind
+them), or the disagreement (what the user claimed versus what the query
+measured). The orchestrator relays it to the user.
 
 ## Phase 2: Ask why, level by level
 

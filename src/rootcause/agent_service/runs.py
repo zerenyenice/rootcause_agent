@@ -1,7 +1,7 @@
 """Run execution: graph input, per-run config and the SSE event stream."""
 
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from typing import Any, Final
 
 from langchain_core.runnables import RunnableConfig
@@ -47,8 +47,18 @@ def build_run_config(thread_id: str, request: RunRequest, settings: Settings) ->
     return RunnableConfig(**{**config, "configurable": configurable})
 
 
+def event_name(mode: str, namespace: Sequence[str]) -> str:
+    """LangGraph Platform event name: ``<mode>`` at the root, ``<mode>|<ns>|...`` in a subgraph."""
+    return "|".join((mode, *namespace)) if namespace else mode
+
+
 async def stream_run(
-    graph: Graph, graph_input: Any, config: RunnableConfig, *, thread_id: str
+    graph: Graph,
+    graph_input: Any,
+    config: RunnableConfig,
+    *,
+    thread_id: str,
+    subgraphs: bool = True,
 ) -> AsyncIterator[str]:
     """SSE frames of one run: ``metadata``, then the graph's events, or a final ``error``.
 
@@ -58,7 +68,7 @@ async def stream_run(
     """
     run_id = str(uuid.uuid4())
     yield sse_frame("metadata", {"run_id": run_id, "thread_id": thread_id})
-    async for frame in _graph_events(graph, graph_input, config, run_id, thread_id):
+    async for frame in _graph_events(graph, graph_input, config, run_id, thread_id, subgraphs):
         yield frame
 
 
@@ -68,6 +78,7 @@ async def stream_connection_run(
     config: RunnableConfig,
     *,
     thread_id: str,
+    subgraphs: bool = True,
 ) -> AsyncIterator[str]:
     """Like :func:`stream_run`, on the graph ``resolve_graph`` returns for the run's
     connection.
@@ -92,7 +103,7 @@ async def stream_connection_run(
         )
         yield sse_frame("error", {"error": code, "message": message})
         return
-    async for frame in _graph_events(graph, graph_input, config, run_id, thread_id):
+    async for frame in _graph_events(graph, graph_input, config, run_id, thread_id, subgraphs):
         yield frame
 
 
@@ -103,11 +114,20 @@ def _refusal(error: Exception) -> tuple[str, str]:
 
 
 async def _graph_events(
-    graph: Graph, graph_input: Any, config: RunnableConfig, run_id: str, thread_id: str
+    graph: Graph,
+    graph_input: Any,
+    config: RunnableConfig,
+    run_id: str,
+    thread_id: str,
+    subgraphs: bool,
 ) -> AsyncIterator[str]:
     try:
-        async for mode, chunk in graph.astream(graph_input, config, stream_mode=list(STREAM_MODES)):
-            yield sse_frame(mode, chunk)
+        async for part in graph.astream(
+            graph_input, config, stream_mode=list(STREAM_MODES), subgraphs=subgraphs
+        ):
+            # ``(namespace, mode, chunk)`` with subgraphs, ``(mode, chunk)`` without.
+            namespace, mode, chunk = part if subgraphs else ((), *part)
+            yield sse_frame(event_name(mode, namespace), chunk)
     except Exception as error:  # noqa: BLE001 - the stream has started: report in-band
         error_type = type(error).__name__
         _logger.error("agent_run_failed", thread_id=thread_id, run_id=run_id, error_type=error_type)
