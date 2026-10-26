@@ -34,11 +34,14 @@ def strict_executor(tmp_path: Path) -> Iterator[SelectionExecutor]:
         con.execute(f"INSERT INTO t VALUES (1, 10, '{SECRET}'), (2, 20, '{SECRET}')")
         con.execute("CREATE TABLE u (id INTEGER, label VARCHAR)")
         con.execute("INSERT INTO u VALUES (1, 'one'), (2, 'two')")
+        con.execute("CREATE TABLE w (id INTEGER, secret VARCHAR)")
+        con.execute("INSERT INTO w VALUES (1, 'public')")
     finally:
         con.close()
     tables = (
         SelectedTable("main", "t", "t", ("id", "visible"), hides_columns=True),
         SelectedTable("main", "u", "u", ("id", "label"), hides_columns=False),
+        SelectedTable("main", "w", "w", ("id", "secret"), hides_columns=False),
     )
     ex = SelectionExecutor(DuckDBExecutor(path), tables, "duckdb")
     try:
@@ -68,6 +71,30 @@ LEAKS = {
     "positional-join-star-reversed": "SELECT * FROM u POSITIONAL JOIN t",
     "three-part-name": "SELECT id FROM memory.main.t",
     "three-part-name-other-catalog": "SELECT id FROM other.main.t",
+    "table-alias-as-bare-name": "SELECT secret FROM t AS secret, (VALUES (1)) v(y)",
+    "table-alias-as-bare-name-join": (
+        "SELECT secret FROM (VALUES (1)) v(y) JOIN t AS secret ON true"
+    ),
+    "table-alias-matches-selected-name": "SELECT x FROM t AS x, (VALUES (1)) v(y)",
+    "subquery-alias-shadows-outer-secret": (
+        "SELECT (SELECT secret FROM t AS secret LIMIT 1) FROM w"
+    ),
+    "subquery-alias-shadows-outer-label": ("SELECT (SELECT label FROM t AS label LIMIT 1) FROM u"),
+    "subquery-alias-array-agg": "SELECT (SELECT array_agg(label) FROM t AS label) FROM u",
+    "subquery-alias-max": "SELECT (SELECT max(label) FROM t AS label) FROM u",
+    "subquery-alias-over-derived-outer": (
+        "SELECT (SELECT v FROM t AS v LIMIT 1) FROM (SELECT 1 AS v) s"
+    ),
+    "lateral-alias-shadow": (
+        "SELECT z.l FROM u, LATERAL (SELECT label AS l FROM t AS label LIMIT 1) z"
+    ),
+    "subquery-struct-field-access": (
+        "SELECT (SELECT label FROM t AS label ORDER BY label.id LIMIT 1).secret FROM u"
+    ),
+    "exists-alias-cast-filter": (
+        "SELECT u.id FROM u WHERE EXISTS "
+        "(SELECT 1 FROM t AS label WHERE label::VARCHAR LIKE '%S3C%')"
+    ),
 }
 
 
