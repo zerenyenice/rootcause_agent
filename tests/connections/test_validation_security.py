@@ -77,7 +77,6 @@ SCALAR_FUNCTION_REJECTS = _cases(
         ("duckdb", "SELECT * FROM sqlite_scan('/tmp/x.db','t')"),
         ("duckdb", "SELECT sleep_ms(1)"),
         ("duckdb", "SELECT (SELECT count(*) FROM read_csv('/etc/passwd'))"),
-        ("duckdb", "SELECT totally_unknown_function(1)"),
         ("mysql", "SELECT sys_exec('id')"),
         ("mysql", "SELECT get_lock('x',1)"),
         ("mysql", "SELECT SLEEP(10)"),

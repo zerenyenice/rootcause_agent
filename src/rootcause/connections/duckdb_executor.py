@@ -57,7 +57,13 @@ from rootcause.connections.duckdb_guards import (
     generator_function_found,
 )
 from rootcause.connections.duckdb_lockdown import SETTINGS_SQL, SNAPSHOT_SETTINGS, open_locked
-from rootcause.connections.validation import CatalogSnapshot, IssueCode, validate_sql
+from rootcause.connections.rejection_guidance import guidance_for
+from rootcause.connections.validation import (
+    CatalogSnapshot,
+    FunctionCatalog,
+    IssueCode,
+    validate_sql,
+)
 from rootcause.errors import ConfigurationError, RootCauseError
 from rootcause.settings import ENV_PREFIX, Settings
 
@@ -109,13 +115,20 @@ MAX_ERROR_DETAIL_CHARS = 500
 
 
 class QueryRejected(RootCauseError):
-    """The statement failed validation; ``codes`` lists the issue codes (no SQL text)."""
+    """The statement failed validation; ``codes`` lists the issue codes (no SQL text).
+
+    ``reasons`` are the validator's per-issue messages (they name only identifiers the
+    caller wrote, never row values); ``hints`` are static rewrite guidance for the codes.
+    Neither is part of ``str(exc)``, so logs stay value-free.
+    """
 
     code = "query_rejected"
     status_code = 400
 
-    def __init__(self, codes: Sequence[str]) -> None:
+    def __init__(self, codes: Sequence[str], reasons: Sequence[str] = ()) -> None:
         self.codes: tuple[str, ...] = tuple(dict.fromkeys(codes))
+        self.reasons: tuple[str, ...] = tuple(dict.fromkeys(reasons))
+        self.hints: tuple[str, ...] = guidance_for(self.codes)
         super().__init__(f"Query rejected by the read-only validator: {', '.join(self.codes)}.")
 
 
@@ -245,7 +258,7 @@ class DuckDBExecutor:
         self._timeout = timeout_seconds
         self._max_result_bytes = max_result_bytes
         self._lock = threading.Lock()
-        connection, self._catalog = _open_with_catalog(Path(path), memory_limit_mb)
+        connection, self._catalog, self._functions = _open_with_catalog(Path(path), memory_limit_mb)
         self._connection: duckdb.DuckDBPyConnection | None = connection
 
     def __enter__(self) -> Self:
@@ -341,12 +354,26 @@ class DuckDBExecutor:
         fetched = self._execute(sql, (min(limit, self._max_rows),), None)
         return tuple(str(row[0]) for row in fetched.rows)
 
+    @property
+    def function_catalog(self) -> FunctionCatalog:
+        """Built-in and user-defined function names, read once when the file was opened."""
+        return self._functions
+
     def _validated(self, sql: str) -> str:
         """Validate against the catalog, then reject generator functions (both fail closed)."""
         # The extra row lets ``run`` tell "exactly max_rows" apart from "more were cut".
-        result = validate_sql(sql, DIALECT, catalog=self._catalog, default_limit=self._max_rows + 1)
+        result = validate_sql(
+            sql,
+            DIALECT,
+            catalog=self._catalog,
+            functions=self._functions,
+            default_limit=self._max_rows + 1,
+        )
         if not result.ok:
-            raise QueryRejected([issue.code.value for issue in result.errors])
+            raise QueryRejected(
+                [issue.code.value for issue in result.errors],
+                [issue.message for issue in result.errors],
+            )
         try:
             has_generator = generator_function_found(result.sql, DIALECT)
         except (SqlglotError, RecursionError):
@@ -432,12 +459,23 @@ def _load_catalog(connection: duckdb.DuckDBPyConnection) -> CatalogSnapshot:
     return CatalogSnapshot(columns)
 
 
+def load_function_catalog(connection: duckdb.DuckDBPyConnection) -> FunctionCatalog:
+    """Built-in and user-defined (macro) function names of the database, lower-cased."""
+    rows = connection.execute(
+        "SELECT DISTINCT lower(function_name), internal FROM duckdb_functions()"
+    )
+    names = rows.fetchall()
+    builtin = frozenset(str(name) for name, internal in names if internal)
+    user = frozenset(str(name) for name, internal in names if not internal)
+    return FunctionCatalog(builtin=builtin, user=user)
+
+
 def _open_with_catalog(
     path: Path, memory_limit_mb: int
-) -> tuple[duckdb.DuckDBPyConnection, CatalogSnapshot]:
+) -> tuple[duckdb.DuckDBPyConnection, CatalogSnapshot, FunctionCatalog]:
     connection = open_locked(str(path), memory_limit_mb)
     try:
-        return connection, _load_catalog(connection)
+        return connection, _load_catalog(connection), load_function_catalog(connection)
     except BaseException:
         connection.close()
         raise

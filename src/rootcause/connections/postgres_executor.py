@@ -347,7 +347,10 @@ class PostgresExecutor:
             sql_text, DIALECT, catalog=self._catalog_snapshot(), default_limit=self._max_rows + 1
         )
         if not result.ok:
-            raise QueryRejected([issue.code.value for issue in result.errors])
+            raise QueryRejected(
+                [issue.code.value for issue in result.errors],
+                [issue.message for issue in result.errors],
+            )
         try:
             has_generator = generator_function_found(result.sql, DIALECT)
         except (SqlglotError, RecursionError):

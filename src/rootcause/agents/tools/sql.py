@@ -38,6 +38,9 @@ from rootcause.logging import get_logger
 
 _logger = get_logger(__name__)
 _ERROR_MESSAGE = "The query could not be executed."
+_MAX_REASONS = 5
+_MAX_REASON_CHARS = 600
+_MAX_REJECTION_DETAIL_CHARS = 1500
 DEFAULT_MAX_DECISIONS = 10_000
 RUN_SQL_TOOL = "run_sql"
 QUERY_RESULTS_DIR = "/query_results/"
@@ -153,11 +156,21 @@ def _actionable_fields(exc: Exception) -> dict[str, Any]:
     name = type(exc).__name__
     codes = getattr(exc, "codes", None)
     if name == "QueryRejected" and codes is not None:
-        return {"codes": [str(code) for code in codes]}
+        return _rejection_fields(exc, codes)
     detail = getattr(exc, "detail", None)
     if name == "QueryFailed" and isinstance(detail, str) and detail:
         return {"detail": detail}
     return {}
+
+
+def _rejection_fields(exc: Exception, codes: Any) -> dict[str, Any]:
+    """Codes plus one ``detail``: the validator's reasons then how to rewrite the query."""
+    reasons = [str(r)[:_MAX_REASON_CHARS] for r in getattr(exc, "reasons", ())[:_MAX_REASONS]]
+    hints = [str(h) for h in getattr(exc, "hints", ())]
+    fields: dict[str, Any] = {"codes": [str(code) for code in codes]}
+    if reasons or hints:
+        fields["detail"] = " ".join([*reasons, *hints])[:_MAX_REJECTION_DETAIL_CHARS]
+    return fields
 
 
 def _json_value(value: Any) -> Any:

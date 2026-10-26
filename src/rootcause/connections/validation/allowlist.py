@@ -7,7 +7,7 @@ name for the dialect in ``ALLOWED_ANONYMOUS``.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from types import MappingProxyType
 from typing import Final
 
@@ -385,3 +385,159 @@ ALLOWED_ANONYMOUS: Final[Mapping[str, frozenset[str]]] = MappingProxyType(
         ),
     }
 )
+
+
+# --- DuckDB: broad allow, explicit deny -------------------------------------------------
+#
+# DuckDB ships hundreds of pure scalar/aggregate/window functions (``date_sub``,
+# ``regr_slope``, ``histogram``, ``list_*`` ...). The connection itself is locked down
+# (read-only file, no external access, no extensions, no spill; ``duckdb_lockdown``), so
+# the validator is defence in depth there: instead of enumerating every safe function it
+# denies the ones that can read files/URLs, reach system state, write, sleep, run nested
+# SQL, or generate rows, and allows the rest. Other dialects keep the strict allow lists.
+
+#: Lower-cased DuckDB function names that are never allowed (anonymous calls).
+DUCKDB_DENIED_FUNCTION_NAMES: Final[frozenset[str]] = frozenset(
+    {
+        # run nested SQL / read tables by name (would bypass the table checks)
+        "query",
+        "query_table",
+        "json_deserialize_sql",
+        "json_serialize_sql",
+        "json_serialize_plan",
+        # files, environment, configuration, variables, extensions
+        "glob",
+        "getenv",
+        "current_setting",
+        "getvariable",
+        "load_extension",
+        "install_extension",
+        "which_secret",
+        "write_log",
+        "parse_duckdb_log_message",
+        "hive_partition_component",
+        # state-changing or blocking scalars
+        "nextval",
+        "currval",
+        "setval",
+        "setseed",
+        "checkpoint",
+        "force_checkpoint",
+        "txid_current",
+        # system information
+        "get_block_size",
+        "current_query",
+        "current_database",
+        "current_schema",
+        "current_schemas",
+        "current_catalog",
+        "version",
+        "in_search_path",
+        # row generators (also refused by the executor's generator guard)
+        "range",
+        "generate_series",
+        "generate_subscripts",
+        "repeat",
+        "unnest",
+        "unpivot_list",
+    }
+)
+#: Prefixes of function families that reach outside the catalog's tables.
+DUCKDB_DENIED_FUNCTION_PREFIXES: Final[tuple[str, ...]] = (
+    "read_",
+    "write_",
+    "copy_",
+    "sniff_",
+    "parquet_",
+    "iceberg_",
+    "delta_",
+    "duckdb_",
+    "pragma_",
+    "sqlite_",
+    "pg_",
+    "st_read",
+    "sleep",
+    "__internal",
+    "load_",
+    "install_",
+    "export_",
+    "import_",
+    "attach",
+    "detach",
+)
+#: Typed sqlglot function classes that read files, call services, expand ``COLUMNS(...)``
+#: or generate rows. Every other typed function is allowed for DuckDB.
+_DUCKDB_DENIED_TYPE_NAMES: Final[frozenset[str]] = frozenset(
+    {
+        "ReadCSV",
+        "ReadParquet",
+        "ToFile",
+        "Secret",
+        "JSONTable",
+        "OpenJSON",
+        "XMLTable",
+        "GenerateTable",
+        "Generator",
+        "Inline",
+        "Stack",
+        "SplitToTable",
+        "GapFill",
+        "Columns",  # COLUMNS('regex') expands to columns the selection check cannot see
+        "Seq1",
+        "Seq2",
+        "Seq4",
+        "Seq8",
+        "Normal",
+        "Uniform",
+        "Zipf",
+        "Randstr",
+        "GenerateBool",
+        "GenerateDouble",
+        "GenerateInt",
+        "GenerateText",
+        "GenerateEmbedding",
+        "VectorSearch",
+        "FeaturesAtTime",
+        "Search",
+        "SearchIp",
+        "Predict",
+        "Host",
+        "CurrentDatabase",
+        "CurrentSchema",
+        "CurrentSchemas",
+        "CurrentCatalog",
+        "CurrentVersion",
+        "CurrentUser",
+        "SessionUser",
+        "NextValueFor",
+        "Repeat",
+    }
+)
+_DUCKDB_DENIED_TYPE_PREFIXES: Final[tuple[str, ...]] = ("AI", "ML")
+
+
+def _function_subclasses(base: type[exp.Expr]) -> Iterator[type[exp.Expr]]:
+    for subclass in base.__subclasses__():
+        yield subclass
+        yield from _function_subclasses(subclass)
+
+
+def _duckdb_allows_type(cls: type[exp.Expr]) -> bool:
+    name = cls.__name__
+    if name in _DUCKDB_DENIED_TYPE_NAMES or name.startswith(_DUCKDB_DENIED_TYPE_PREFIXES):
+        return False
+    return cls not in (exp.Anonymous, exp.AnonymousAggFunc)
+
+
+DUCKDB_TYPE_SET: Final[frozenset[type[exp.Expr]]] = (
+    frozenset(cls for cls in _function_subclasses(exp.Func) if _duckdb_allows_type(cls))
+    | ALLOWED_TYPE_SET
+)
+
+
+def duckdb_function_name_allowed(name: str) -> bool:
+    """Whether the (unknown to sqlglot) DuckDB function ``name`` may be called."""
+    lowered = name.lower()
+    return lowered not in DUCKDB_DENIED_FUNCTION_NAMES and not lowered.startswith(
+        DUCKDB_DENIED_FUNCTION_PREFIXES
+    )

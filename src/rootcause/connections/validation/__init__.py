@@ -21,7 +21,7 @@ from sqlglot import exp
 from sqlglot.errors import OptimizeError
 
 from rootcause.connections.validation.catalog import CatalogSnapshot, catalog_issues
-from rootcause.connections.validation.functions import function_issues
+from rootcause.connections.validation.functions import FunctionCatalog, function_issues
 from rootcause.connections.validation.limits import apply_limit
 from rootcause.connections.validation.logfilter import install_sqlglot_log_filter
 from rootcause.connections.validation.references import extract_references
@@ -46,6 +46,7 @@ __all__ = [
     "MAX_SQL_CHARS",
     "SUPPORTED_DIALECTS",
     "CatalogSnapshot",
+    "FunctionCatalog",
     "IssueCode",
     "ValidationIssue",
     "ValidationResult",
@@ -64,6 +65,7 @@ def validate_sql(
     dialect: str,
     *,
     catalog: CatalogSnapshot | None = None,
+    functions: FunctionCatalog | None = None,
     default_limit: int = DEFAULT_LIMIT,
 ) -> ValidationResult:
     """Validate ``sql`` for read-only execution against ``dialect``.
@@ -82,7 +84,7 @@ def validate_sql(
         message = f"SQL is {len(sql)} characters; the maximum is {MAX_SQL_CHARS}."
         return failure(sql, ValidationIssue(IssueCode.INPUT_TOO_LARGE, message))
     try:
-        return _validate(sql, normalised_dialect, catalog, default_limit)
+        return _validate(sql, normalised_dialect, catalog, functions, default_limit)
     except OptimizeError as error:
         return failure(sql, _analysis_failure(str(error)))
     except RecursionError:
@@ -105,6 +107,7 @@ def _validate(
     sql: str,
     dialect: str,
     catalog: CatalogSnapshot | None,
+    functions: FunctionCatalog | None,
     default_limit: int,
 ) -> ValidationResult:
     if issue := executable_comment_issue(sql, dialect):
@@ -115,7 +118,7 @@ def _validate(
     if issue := statement_count_issue(statements):
         return failure(sql, issue)
     statement = statements[0]
-    policy_errors = _policy_errors(statement, dialect)
+    policy_errors = _policy_errors(statement, dialect, functions)
     if policy_errors:
         return failure(sql, *policy_errors)
     if not isinstance(statement, exp.Query):
@@ -123,11 +126,13 @@ def _validate(
     return _finalise(statement, dialect, catalog, default_limit)
 
 
-def _policy_errors(statement: exp.Expr, dialect: str) -> tuple[ValidationIssue, ...]:
+def _policy_errors(
+    statement: exp.Expr, dialect: str, functions: FunctionCatalog | None
+) -> tuple[ValidationIssue, ...]:
     return (
         *read_only_issues(statement),
         *statement_keyword_alias_issues(statement, dialect),
-        *function_issues(statement, dialect),
+        *function_issues(statement, dialect, functions),
         *source_issues(statement, dialect),
     )
 
