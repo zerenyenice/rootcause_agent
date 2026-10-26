@@ -1,148 +1,85 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { Chat } from "@/components/Chat";
-import { ChatPage } from "@/components/ChatPage";
+import { ChatPage } from "@/components/chat/ChatPage";
 import { duckdbConnection, postgresConnection } from "./fixtures/admin";
 
-const api = vi.hoisted(() => {
-  class ApiError extends Error {
-    constructor(
-      public readonly code: string,
-      message: string,
-      public readonly status = 400,
-    ) {
-      super(message);
-      this.name = "ApiError";
-    }
-  }
-  return { ApiError, listConnections: vi.fn() };
-});
-
-vi.mock("@/lib/api", () => api);
-
-vi.mock("@/lib/agentTransport", () => ({
-  AgentThreadTransport: class {
-    reset = vi.fn();
+const mocks = vi.hoisted(() => ({
+  connections: { connections: null as unknown, error: null as string | null },
+  session: {
+    key: 0,
+    threadId: null as string | null,
+    connectionId: null as string | null,
   },
+  setActiveThreadId: vi.fn(),
 }));
 
-const stream = vi.hoisted(() => ({
-  current: {
-    messages: [] as unknown[],
-    isLoading: false,
-    error: undefined as unknown,
-    interrupt: undefined as { value: unknown } | undefined,
-    submit: vi.fn(),
-    stop: vi.fn(),
-    switchThread: vi.fn(),
-  },
+vi.mock("@/lib/useConnections", () => ({ useConnections: () => mocks.connections }));
+vi.mock("@/components/shell/ThreadsProvider", () => ({
+  useThreads: () => ({
+    session: mocks.session,
+    setActiveThreadId: mocks.setActiveThreadId,
+  }),
 }));
-
-vi.mock("@langchain/langgraph-sdk/react", () => ({
-  useStream: () => stream.current,
+vi.mock("@/components/chat/Chat", () => ({
+  Chat: (props: {
+    connection: { id: string; name: string };
+    initialThreadId: string | null;
+    onConnectionChange: (id: string) => void;
+  }) => (
+    <div>
+      <p>chat:{props.connection.name}</p>
+      <p>thread:{props.initialThreadId ?? "none"}</p>
+      <button onClick={() => props.onConnectionChange(duckdbConnection.id)}>
+        switch
+      </button>
+    </div>
+  ),
 }));
-
-const approvalInterrupt = {
-  value: {
-    action_requests: [{ name: "run_sql", args: { sql: "SELECT 1" }, description: "q" }],
-  },
-};
 
 beforeEach(() => {
-  vi.resetAllMocks();
-  stream.current = {
-    messages: [],
-    isLoading: false,
-    error: undefined,
-    interrupt: undefined,
-    submit: vi.fn().mockResolvedValue(undefined),
-    stop: vi.fn().mockResolvedValue(undefined),
-    switchThread: vi.fn(),
+  mocks.connections = {
+    connections: [postgresConnection, duckdbConnection],
+    error: null,
   };
-  api.listConnections.mockResolvedValue([postgresConnection, duckdbConnection]);
-});
-
-async function send(text: string) {
-  await userEvent.type(screen.getByLabelText("Message"), `${text}{Enter}`);
-}
-
-describe("Chat with a connection", () => {
-  it("sends the connection id as run context", async () => {
-    render(<Chat connectionId="conn-1" />);
-
-    await send("why did revenue drop?");
-
-    expect(stream.current.submit).toHaveBeenCalledWith(
-      { messages: [{ type: "human", content: "why did revenue drop?" }] },
-      { context: { connection_id: "conn-1" } },
-    );
-  });
-
-  it("keeps the connection context when resuming an approval", async () => {
-    stream.current.interrupt = approvalInterrupt;
-    render(<Chat connectionId="conn-1" />);
-
-    await userEvent.click(screen.getByRole("button", { name: "Approve" }));
-
-    expect(stream.current.submit).toHaveBeenCalledWith(null, {
-      command: { resume: { decisions: [{ type: "approve" }] } },
-      context: { connection_id: "conn-1" },
-    });
-  });
+  mocks.session = { key: 0, threadId: null, connectionId: null };
+  mocks.setActiveThreadId.mockClear();
 });
 
 describe("ChatPage", () => {
-  it("offers the connections in a labelled picker and preselects the first", async () => {
+  it("shows an error banner when connections fail to load", () => {
+    mocks.connections = { connections: null, error: "Could not reach the server." };
     render(<ChatPage />);
-
-    const picker = await screen.findByLabelText("Connection");
-    await waitFor(() => expect(picker).toHaveValue(postgresConnection.id));
-    expect(screen.getByRole("option", { name: "Warehouse" })).toBeInTheDocument();
-    expect(screen.getByRole("option", { name: "Local demo" })).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("Could not reach the server.");
   });
 
-  it("submits with the preselected connection id", async () => {
+  it("shows a loading state before connections arrive", () => {
+    mocks.connections = { connections: null, error: null };
     render(<ChatPage />);
-    await waitFor(() =>
-      expect(screen.getByLabelText("Connection")).toHaveValue(postgresConnection.id),
-    );
+    expect(screen.getByRole("status")).toBeInTheDocument();
+  });
 
-    await send("hello");
-
-    expect(stream.current.submit).toHaveBeenCalledWith(
-      { messages: [{ type: "human", content: "hello" }] },
-      { context: { connection_id: postgresConnection.id } },
+  it("guides the user to add a connection when there are none", () => {
+    mocks.connections = { connections: [], error: null };
+    render(<ChatPage />);
+    expect(screen.getByRole("link", { name: "Add a connection" })).toHaveAttribute(
+      "href",
+      "/connections",
     );
   });
 
-  it("submits with the connection picked by the user", async () => {
+  it("opens the first connection and starts a new thread when switching", async () => {
     render(<ChatPage />);
-    const picker = await screen.findByLabelText("Connection");
-    await waitFor(() => expect(picker).toHaveValue(postgresConnection.id));
-
-    await userEvent.selectOptions(picker, duckdbConnection.id);
-    await send("hello");
-
-    expect(stream.current.submit).toHaveBeenCalledWith(
-      { messages: [{ type: "human", content: "hello" }] },
-      { context: { connection_id: duckdbConnection.id } },
-    );
+    expect(screen.getByText("chat:Warehouse")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "switch" }));
+    expect(screen.getByText("chat:Local demo")).toBeInTheDocument();
+    expect(screen.getByText("thread:none")).toBeInTheDocument();
+    expect(mocks.setActiveThreadId).toHaveBeenCalledWith(null);
   });
 
-  it("links to the connections page when no connection exists", async () => {
-    api.listConnections.mockResolvedValue([]);
+  it("opens a past thread on its own connection", () => {
+    mocks.session = { key: 3, threadId: "t-9", connectionId: duckdbConnection.id };
     render(<ChatPage />);
-
-    const link = await screen.findByRole("link", { name: /connection/i });
-    expect(link).toHaveAttribute("href", "/connections");
-  });
-
-  it("shows a friendly alert when connections cannot be loaded", async () => {
-    api.listConnections.mockRejectedValue(new Error("ECONNREFUSED 10.0.0.5:8000"));
-    render(<ChatPage />);
-
-    const alert = await screen.findByRole("alert");
-    expect(alert).toHaveTextContent(/something went wrong|could not load/i);
-    expect(alert).not.toHaveTextContent("10.0.0.5");
+    expect(screen.getByText("chat:Local demo")).toBeInTheDocument();
+    expect(screen.getByText("thread:t-9")).toBeInTheDocument();
   });
 });

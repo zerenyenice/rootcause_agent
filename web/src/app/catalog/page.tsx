@@ -1,5 +1,10 @@
-import { CatalogPage } from "@/components/CatalogPage";
+import { Suspense } from "react";
+import { CatalogPage } from "@/components/catalog/CatalogPage";
 
 export default function CatalogRoute() {
-  return <CatalogPage />;
+  return (
+    <Suspense fallback={null}>
+      <CatalogPage />
+    </Suspense>
+  );
 }

@@ -1,1 +1,179 @@
 @import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Semantic tokens: one place for light and dark. Zinc neutrals, one indigo accent. */
+:root {
+  --rc-bg: #ffffff;
+  --rc-sidebar: #fafafa;
+  --rc-surface: #ffffff;
+  --rc-subtle: #f4f4f5;
+  --rc-line: #e4e4e7;
+  --rc-line-strong: #d4d4d8;
+  --rc-fg: #18181b;
+  --rc-muted: #71717a;
+  --rc-faint: #a1a1aa;
+  --rc-accent: #4f46e5;
+  --rc-accent-hover: #4338ca;
+  --rc-accent-fg: #ffffff;
+  --rc-accent-text: #4338ca;
+  --rc-ok: #15803d;
+  --rc-warn: #b45309;
+  --rc-bad: #dc2626;
+  --rc-code: #f4f4f5;
+  color-scheme: light;
+}
+
+.dark {
+  --rc-bg: #09090b;
+  --rc-sidebar: #0f0f12;
+  --rc-surface: #131316;
+  --rc-subtle: #1b1b1f;
+  --rc-line: #27272a;
+  --rc-line-strong: #3f3f46;
+  --rc-fg: #fafafa;
+  --rc-muted: #a1a1aa;
+  --rc-faint: #71717a;
+  --rc-accent: #6366f1;
+  --rc-accent-hover: #818cf8;
+  --rc-accent-fg: #ffffff;
+  --rc-accent-text: #a5b4fc;
+  --rc-ok: #4ade80;
+  --rc-warn: #fbbf24;
+  --rc-bad: #f87171;
+  --rc-code: #18181b;
+  color-scheme: dark;
+}
+
+@theme inline {
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  --color-bg: var(--rc-bg);
+  --color-sidebar: var(--rc-sidebar);
+  --color-surface: var(--rc-surface);
+  --color-subtle: var(--rc-subtle);
+  --color-line: var(--rc-line);
+  --color-line-strong: var(--rc-line-strong);
+  --color-fg: var(--rc-fg);
+  --color-muted: var(--rc-muted);
+  --color-faint: var(--rc-faint);
+  --color-accent: var(--rc-accent);
+  --color-accent-hover: var(--rc-accent-hover);
+  --color-accent-fg: var(--rc-accent-fg);
+  --color-accent-text: var(--rc-accent-text);
+  --color-ok: var(--rc-ok);
+  --color-warn: var(--rc-warn);
+  --color-bad: var(--rc-bad);
+  --color-code: var(--rc-code);
+  --radius-card: 12px;
+  --radius-control: 8px;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background: var(--rc-bg);
+  color: var(--rc-fg);
+  font-size: 14px;
+  line-height: 1.5;
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+@layer base {
+  :focus-visible {
+    outline: 2px solid var(--rc-accent);
+    outline-offset: 2px;
+  }
+}
+
+::selection {
+  background: color-mix(in srgb, var(--rc-accent) 25%, transparent);
+}
+
+@keyframes rc-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.rc-fade-in {
+  animation: rc-fade-in 160ms ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rc-fade-in,
+  .animate-spin,
+  .animate-pulse {
+    animation: none;
+  }
+}
+
+/* Typography for rendered markdown (assistant prose). */
+.rc-prose {
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+.rc-prose > * + * {
+  margin-top: 0.75em;
+}
+.rc-prose h1,
+.rc-prose h2,
+.rc-prose h3,
+.rc-prose h4 {
+  font-weight: 600;
+  line-height: 1.3;
+  margin-top: 1.4em;
+}
+.rc-prose h1 {
+  font-size: 1.3em;
+}
+.rc-prose h2 {
+  font-size: 1.15em;
+}
+.rc-prose h3,
+.rc-prose h4 {
+  font-size: 1em;
+}
+.rc-prose ul {
+  list-style: disc;
+  padding-left: 1.4em;
+}
+.rc-prose ol {
+  list-style: decimal;
+  padding-left: 1.4em;
+}
+.rc-prose li + li {
+  margin-top: 0.3em;
+}
+.rc-prose li::marker {
+  color: var(--rc-faint);
+}
+.rc-prose a {
+  color: var(--rc-accent-text);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.rc-prose blockquote {
+  border-left: 3px solid var(--rc-line-strong);
+  padding-left: 1em;
+  color: var(--rc-muted);
+}
+.rc-prose :not(pre) > code {
+  background: var(--rc-subtle);
+  border: 1px solid var(--rc-line);
+  border-radius: 6px;
+  padding: 0.1em 0.35em;
+  font-size: 0.88em;
+}
+.rc-prose hr {
+  border-color: var(--rc-line);
+}

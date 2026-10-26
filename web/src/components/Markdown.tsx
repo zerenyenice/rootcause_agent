@@ -4,7 +4,10 @@ import remarkGfm from "remark-gfm";
 
 // SECURITY: report text comes from database values and model output.
 // No rehype-raw: raw HTML is escaped as text, never parsed into elements.
-const REMARK_PLUGINS = [remarkGfm];
+// `singleTilde: false` keeps "~5 rows" from turning into strikethrough.
+const REMARK_PLUGINS: ComponentProps<typeof ReactMarkdown>["remarkPlugins"] = [
+  [remarkGfm, { singleTilde: false }],
+];
 
 const components: ComponentProps<typeof ReactMarkdown>["components"] = {
   // SECURITY: images would be fetched without a click (data exfiltration via
@@ -13,37 +16,38 @@ const components: ComponentProps<typeof ReactMarkdown>["components"] = {
   // A link whose sanitized href is empty (e.g. javascript:) is plain text.
   a: ({ children, href }) =>
     href ? (
-      <a
-        href={href}
-        target="_blank"
-        rel="noopener noreferrer nofollow"
-        className="underline"
-      >
+      <a href={href} target="_blank" rel="noopener noreferrer nofollow">
         {children}
       </a>
     ) : (
       <span>{children}</span>
     ),
   pre: ({ children }) => (
-    <pre className="my-2 overflow-x-auto rounded bg-gray-100 p-3 font-mono text-sm">
+    <pre className="overflow-x-auto rounded-control border border-line bg-code p-3 text-[12.5px] leading-relaxed">
       {children}
     </pre>
   ),
   code: ({ children, className }) => (
-    <code className={`font-mono text-sm ${className ?? ""}`.trim()}>{children}</code>
+    <code className={`font-mono ${className ?? ""}`.trim()}>{children}</code>
   ),
   table: ({ children }) => (
-    <table className="my-2 border-collapse border border-gray-300 text-sm">
-      {children}
-    </table>
+    <div className="overflow-x-auto rounded-control border border-line">
+      <table className="w-full border-collapse text-[13px]">{children}</table>
+    </div>
   ),
-  th: ({ children }) => <th className="border border-gray-300 px-2 py-1">{children}</th>,
-  td: ({ children }) => <td className="border border-gray-300 px-2 py-1">{children}</td>,
+  th: ({ children }) => (
+    <th className="border-b border-line bg-subtle px-3 py-1.5 text-left font-medium">
+      {children}
+    </th>
+  ),
+  td: ({ children }) => (
+    <td className="border-b border-line px-3 py-1.5 last:border-b-0">{children}</td>
+  ),
 };
 
 export function Markdown({ children }: { children: string }) {
   return (
-    <div className="space-y-2 break-words">
+    <div className="rc-prose">
       <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={components}>
         {children}
       </ReactMarkdown>

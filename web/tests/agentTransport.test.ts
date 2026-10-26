@@ -48,6 +48,7 @@ describe("AgentThreadTransport", () => {
   it("creates a thread on the first run and streams from its runs URL", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ thread_id: "t-1" }));
     const request = payload();
+    void request;
 
     await new AgentThreadTransport(AGENT).stream(request);
 
@@ -56,7 +57,32 @@ describe("AgentThreadTransport", () => {
     expect(url).toBe(`${AGENT}/threads`);
     expect(init.method).toBe("POST");
     expect(sdk.apiUrls).toEqual([`${AGENT}/threads/t-1/runs/stream`]);
-    expect(sdk.payloads[0]).toBe(request);
+    expect(sdk.payloads[0]).toMatchObject({
+      input: {},
+      signal: expect.anything(),
+      stream_subgraphs: true,
+      streamSubgraphs: true,
+    });
+  });
+
+  it("continues an existing thread after use() without creating one", async () => {
+    const transport = new AgentThreadTransport(AGENT);
+    transport.use("t-past");
+
+    await transport.stream(payload());
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(transport.currentThreadId).toBe("t-past");
+    expect(sdk.apiUrls).toEqual([`${AGENT}/threads/t-past/runs/stream`]);
+  });
+
+  it("reports a newly created thread to the listener", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ thread_id: "t-new" }));
+    const onCreated = vi.fn();
+
+    await new AgentThreadTransport(AGENT, onCreated).stream(payload());
+
+    expect(onCreated).toHaveBeenCalledWith("t-new");
   });
 
   it("reuses the thread for later runs without another POST", async () => {

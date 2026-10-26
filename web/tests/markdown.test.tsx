@@ -53,3 +53,21 @@ describe("Markdown", () => {
     expect(screen.getByText("click")).toBeInTheDocument();
   });
 });
+
+describe("Markdown typography", () => {
+  it("does not turn single tildes into strikethrough", () => {
+    const { container } = render(<Markdown>{"about ~5 rows and ~10 rows"}</Markdown>);
+    expect(container.querySelector("del, s")).toBeNull();
+    expect(container.textContent).toContain("~5 rows and ~10 rows");
+  });
+
+  it("still supports double-tilde strikethrough", () => {
+    const { container } = render(<Markdown>{"~~gone~~"}</Markdown>);
+    expect(container.querySelector("del")).not.toBeNull();
+  });
+
+  it("renders real lists", () => {
+    render(<Markdown>{"- one\n- two"}</Markdown>);
+    expect(screen.getAllByRole("listitem")).toHaveLength(2);
+  });
+});
