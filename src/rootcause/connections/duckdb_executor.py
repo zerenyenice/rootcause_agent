@@ -43,7 +43,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType, TracebackType
-from typing import Any, Self
+from typing import Any, NamedTuple, Self
 
 import duckdb
 from sqlglot.errors import SqlglotError
@@ -88,6 +88,11 @@ _TABLE_LOOKUP_SQL = (
     "SELECT table_name FROM information_schema.tables "
     "WHERE table_catalog = current_database() AND table_schema = current_schema() "
     "AND table_type = 'BASE TABLE' AND table_name = ?"
+)
+# Every relation of the database in any schema: bare-name uniqueness checks need them all.
+_RELATIONS_SQL = (
+    "SELECT table_schema, table_name FROM information_schema.tables "
+    "WHERE table_catalog = current_database() ORDER BY table_schema, table_name"
 )
 _COLUMNS_SQL = (
     "SELECT column_name, data_type, is_nullable FROM information_schema.columns "
@@ -172,6 +177,13 @@ class TableInfo:
 
     name: str
     row_count: int
+
+
+class RelationName(NamedTuple):
+    """A relation (table or view) of the source in any schema, as the catalog spells it."""
+
+    schema: str
+    name: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -295,6 +307,11 @@ class DuckDBExecutor:
         """Base tables in the current schema with exact row counts."""
         names = [str(row[0]) for row in self._execute(_TABLES_SQL, (), None).rows]
         return tuple(TableInfo(name, self._row_count(name)) for name in names)
+
+    def list_relations(self) -> tuple[RelationName, ...]:
+        """Every table and view of the database in every schema (not only ``main``)."""
+        rows = self._execute(_RELATIONS_SQL, (), None).rows
+        return tuple(RelationName(str(schema), str(name)) for schema, name in rows)
 
     def describe_table(self, name: str) -> tuple[ColumnInfo, ...]:
         """Columns of ``name`` in declaration order; :class:`UnknownTable` if absent."""

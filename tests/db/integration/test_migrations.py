@@ -19,6 +19,9 @@ EXPECTED_TABLES = {
     ("app", "connections"),
     ("audit", "query_log"),
     ("catalog", "versions"),
+    ("catalog", "tables"),
+    ("catalog", "columns"),
+    ("catalog", "embeddings"),
 }
 VERSION_TABLE = "alembic_version"
 INSERT_CONNECTION = (
@@ -286,3 +289,88 @@ def test_port_boundaries_are_accepted(bootstrapped_url, engine, port):
         connection.execute(
             sa.text(INSERT_CONNECTION.replace("5432", str(port))), {"id": uuid.uuid4()}
         )
+
+
+def test_catalog_embedding_column_is_an_unconstrained_pgvector(bootstrapped_url, engine):
+    from rootcause.db.migrate import upgrade
+
+    upgrade(bootstrapped_url, "head")
+
+    with engine.connect() as connection:
+        column_type = connection.execute(
+            sa.text(
+                "SELECT format_type(atttypid, atttypmod) FROM pg_attribute "
+                "WHERE attrelid = CAST('catalog.embeddings' AS regclass) "
+                "AND attname = 'embedding'"
+            )
+        ).scalar_one()
+
+    assert column_type == "vector"
+
+
+def test_downgrade_to_0004_drops_only_the_catalog_metadata_tables(bootstrapped_url, engine):
+    from rootcause.db.migrate import downgrade, upgrade
+
+    upgrade(bootstrapped_url, "head")
+
+    downgrade(bootstrapped_url, "0004")
+
+    assert _tables(engine) == {
+        ("app", "connections"),
+        ("audit", "query_log"),
+        ("catalog", "versions"),
+    }
+
+
+def test_catalog_rows_cascade_when_their_connection_is_deleted(bootstrapped_url, engine):
+    from rootcause.db.migrate import upgrade
+
+    upgrade(bootstrapped_url, "head")
+    connection_id = _insert_connection(engine)
+    with engine.begin() as connection:
+        table_id = connection.execute(
+            sa.text(
+                "INSERT INTO catalog.tables (connection_id, schema_name, name) "
+                "VALUES (:c, 'main', 'plants') RETURNING id"
+            ),
+            {"c": connection_id},
+        ).scalar_one()
+        column_id = connection.execute(
+            sa.text(
+                "INSERT INTO catalog.columns (table_id, name, data_type, nullable, ordinal) "
+                "VALUES (:t, 'plant_id', 'VARCHAR', false, 1) RETURNING id"
+            ),
+            {"t": table_id},
+        ).scalar_one()
+        connection.execute(
+            sa.text(
+                "INSERT INTO catalog.embeddings (connection_id, table_id, column_id, content, "
+                "embedding) VALUES (:c, :t, :col, 'main.plants.plant_id', '[1,2,3]')"
+            ),
+            {"c": connection_id, "t": table_id, "col": column_id},
+        )
+
+    with engine.begin() as connection:
+        connection.execute(
+            sa.text("DELETE FROM app.connections WHERE id = :c"), {"c": connection_id}
+        )
+
+    with engine.connect() as connection:
+        for table in ("catalog.tables", "catalog.columns", "catalog.embeddings"):
+            count = connection.execute(sa.text(f"SELECT count(*) FROM {table}")).scalar_one()
+            assert count == 0, table
+
+
+def test_catalog_table_names_are_unique_per_connection(bootstrapped_url, engine):
+    from rootcause.db.migrate import upgrade
+
+    upgrade(bootstrapped_url, "head")
+    connection_id = _insert_connection(engine)
+    insert = sa.text(
+        "INSERT INTO catalog.tables (connection_id, schema_name, name) VALUES (:c, 'main', 't')"
+    )
+    with engine.begin() as connection:
+        connection.execute(insert, {"c": connection_id})
+
+    with pytest.raises(sa.exc.IntegrityError), engine.begin() as connection:
+        connection.execute(insert, {"c": connection_id})

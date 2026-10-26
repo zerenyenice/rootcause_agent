@@ -28,9 +28,10 @@ ROOT_CAUSE_DESCRIPTION = (
     "'why did this happen?' question here; if the chain comes back partial, its "
     "notes say what to ask the user."
 )
-# SQL and schema tools only: the subagent answers each why with an executed query.
+# SQL, schema and catalog search tools only: the subagent answers each why with an
+# executed query.
 ROOT_CAUSE_TOOLS = frozenset(
-    {"run_sql", "explain_sql", "list_tables", "describe_table", "column_values"}
+    {"run_sql", "explain_sql", "list_tables", "describe_table", "column_values", "search_catalog"}
 )
 # The only subagent tool gated behind human approval.
 APPROVAL_TOOL = "run_sql"
@@ -49,7 +50,7 @@ def root_cause_subagent(
 ) -> SubAgent:
     """Build the ``root-cause`` SubAgent spec from the tools the orchestrator holds.
 
-    Only the SQL and schema tools are passed on; ``model`` is set only when given,
+    Only the SQL, schema and catalog search tools are passed on; ``model`` is set only when given,
     so the subagent otherwise inherits the orchestrator's model.
 
     ``max_tool_calls`` caps the tool calls of one subagent run: further calls are

@@ -33,6 +33,7 @@ from rootcause.api.routes.health import AppSettings
 from rootcause.connections.probe import introspect, probe
 from rootcause.connections.repository import (
     VERIFIED_FIELD,
+    ConnectionNotFound,
     ConnectionRecord,
     ConnectionRepository,
     NewConnection,
@@ -40,7 +41,6 @@ from rootcause.connections.repository import (
 )
 from rootcause.connections.secrets import SecretCipher, cipher_from_settings
 from rootcause.db.engine import make_async_engine
-from rootcause.errors import RootCauseError
 from rootcause.logging import get_logger
 from rootcause.settings import Settings
 
@@ -51,15 +51,6 @@ _LOGIN_FIELDS = frozenset({"host", "port", "database", "user", "password", "sslm
 
 _logger = get_logger(__name__)
 router = APIRouter(prefix=PREFIX, tags=["connections"])
-
-
-class ConnectionNotFound(RootCauseError):
-    code = "connection_not_found"
-    status_code = 404
-    public_message = "Connection not found."
-
-    def __init__(self) -> None:
-        super().__init__("Connection not found.")
 
 
 async def get_connection_repository(request: Request) -> ConnectionRepository:

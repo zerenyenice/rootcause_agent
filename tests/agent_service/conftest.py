@@ -40,13 +40,33 @@ def make_client() -> Iterator[ClientFactory]:
     """Start the agent service around ``graph_factory`` and return a live TestClient."""
     with ExitStack() as stack:
 
-        def _make(graph_factory: GraphFactory, settings: Any = None) -> TestClient:
+        def _make(
+            graph_factory: GraphFactory,
+            settings: Any = None,
+            *,
+            connections: Any = None,
+            catalog: Any = None,
+            embedder: Any = None,
+        ) -> TestClient:
+            """Repositories are passed only when given; the defaults (SQL repositories on
+            the unreachable test DATABASE_URL) must stay unused unless a run names a
+            connection, so every existing test runs without Postgres."""
             from rootcause.agent_service.main import create_app
 
+            seams = {
+                name: value
+                for name, value in (
+                    ("connections", connections),
+                    ("catalog", catalog),
+                    ("embedder", embedder),
+                )
+                if value is not None
+            }
             app = create_app(
                 settings if settings is not None else make_settings(),
                 graph_factory=graph_factory,
                 checkpointer=InMemorySaver(),
+                **seams,
             )
             return stack.enter_context(TestClient(app))
 

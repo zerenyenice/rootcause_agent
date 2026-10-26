@@ -24,6 +24,8 @@ dependencies = [
     "psycopg[binary]>=3.2",
     "asyncpg>=0.30",
     "alembic>=1.14",
+    # pgvector column type for catalog embeddings (rootcause.catalog)
+    "pgvector>=0.4",
     "sqlglot>=30.24,<31",
     # connection credentials encrypted at rest (Fernet)
     "cryptography>=44",
@@ -103,6 +105,9 @@ plugins = ["pydantic.mypy"]
 explicit_package_bases = true
 mypy_path = ["src"]
 files = ["src", "tests"]
+# SQLAlchemy's dialect constructors (e.g. ``postgresql.dialect()``) are untyped;
+# calling them is the documented way to compile a type for one dialect.
+untyped_calls_exclude = ["sqlalchemy.dialects"]
 
 # Tests are checked with relaxed rules: fixtures and test functions may omit
 # annotations, but their bodies are still checked.

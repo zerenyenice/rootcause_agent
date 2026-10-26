@@ -15,7 +15,7 @@ from rootcause.api.middleware import (
     SecurityHeadersMiddleware,
     create_limiter,
 )
-from rootcause.api.routes import connections, health
+from rootcause.api.routes import catalog, connections, health
 from rootcause.errors import ConfigurationError
 from rootcause.logging import configure_logging, get_logger
 from rootcause.settings import Environment, Settings, get_settings
@@ -35,7 +35,10 @@ def configure_telemetry_once(settings: Settings) -> None:
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     yield
-    await connections.close_connection_repository(app)
+    try:
+        await catalog.close_catalog_repository(app)
+    finally:
+        await connections.close_connection_repository(app)
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -60,6 +63,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     register_exception_handlers(app)
     app.include_router(health.router)
     app.include_router(connections.router)
+    app.include_router(catalog.router)
 
     app.add_middleware(RateLimitMiddleware)
     app.add_middleware(SecurityHeadersMiddleware, hsts=is_prod)

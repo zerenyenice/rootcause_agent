@@ -38,6 +38,7 @@ from rootcause.connections.duckdb_executor import (
     QueryFailed,
     QueryRejected,
     QueryTimeout,
+    RelationName,
     TableInfo,
     UnknownTable,
 )
@@ -61,6 +62,7 @@ __all__ = [
     "QueryRejected",
     "QueryTimeout",
     "RelationInfo",
+    "RelationName",
     "TableInfo",
     "UnknownTable",
 ]
@@ -282,6 +284,11 @@ class PostgresExecutor:
         return tuple(
             TableInfo(f"{schema}.{table}", int(rows)) for schema, table, rows in fetched.rows
         )
+
+    def list_relations(self) -> tuple[RelationName, ...]:
+        """Every relation of every non-system schema, readable or not (bare-name checks)."""
+        rows = self._execute(q.RELATIONS_SQL, None, None).rows
+        return tuple(RelationName(str(schema), str(name)) for schema, name in rows)
 
     def describe_table(self, name: str) -> tuple[ColumnInfo, ...]:
         """Columns of ``schema.table`` (or an unambiguous bare name) in declaration order."""

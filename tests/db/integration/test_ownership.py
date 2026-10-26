@@ -33,6 +33,9 @@ def test_every_table_and_sequence_is_owned_by_the_owner_role(migrated_roles):
         ("app", "alembic_version"),
         ("audit", "query_log"),
         ("catalog", "versions"),
+        ("catalog", "tables"),
+        ("catalog", "columns"),
+        ("catalog", "embeddings"),
     }
     assert any(kind == "S" for _, _, kind, _ in rows), "identity sequences must be covered"
     assert {owner for *_, owner in rows} == {migrated_roles.owner}
@@ -90,7 +93,13 @@ def test_app_role_privileges_on_each_table(migrated_roles):
             )[0][0]
         )
 
-    for table in ("app.connections", "catalog.versions"):
+    for table in (
+        "app.connections",
+        "catalog.versions",
+        "catalog.tables",
+        "catalog.columns",
+        "catalog.embeddings",
+    ):
         for kind in ("SELECT", "INSERT", "UPDATE", "DELETE"):
             assert privilege(table, kind), (table, kind)
     assert privilege("audit.query_log", "SELECT")
