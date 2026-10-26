@@ -65,7 +65,7 @@ one-line fixes where dispatching a subagent would be pure overhead.
 ## Core Principles
 
 1. **Lead Plans, Specialists Execute** — the Lead plans and decides architecture directly; it delegates implementation, testing, and review to the agents below rather than doing that work itself.
-2. **Test-Driven** — Write tests before implementation, 80%+ coverage required
+2. **Product First, Lightweight Tests** — build a working, well-designed product; the coder writes a few meaningful tests with the code; CI keeps 80%+ coverage
 3. **Security-First** — Never compromise on security; validate all inputs
 4. **Immutability** — Always create new objects, never mutate existing ones
 5. **One Agent, One Job** — each agent below has its own rules, skills, and commands; don't blend a reviewer's job into a coder's task or vice versa
@@ -91,7 +91,7 @@ inline. Use agents proactively without user prompt:
 - Complex feature requests → the Lead plans, then dispatches to **backend-coder** / **frontend-coder**
 - Backend implementation → **backend-coder**, then **backend-reviewer** (review)
 - Frontend implementation → **frontend-coder**, then **frontend-reviewer** (review)
-- Bug fix or new feature → **tester** (failing test first) + the relevant coder agent (fix)
+- Bug fix or new feature → the relevant coder agent (code + tests together); **tester** for browser/E2E checks
 - Security-sensitive code → label the PR `security`; **security-reviewer** reviews it on the release PR (dev → master), or on demand
 - CI pipeline failures, workflow authoring, PR check status → **devops** (diagnoses via `gh` CLI; code/test fixes route back through the Lead to the coder/tester agents)
 - Frontend build failures → `/frontend-build` command (self-contained, no dedicated agent)
@@ -141,27 +141,27 @@ fails, give details about why it failed — don't silently fall back to doing th
 Test types: unit tests always; integration tests for API endpoints and
 database operations; E2E tests for critical user flows once the UI exists.
 
-**TDD workflow (Standard and Sensitive tiers; see Process tiers):**
-1. Write test first (RED) — test should FAIL — and commit it (`test:`) before implementation starts
-2. Write minimal implementation (GREEN) — test should PASS
-3. Refactor (IMPROVE) — verify coverage 80%+
+**Lightweight testing (user direction, 2026-10-26):** the user wants a working
+product, not test ceremony. The coder agent writes the code and a few
+meaningful tests (behaviour that matters, not markup or trivia) in the same
+change, and may update or delete tests made obsolete by a behaviour change.
+No separate RED commit. The `tester` agent is used for browser/E2E checks of
+critical flows or when the Lead asks for it.
 
-Troubleshoot failures: check test isolation → verify mocks → fix implementation (not tests, unless tests are wrong).
-
-**Test integrity (coder/tester separation):** in Standard and Sensitive tiers
-tests are tester-owned — coder agents never modify existing test files; if a test looks wrong they report it
-to the Lead, and the tester fixes it. The RED test is committed *on the task
-branch* before implementation — the checkpoint proving tests weren't altered
-to fit the code. Reviewers treat test tampering (edited assertions, deleted
-cases, skipped tests) and hard-coding against test literals as
-CRITICAL/blocking findings. Coverage gates Gate 2 (the merge/push gate):
-below 80% blocks the merge unless the user explicitly overrides with a stated
-reason.
+Never weaken a test just to make it pass (edited assertions to fit a bug,
+skipped cases); fix the code instead. Coverage ≥ 80% stays a CI gate.
 
 ## Development Workflow
 
 **Current priority: the MVP slice in `docs/plans/MVP.md`.** Work labelled
 `later` on the board waits until the MVP gate passes, unless the user asks.
+
+**The Lead is the architect.** It decides how each feature is built, its
+testing level and its UI/UX, and keeps every change small enough to finish in
+one dispatch. A feature is done only when the Lead has seen it work in the
+running stack (`docker compose`, checked in the browser). The UI must be well
+designed and easy to use: consistent design system, clear empty/loading/error
+states, keyboard and screen-reader friendly.
 
 0. **Check against `/PROJECT.md`** — confirm the task is in scope and feasible
    per the project team's documented requirements/constraints. Stop and raise
@@ -173,13 +173,12 @@ reason.
    task). The plan lives in the PR description; a `docs(plan):` commit is only
    for multi-PR work or when the user asks for a plan document.
 3. **Test and implement** per the tier.
-4. **Review** per the tier: ONE review round. CRITICAL/HIGH are fixed in a
-   `fix: address review findings` commit; MEDIUM/LOW become GitHub issues
-   labelled `later` unless trivial to fix in the same commit. A re-review
-   happens only when a CRITICAL was found.
+4. **Verify and review** per the tier: the Lead runs the feature in the real
+   stack. Only Sensitive work gets a reviewer round; CRITICAL/HIGH findings
+   are fixed before merge, MEDIUM/LOW become `later` issues.
 5. **Merge (Gate 2)** — the user has authorized the Lead to push the branch,
    open the PR and merge it with a merge commit once every CI check is `pass`
-   (JSON gate) and the review approved. Then confirm the post-merge CI run on
+   (JSON gate) and, for Sensitive work, the review approved. Then confirm the post-merge CI run on
    the base, close the issue, delete the branch and worktree. Do not merge the
    base into a task branch unless the PR shows a conflict.
 6. **Capture knowledge**: personal notes → auto memory; team knowledge →
@@ -189,9 +188,9 @@ reason.
 
 | Tier | Typical work | Tests | Review |
 |---|---|---|---|
-| **Light** | docs, config, CI, scaffolding, eval tooling, behavior-preserving refactors, prototypes | The implementing agent writes tests together with the code (no separate RED commit). Mechanical refactors may move test files and change imports/paths only | Lead reads the diff; one reviewer only if the diff exceeds ~300 source lines |
-| **Standard** (default for product features) | agents, tools, API, UI | Tester writes the failing test first; Lead commits it (`test: … (RED)`), then the coder implements without touching test files | One round by `backend-reviewer` / `frontend-reviewer` |
-| **Sensitive** | executing SQL against customer data, credentials and secrets, auth, tenant isolation, exporting data off-host | As Standard | Standard reviewer, one round; the PR gets the `security` label so the release review looks at it first |
+| **Light** | docs, config, CI, scaffolding, eval tooling, refactors | Tests only where behaviour changes | Lead reads the diff |
+| **Standard** (default for product features) | agents, tools, API, UI | The coder writes code + a few meaningful tests in one change | None; the Lead verifies the feature in the running stack |
+| **Sensitive** | changes to the read-only SQL guards, credentials and secrets, auth, tenant isolation, exporting data off-host | As Standard, plus tests for the guard/secret behaviour | One `backend-reviewer` round; the PR gets the `security` label |
 
 **Security review happens on PRs, not per development step:**
 - Every PR: automated security checks in CI (secret scan, dependency audit,
@@ -212,9 +211,8 @@ branch and one PR instead of one PR per task. Group by deliverable or area
 (e.g. "catalog retrieval", "anomaly detection skills"). Rules:
 - Name the branch after the batch (`feat/<batch-slug>`); the PR body lists
   every issue it closes (`Closes #a, closes #b`).
-- Keep each task's commits separate and in protocol order (its own RED and
-  implementation commits); every commit's `Task:` trailer names the task it
-  belongs to, so `git log --grep "Task: <slug>"` still works per task.
+- Keep each task's commits separate; every commit's `Task:` trailer names the
+  task it belongs to, so `git log --grep "Task: <slug>"` still works per task.
 - One review round per PR, not per task. A Sensitive task in the batch makes
   the whole PR `security`-labelled.
 - Keep a batch reviewable: about 800 changed source lines (tests excluded)
@@ -246,7 +244,7 @@ branch and one PR instead of one PR per task. Group by deliverable or area
 
 **Lead-only writes:** only the Lead runs state-changing git commands; subagents are git-read-only (`status`/`diff`/`log`).
 
-**Choreography (Standard/Sensitive):** RED test commit (`test:`) → implementation (`feat:`/`fix:`, never touching test files) → one review-fix commit if needed → push + PR → PR merge commit (never squash/rebase). Light tier: implementation commit(s) with tests included → PR. A `docs(plan):` commit is only for multi-PR work.
+**Choreography:** implementation commit(s) with their tests (`feat:`/`fix:`) → review-fix commit if a Sensitive review found something → push + PR → PR merge commit (never squash/rebase). A `docs(plan):` commit is only for multi-PR work.
 
 **PROJECT.md changes** are committed standalone to the base branch as `docs(project):` — never mixed with code.
 

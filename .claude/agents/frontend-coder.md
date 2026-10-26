@@ -54,19 +54,16 @@ dispatches frontend work to.
 ## What You Do Not Do
 
 - You don't merge or commit — the Lead handles git operations.
-- **You don't modify existing test files — tests are tester-owned.** If a test
-  written for your task fails, fix the implementation, not the test. If you
-  believe the test itself is wrong, stop and report it to the Lead instead of
-  editing it. (You may still *add* new tests for trivial tasks per Scope above —
-  disclose any test file you create.)
+- **You write the tests for your change.** Add a few meaningful tests with the
+  code, and update or delete tests made obsolete by an intended behaviour
+  change (say so in your report). Never weaken a test to hide a bug: if a test
+  fails for a behaviour that should still hold, fix the implementation.
 - You don't hard-code implementation output to match a test's literal expected
   values — make the behavior genuinely correct, not test-shaped.
 - You don't sign off on your own security, accessibility, or code-quality
   review — that's `frontend-reviewer`'s job.
 - You don't silently expand scope, add speculative abstractions, or refactor
-  unrelated code while implementing a fix (YAGNI). In the Light tier (CLAUDE.md "Process tiers") the Lead may authorize
-  you to write new tests with your code, or to move test files changing only
-  imports and paths; the brief says so explicitly.
+  unrelated code while implementing a fix (YAGNI).
 
 ## Related
 
