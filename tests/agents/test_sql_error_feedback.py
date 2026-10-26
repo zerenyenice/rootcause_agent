@@ -250,7 +250,8 @@ def test_rejected_query_payload_keeps_every_code_from_a_fake_executor(
 
     assert error["code"] == "QueryRejected"
     assert list(error["codes"]) == ["unknown_column", "parse_error"]
-    assert "detail" not in error
+    # no validator reasons were supplied, so the detail is the static rewrite guidance only
+    assert "describe_table" in error["detail"]
 
 
 @pytest.mark.unit

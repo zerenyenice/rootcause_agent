@@ -68,6 +68,16 @@ class CatalogSnapshot:
         return frozenset().union(*(self._columns.get(key, frozenset()) for key in keys))
 
 
+_MAX_LISTED_COLUMNS = 60
+
+
+def _column_list(columns: Iterable[str]) -> str:
+    """Sorted column names for an error message, capped so a wide table stays readable."""
+    names = sorted(columns)
+    shown = ", ".join(names[:_MAX_LISTED_COLUMNS])
+    return shown + (", ..." if len(names) > _MAX_LISTED_COLUMNS else "")
+
+
 class CatalogFindings(NamedTuple):
     """Errors (unknown tables/columns) and warnings (ambiguous names)."""
 
@@ -100,7 +110,10 @@ def _table_issue(name: str, keys: tuple[str, ...]) -> ValidationIssue | None:
     if not name:
         return ValidationIssue(IssueCode.UNKNOWN_TABLE, "Empty table name.")
     if not keys:
-        return ValidationIssue(IssueCode.UNKNOWN_TABLE, f"Unknown table {name!r}.")
+        return ValidationIssue(
+            IssueCode.UNKNOWN_TABLE,
+            f"Unknown table {name!r}; query only the tables listed by the schema tools.",
+        )
     if len(keys) > 1:
         message = f"Table {name!r} is ambiguous; it matches {', '.join(keys)}."
         return ValidationIssue(IssueCode.AMBIGUOUS_TABLE, message)
@@ -136,7 +149,10 @@ def _qualified_issue(
     keys = resolved.get(table.name, ())
     if not keys or column.name.lower() in catalog.columns_of(keys):
         return None  # unknown table (reported once) or a known column
-    message = f"Unknown column {column.display!r} on table {table.name!r}."
+    message = (
+        f"Unknown column {column.display!r} on table {table.name!r}; "
+        f"columns are: {_column_list(catalog.columns_of(keys))}."
+    )
     return ValidationIssue(IssueCode.UNKNOWN_COLUMN, message)
 
 
@@ -162,8 +178,10 @@ def _bare_issue(
         return ValidationIssue(IssueCode.AMBIGUOUS_COLUMN, message)
     if owners or scope.opaque or _resolves_in_outer_scope(catalog, name, scope, resolved):
         return None
+    known = _column_list(catalog.columns_of(key for keys in table_keys for key in keys))
     return ValidationIssue(
-        IssueCode.UNKNOWN_COLUMN, f"Unknown column {column.name!r} in referenced tables."
+        IssueCode.UNKNOWN_COLUMN,
+        f"Unknown column {column.name!r} in referenced tables; columns are: {known}.",
     )
 
 

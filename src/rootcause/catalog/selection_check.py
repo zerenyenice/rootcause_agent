@@ -163,6 +163,7 @@ def check_selection(sql: str, policy: SelectionPolicy) -> frozenset[tuple[str, s
         )
     except Exception:  # unresolvable column (hidden or unknown) or unsupported shape
         raise SelectionRejected(UNRESOLVABLE_REFERENCE_CODE) from None
+    _qualify_distinct_on(qualified)
     if any(True for _ in qualified.find_all(exp.TableColumn)):
         # A whole-row reference (bare source alias) is never column-checked.
         raise SelectionRejected(ROW_REFERENCE_CODE)
@@ -170,6 +171,33 @@ def check_selection(sql: str, policy: SelectionPolicy) -> frozenset[tuple[str, s
         for column in columns:
             _check_column(column, scope, policy)
     return read
+
+
+def _qualify_distinct_on(tree: exp.Expr) -> None:
+    """Qualify ``DISTINCT ON (col)`` names, which sqlglot's ``qualify`` leaves untouched.
+
+    A bare name is resolved only through a projection of the same query that is already
+    qualified (``SELECT DISTINCT ON (a) t.a AS a``); anything else stays bare and is
+    rejected by the column check (fail closed). The ``_UNQUALIFIED`` mark is kept, so the
+    hidden-column binding rules still apply to it.
+    """
+    for select in tree.find_all(exp.Select):
+        distinct = select.args.get("distinct")
+        on = distinct.args.get("on") if isinstance(distinct, exp.Distinct) else None
+        if on is None:
+            continue
+        for column in on.find_all(exp.Column):
+            if column.table:
+                continue
+            for projection in select.selects:
+                inner = projection.this if isinstance(projection, exp.Alias) else projection
+                if (
+                    projection.alias_or_name == column.name
+                    and isinstance(inner, exp.Column)
+                    and inner.table
+                ):
+                    column.set("table", exp.to_identifier(inner.table))
+                    break
 
 
 def _scopes(tree: exp.Expr) -> Sequence[Scope]:

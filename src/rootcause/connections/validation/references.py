@@ -14,7 +14,8 @@ from typing import NamedTuple
 from sqlglot import exp
 from sqlglot.optimizer.scope import Scope, traverse_scope
 
-_CLAUSES_RESOLVING_ALIASES = (exp.Order, exp.Group, exp.Having, exp.Qualify)
+# DuckDB (and others) let WHERE and later projections refer to a select alias.
+_CLAUSES_RESOLVING_ALIASES = (exp.Order, exp.Group, exp.Having, exp.Qualify, exp.Where)
 
 
 class TableRef(NamedTuple):
@@ -141,7 +142,11 @@ def _owned_columns(
         if owner is None:
             continue
         select = scopes[owner].expression
-        if in_alias_clause and not column.table and _is_projection_alias(select, column.name):
+        if (
+            not column.table
+            and _is_projection_alias(select, column.name)
+            and (in_alias_clause or _in_other_projection(select, column))
+        ):
             continue
         yield column, owner
 
@@ -155,6 +160,19 @@ def _owner(column: exp.Column, by_expression: Mapping[int, int]) -> tuple[int | 
         in_alias_clause = in_alias_clause or isinstance(node, _CLAUSES_RESOLVING_ALIASES)
         node = node.parent
     return None, False
+
+
+def _in_other_projection(select: exp.Expr, column: exp.Column) -> bool:
+    """Whether ``column`` sits in a projection other than the one aliased with its own name.
+
+    ``SELECT a * 2 AS b, b + 1`` reads the alias ``b`` (a lateral column alias), while
+    ``SELECT x AS x`` reads the column ``x``.
+    """
+    name = column.name.lower()
+    for projection in select.expressions:
+        if projection is column or column in projection.find_all(exp.Column):
+            return not (isinstance(projection, exp.Alias) and projection.alias.lower() == name)
+    return False
 
 
 def _is_projection_alias(select: exp.Expr, name: str) -> bool:

@@ -2,7 +2,9 @@
 
 Every function call must be an allow-listed typed sqlglot class (see ``allowlist``), or
 an unknown (``exp.Anonymous``) name explicitly listed for the dialect. Anything else fails
-closed with ``FORBIDDEN_FUNCTION``. Table-position calls (``FROM f(...)``,
+closed with ``FORBIDDEN_FUNCTION``. DuckDB is the exception: its connection is locked
+down, so it allows every function except an explicit deny list (files, system state,
+nested SQL, row generators). Table-position calls (``FROM f(...)``,
 ``LATERAL f(...)``, ``TABLE(f(...))``) are limited to the generate_series /
 unnest families. Table *names* are judged by ``sources``.
 """
@@ -18,8 +20,10 @@ from rootcause.connections.validation.allowlist import (
     ALLOWED_ANONYMOUS,
     ALLOWED_TYPE_SET,
     DEFAULT_TABLE_FUNCTION_NAMES,
+    DUCKDB_TYPE_SET,
     TABLE_FUNCTION_NAMES,
     TABLE_FUNCTION_TYPES,
+    duckdb_function_name_allowed,
 )
 from rootcause.connections.validation.result import IssueCode, ValidationIssue
 
@@ -45,8 +49,11 @@ def _call_allowed(node: exp.Func, dialect: str) -> bool:
     if isinstance(node, _ANONYMOUS_TYPES):
         if node.args.get("db") or node.args.get("catalog"):
             return False
-        return node.name.lower() in ALLOWED_ANONYMOUS.get(dialect, frozenset())
-    return type(node) in ALLOWED_TYPE_SET
+        name = node.name.lower()
+        if name in ALLOWED_ANONYMOUS.get(dialect, frozenset()):
+            return True
+        return dialect == "duckdb" and duckdb_function_name_allowed(name)
+    return type(node) in (DUCKDB_TYPE_SET if dialect == "duckdb" else ALLOWED_TYPE_SET)
 
 
 def _table_call_allowed(node: exp.Func, dialect: str) -> bool:
@@ -74,7 +81,7 @@ def _forbidden(name: str, in_table: bool, *, qualified: bool = False) -> Validat
     elif in_table:
         detail = f"Table function {name}() is not permitted."
     else:
-        detail = f"Function {name}() is not permitted."
+        detail = f"Function {name}() is not allowed; use standard SQL functions instead."
     return ValidationIssue(IssueCode.FORBIDDEN_FUNCTION, detail)
 
 

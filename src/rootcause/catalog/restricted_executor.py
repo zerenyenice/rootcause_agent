@@ -129,7 +129,10 @@ class SelectionExecutor:
         """Lenient existence check, then the strict selection check; both fail closed."""
         result = validate_sql(sql, self._dialect, catalog=self._snapshot)
         if not result.ok:
-            raise QueryRejected([issue.code.value for issue in result.errors])
+            raise QueryRejected(
+                [issue.code.value for issue in result.errors],
+                [issue.message for issue in result.errors],
+            )
         policy = self._selection_policy()
         try:
             read = check_selection(result.sql, policy)
