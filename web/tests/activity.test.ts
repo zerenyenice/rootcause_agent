@@ -44,6 +44,7 @@ describe("buildSteps", () => {
           { id: "5", name: "explain_sql", args: { sql: "SELECT 2" } },
           { id: "6", name: "write_todos" },
           { id: "7", name: "read_file" },
+          { id: "9", name: "search_catalog", args: { query: "none" } },
           { id: "8", name: "column_values", args: { table: "runs", column: "line" } },
         ]),
         tool("1", { tables: [1, 2] }),
@@ -54,6 +55,7 @@ describe("buildSteps", () => {
         tool("6", "ok"),
         tool("7", "text"),
         tool("8", { values: ["a"] }),
+        tool("9", { results: [] }),
       ],
       { isRunning: false },
     );
@@ -64,7 +66,8 @@ describe("buildSteps", () => {
       ["Running query", "Check scrap", "12 rows (truncated)"],
       ["Estimating query cost", null, "~12,345 rows estimated"],
       ["Planning", null, null],
-      ["Read file", null, null],
+      ["Reading query results", null, null],
+      ["Searching catalog", "none", "0 matches"],
       ["Exploring schema", "runs.line", "1 value"],
     ]);
     expect(steps[3]?.sql).toBe("SELECT 1");
@@ -96,6 +99,33 @@ describe("buildSteps", () => {
     expect(steps[0]?.kind).toBe("investigate");
     expect(steps[0]?.children[0]?.title).toBe("Running query");
     expect(countSteps(steps)).toBe(2);
+  });
+
+  it("lists the todo items of a planning step", () => {
+    const steps = buildSteps(
+      [
+        ai("a", [
+          {
+            id: "p",
+            name: "write_todos",
+            args: {
+              todos: [
+                { content: "Find the spike", status: "completed" },
+                { content: "Check shifts", status: "in_progress" },
+                { content: "Rank causes" },
+                { nope: 1 },
+              ],
+            },
+          },
+        ]),
+      ],
+      { isRunning: true },
+    );
+    expect(steps[0]?.todos).toEqual([
+      { text: "Find the spike", status: "completed" },
+      { text: "Check shifts", status: "in_progress" },
+      { text: "Rank causes", status: "pending" },
+    ]);
   });
 
   it("hides the WhyChain output tool and tolerates malformed calls", () => {

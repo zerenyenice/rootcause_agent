@@ -41,6 +41,27 @@ function StepRow({ step }: { step: ActivityStep }) {
           </span>
         )}
       </div>
+      {step.todos.length > 0 && (
+        <ul
+          aria-label="Plan"
+          className="mt-1 flex flex-col gap-0.5 text-[13px] text-muted"
+        >
+          {step.todos.map((todo, index) => (
+            <li key={index} className="flex items-start gap-1.5">
+              <span aria-hidden="true">
+                {todo.status === "completed"
+                  ? "✓"
+                  : todo.status === "in_progress"
+                    ? "›"
+                    : "○"}
+              </span>
+              <span className={todo.status === "completed" ? "line-through" : undefined}>
+                {todo.text}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
       {step.sql && (
         <div className="mt-1">
           <button

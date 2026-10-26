@@ -1,6 +1,6 @@
 "use client";
 
-import { useStream, type UseStreamCustom } from "@langchain/langgraph-sdk/react";
+import { useStream } from "@langchain/langgraph-sdk/react";
 import type { Message } from "@langchain/langgraph-sdk";
 import { ArrowDown } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -10,10 +10,11 @@ import { Skeleton } from "@/components/ui/Skeleton";
 import { useThreads } from "@/components/shell/ThreadsProvider";
 import { buildSegments } from "@/lib/activity";
 import { AgentThreadTransport } from "@/lib/agentTransport";
-import type { Connection } from "@/lib/api";
+import { indexStatus, type Connection, type IndexState } from "@/lib/api";
 import { AGENT_URL } from "@/lib/config";
 import { buildResume, parseApprovalRequests, type DecisionType } from "@/lib/interrupt";
 import { friendlyError, mergeMessages, messageText } from "@/lib/messages";
+import { resolveSubagents, type SubagentRuns } from "@/lib/subagents";
 import { loadThreadMessages } from "@/lib/threads";
 import { ApprovalCard } from "./ApprovalCard";
 import { Composer } from "./Composer";
@@ -40,10 +41,18 @@ export function Chat({
   initialThreadId,
 }: ChatProps) {
   const { refresh, setActiveThreadId } = useThreads();
+  const [subagentRuns, setSubagentRuns] = useState<SubagentRuns>({});
   const [transport] = useState(
-    () => new AgentThreadTransport(AGENT_URL, (id) => setActiveThreadId(id)),
+    () =>
+      new AgentThreadTransport(
+        AGENT_URL,
+        (id) => setActiveThreadId(id),
+        (namespace, runMessages) =>
+          setSubagentRuns((current) => ({ ...current, [namespace]: runMessages })),
+      ),
   );
-  const stream = useChatStream(transport);
+  const stream = useStream<ChatState>({ transport, messagesKey: "messages" });
+  const [indexState, setIndexState] = useState<IndexState | null>(null);
   const [draft, setDraft] = useState("");
   const [history, setHistory] = useState<Message[]>([]);
   const [historyState, setHistoryState] = useState<"idle" | "loading" | "failed">(
@@ -75,6 +84,19 @@ export function Chat({
     };
   }, [initialThreadId, transport]);
 
+  // Is the search index built? Only used for a hint on the empty state.
+  useEffect(() => {
+    let cancelled = false;
+    indexStatus(connection.id)
+      .then((status) => {
+        if (!cancelled) setIndexState(status.status);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [connection.id]);
+
   const interruptValue = readInterruptValue(stream.interrupt);
   const approval =
     interruptValue === undefined ? null : parseApprovalRequests(interruptValue);
@@ -85,15 +107,13 @@ export function Chat({
     () => mergeMessages(history, stream.messages),
     [history, stream.messages],
   );
-  const segments = useMemo(
-    () =>
-      buildSegments(messages, {
-        isRunning: isRunning || isApprovalPending,
-        subagentMessages: (id) => stream.getSubagent?.(id)?.messages,
-      }),
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- stream is a fresh object each render; its inputs below are the real triggers
-    [messages, isRunning, isApprovalPending, stream.subagents, stream.messages],
-  );
+  const segments = useMemo(() => {
+    const runs = resolveSubagents(messages, subagentRuns);
+    return buildSegments(messages, {
+      isRunning: isRunning || isApprovalPending,
+      subagentMessages: (id) => runs.get(id),
+    });
+  }, [messages, subagentRuns, isRunning, isApprovalPending]);
   turnRef.current = segments.filter((s) => s.kind === "human").length;
 
   // Record how long each run took, for the "N steps · 42s" summary.
@@ -200,7 +220,12 @@ export function Chat({
               </Banner>
             )}
             {showEmpty && (
-              <EmptyChat connectionName={connection.name} onPick={(q) => send(q)} />
+              <EmptyChat
+                connectionName={connection.name}
+                connectionId={connection.id}
+                showIndexHint={indexState === "idle" || indexState === "failed"}
+                onPick={(q) => send(q)}
+              />
             )}
             {hasConversation && (
               <Conversation
@@ -266,14 +291,4 @@ function readInterruptValue(interrupt: unknown): unknown {
   const first: unknown = Array.isArray(interrupt) ? interrupt[0] : interrupt;
   if (typeof first !== "object" || first === null) return undefined;
   return (first as { value?: unknown }).value;
-}
-
-/**
- * `useStream` with the custom transport. `filterSubagentMessages` (supported by the
- * SDK but missing from its public option types) routes the root-cause subagent's
- * messages into `getSubagent(...)` instead of the main thread.
- */
-function useChatStream(transport: AgentThreadTransport): UseStreamCustom<ChatState> {
-  const options = { transport, messagesKey: "messages", filterSubagentMessages: true };
-  return useStream<ChatState>(options) as unknown as UseStreamCustom<ChatState>;
 }

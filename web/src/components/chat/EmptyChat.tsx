@@ -1,4 +1,5 @@
 import { Sparkles } from "lucide-react";
+import Link from "next/link";
 
 export const EXAMPLE_QUESTIONS = [
   "Why did scrap rate rise last month?",
@@ -9,10 +10,18 @@ export const EXAMPLE_QUESTIONS = [
 
 interface EmptyChatProps {
   connectionName: string;
+  connectionId: string;
+  /** The connection's search index is not built. */
+  showIndexHint?: boolean;
   onPick: (question: string) => void;
 }
 
-export function EmptyChat({ connectionName, onPick }: EmptyChatProps) {
+export function EmptyChat({
+  connectionName,
+  connectionId,
+  showIndexHint = false,
+  onPick,
+}: EmptyChatProps) {
   return (
     <div className="rc-fade-in flex flex-col items-center px-4 pt-[12vh] text-center">
       <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-accent/10 text-accent-text">
@@ -42,6 +51,17 @@ export function EmptyChat({ connectionName, onPick }: EmptyChatProps) {
           </li>
         ))}
       </ul>
+      {showIndexHint && (
+        <p className="mt-6 text-[13px] text-muted">
+          <Link
+            href={`/catalog?connection=${encodeURIComponent(connectionId)}`}
+            className="underline underline-offset-2 hover:text-fg"
+          >
+            Build the search index in Catalog
+          </Link>{" "}
+          for better answers.
+        </p>
+      )}
     </div>
   );
 }

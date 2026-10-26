@@ -7,7 +7,7 @@ import {
   XCircle,
   Zap,
 } from "lucide-react";
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { Badge } from "@/components/ui/Badge";
 import { Banner } from "@/components/ui/Banner";
 import { CodeBlock } from "@/components/ui/CodeBlock";
@@ -202,13 +202,40 @@ function Validation({ chain }: { chain: WhyChain }) {
   );
 }
 
+const CLAMP_MIN_CHARS = 200;
+
+/** Long text clamped to three lines with a Show more / Show less toggle. */
+function ClampedText({ text }: { text: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const isLong = text.length > CLAMP_MIN_CHARS;
+  return (
+    <>
+      <p className={isLong && !expanded ? "line-clamp-3" : undefined}>{text}</p>
+      {isLong && (
+        <button
+          type="button"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((current) => !current)}
+          className="mt-1 text-xs font-medium underline underline-offset-2"
+        >
+          {expanded ? "Show less" : "Show more"}
+        </button>
+      )}
+    </>
+  );
+}
+
 function ChainBody({ chain }: { chain: WhyChain }) {
   return (
     <div className="flex flex-col gap-5">
       {chain.partial && (
         <Banner tone="warn" title="Partial analysis" alert={false}>
-          {chain.notes ||
-            "The investigation stopped before reaching a confirmed root cause."}
+          <ClampedText
+            text={
+              chain.notes ||
+              "The investigation stopped before reaching a confirmed root cause."
+            }
+          />
         </Banner>
       )}
       {!chain.partial && chain.notes && <p className="text-muted">{chain.notes}</p>}

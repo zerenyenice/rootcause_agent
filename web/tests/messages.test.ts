@@ -26,6 +26,18 @@ describe("messages helpers", () => {
     expect(friendlyError(new Error("stack: secret"))).not.toContain("secret");
   });
 
+  it("shows the message of service error codes but not of generic errors", () => {
+    const refused = new Error("The data source could not be reached.");
+    refused.name = "connection_unavailable";
+    expect(friendlyError(refused)).toBe("The data source could not be reached.");
+    const huge = new Error("x".repeat(500));
+    huge.name = "connection_unavailable";
+    expect(friendlyError(huge)).toMatch(/Something went wrong/);
+    expect(friendlyError(new TypeError("Failed to fetch"))).toMatch(
+      /Something went wrong/,
+    );
+  });
+
   it("uses curated API messages and a generic fallback", () => {
     expect(apiErrorMessage(new ApiError("c", "Name is taken", 409))).toBe(
       "Name is taken",

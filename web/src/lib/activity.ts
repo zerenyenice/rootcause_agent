@@ -3,6 +3,11 @@ import { messageText } from "./messages";
 import { parseWhyChain, type WhyChain } from "./whychain";
 
 export type StepKind = "schema" | "catalog" | "query" | "investigate" | "plan" | "other";
+export interface TodoItem {
+  text: string;
+  status: "pending" | "in_progress" | "completed";
+}
+
 export type StepStatus = "running" | "done" | "error" | "stopped";
 
 export interface ActivityStep {
@@ -12,6 +17,8 @@ export interface ActivityStep {
   /** One-line context: table name, search text, purpose of a query. */
   detail: string | null;
   sql: string | null;
+  /** Checklist for a planning step. */
+  todos: TodoItem[];
   /** One-line result: "12 rows", "3 columns", or a friendly error. */
   result: string | null;
   status: StepStatus;
@@ -48,7 +55,8 @@ function truncate(text: string): string {
 }
 
 function plural(count: number, noun: string): string {
-  return `${count} ${noun}${count === 1 ? "" : "s"}`;
+  if (count === 1) return `1 ${noun}`;
+  return `${count} ${/(ch|sh|s|x|z)$/.test(noun) ? `${noun}es` : `${noun}s`}`;
 }
 
 function toolCallsOf(message: Message): ToolCallLike[] {
@@ -115,7 +123,7 @@ function str(value: unknown): string | null {
 
 function describeCall(
   call: ToolCallLike,
-): Pick<ActivityStep, "kind" | "title" | "detail" | "sql"> {
+): Pick<ActivityStep, "kind" | "title" | "detail" | "sql" | "todos"> {
   const { name, args } = call;
   if (SCHEMA_TOOLS.has(name)) {
     const table = str(args.table);
@@ -125,6 +133,7 @@ function describeCall(
       title: "Exploring schema",
       detail: table ? (column ? `${table}.${column}` : table) : null,
       sql: null,
+      todos: [],
     };
   }
   if (name === "search_catalog") {
@@ -133,6 +142,7 @@ function describeCall(
       title: "Searching catalog",
       detail: str(args.query) ?? str(args.q),
       sql: null,
+      todos: [],
     };
   }
   if (name === "run_sql" || name === "explain_sql") {
@@ -142,6 +152,7 @@ function describeCall(
       title: name === "run_sql" ? "Running query" : "Estimating query cost",
       detail: purpose ? truncate(purpose) : null,
       sql: str(args.sql),
+      todos: [],
     };
   }
   if (name === TASK_TOOL) {
@@ -151,10 +162,26 @@ function describeCall(
       title: "Investigating root cause",
       detail: description ? truncate(description) : null,
       sql: null,
+      todos: [],
     };
   }
   if (name === "write_todos") {
-    return { kind: "plan", title: "Planning", detail: null, sql: null };
+    return {
+      kind: "plan",
+      title: "Planning",
+      detail: null,
+      sql: null,
+      todos: parseTodos(args.todos),
+    };
+  }
+  if (name === "read_file") {
+    return {
+      kind: "other",
+      title: "Reading query results",
+      detail: null,
+      sql: null,
+      todos: [],
+    };
   }
   const readable = name.replace(/[_-]+/g, " ").trim();
   return {
@@ -162,7 +189,22 @@ function describeCall(
     title: readable ? readable.charAt(0).toUpperCase() + readable.slice(1) : "Working",
     detail: null,
     sql: null,
+    todos: [],
   };
+}
+
+function parseTodos(value: unknown): TodoItem[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item): TodoItem[] => {
+    if (!isRecord(item)) return [];
+    const text = str(item.content) ?? str(item.text);
+    if (!text) return [];
+    const status =
+      item.status === "completed" || item.status === "in_progress"
+        ? item.status
+        : "pending";
+    return [{ text: truncate(text), status }];
+  });
 }
 
 function toolMessagesById(messages: readonly Message[]): Map<string, Message> {

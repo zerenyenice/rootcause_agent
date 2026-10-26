@@ -1,5 +1,5 @@
 import type { Message } from "@langchain/langgraph-sdk";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Chat } from "@/components/chat/Chat";
 import { EXAMPLE_QUESTIONS } from "@/components/chat/EmptyChat";
@@ -7,6 +7,8 @@ import { duckdbConnection, postgresConnection } from "./fixtures/admin";
 
 const spies = vi.hoisted(() => ({
   use: vi.fn(),
+  indexStatus: vi.fn(),
+  emitSubagent: null as null | ((ns: string, messages: unknown[]) => void),
   refresh: vi.fn().mockResolvedValue(undefined),
   setActiveThreadId: vi.fn(),
   loadThreadMessages: vi.fn(),
@@ -15,8 +17,16 @@ const spies = vi.hoisted(() => ({
 vi.mock("@/lib/agentTransport", () => ({
   AgentThreadTransport: class {
     use = spies.use;
+    constructor(
+      _url: string,
+      _onThread: unknown,
+      onSubagent: (ns: string, m: unknown[]) => void,
+    ) {
+      spies.emitSubagent = onSubagent;
+    }
   },
 }));
+vi.mock("@/lib/api", () => ({ indexStatus: spies.indexStatus }));
 vi.mock("@/components/shell/ThreadsProvider", () => ({
   useThreads: () => ({
     refresh: spies.refresh,
@@ -30,8 +40,6 @@ interface FakeStream {
   isLoading: boolean;
   error: unknown;
   interrupt: unknown;
-  subagents: Map<string, unknown>;
-  getSubagent: (id: string) => { messages: Message[] } | undefined;
   submit: ReturnType<typeof vi.fn>;
   stop: ReturnType<typeof vi.fn>;
 }
@@ -46,8 +54,6 @@ function setStream(overrides: Partial<FakeStream> = {}): FakeStream {
     isLoading: false,
     error: undefined,
     interrupt: undefined,
-    subagents: new Map(),
-    getSubagent: () => undefined,
     submit: vi.fn().mockResolvedValue(undefined),
     stop: vi.fn().mockResolvedValue(undefined),
     ...overrides,
@@ -133,6 +139,11 @@ const investigation: Message[] = [
 beforeEach(() => {
   vi.clearAllMocks();
   spies.refresh.mockResolvedValue(undefined);
+  spies.indexStatus.mockResolvedValue({
+    status: "done",
+    indexed_tables: 1,
+    indexed_columns: 1,
+  });
 });
 
 describe("Chat composer", () => {
@@ -202,6 +213,34 @@ describe("Chat empty state", () => {
   });
 });
 
+describe("Index hint", () => {
+  it("links to the catalog when the search index is not built", async () => {
+    spies.indexStatus.mockResolvedValue({
+      status: "idle",
+      indexed_tables: 0,
+      indexed_columns: 0,
+    });
+    setStream();
+    renderChat();
+    const link = await screen.findByRole("link", {
+      name: "Build the search index in Catalog",
+    });
+    expect(link).toHaveAttribute("href", `/catalog?connection=${postgresConnection.id}`);
+  });
+
+  it("stays quiet when the index is built or the status is unavailable", async () => {
+    setStream();
+    const { unmount } = renderChat();
+    await waitFor(() => expect(spies.indexStatus).toHaveBeenCalled());
+    expect(screen.queryByRole("link", { name: /search index/ })).toBeNull();
+    unmount();
+    spies.indexStatus.mockRejectedValue(new Error("down"));
+    renderChat();
+    await waitFor(() => expect(spies.indexStatus).toHaveBeenCalledTimes(2));
+    expect(screen.queryByRole("link", { name: /search index/ })).toBeNull();
+  });
+});
+
 describe("Chat conversation", () => {
   it("renders the activity summary, the WhyChain card and the answer", async () => {
     setStream({ messages: investigation });
@@ -232,24 +271,55 @@ describe("Chat conversation", () => {
     expect(screen.getByText("line 2", { selector: "strong" })).toBeInTheDocument();
   });
 
-  it("shows nested subagent steps live under the task", () => {
-    const sub: Message[] = [
-      {
-        type: "ai",
-        id: "s1",
-        content: "",
-        tool_calls: [{ id: "x1", name: "run_sql", args: { sql: "SELECT 2" } }],
-      } as unknown as Message,
-    ];
+  it("shows nested subagent steps live under the task", async () => {
     setStream({
       isLoading: true,
-      messages: investigation.slice(0, 2),
-      getSubagent: (id) => (id === "c2" ? { messages: sub } : undefined),
+      messages: [
+        investigation[0] as Message,
+        {
+          type: "ai",
+          id: "a1",
+          content: "",
+          tool_calls: [
+            { id: "c2", name: "task", args: { description: "Investigate scrap" } },
+          ],
+        } as unknown as Message,
+      ],
     });
     renderChat();
+    act(() => {
+      spies.emitSubagent?.("tools:pregel-task-1", [
+        { type: "human", id: "sh", content: "Investigate scrap" },
+        {
+          type: "ai",
+          id: "s1",
+          content: "",
+          tool_calls: [
+            { id: "x1", name: "run_sql", args: { sql: "SELECT 2", purpose: "Nested" } },
+          ],
+        },
+      ]);
+    });
     const activity = screen.getByRole("region", { name: "Agent activity" });
     expect(within(activity).getByText("Investigating root cause")).toBeInTheDocument();
-    expect(within(activity).getAllByText("Running query").length).toBeGreaterThan(0);
+    expect(await within(activity).findByText("Nested")).toBeInTheDocument();
+    expect(within(activity).getAllByText("Running query")).toHaveLength(1);
+  });
+
+  it("clamps a long partial-analysis note behind Show more", async () => {
+    const long = "x".repeat(400);
+    const messages = investigation.map((m) =>
+      m.id === "t2"
+        ? ({ ...m, content: JSON.stringify({ ...whyChain, notes: long }) } as Message)
+        : m,
+    );
+    setStream({ messages });
+    renderChat();
+    const toggle = screen.getByRole("button", { name: "Show more" });
+    expect(screen.getByText(long)).toHaveClass("line-clamp-3");
+    await userEvent.click(toggle);
+    expect(screen.getByText(long)).not.toHaveClass("line-clamp-3");
+    expect(screen.getByRole("button", { name: "Show less" })).toBeVisible();
   });
 
   it("falls back to markdown when the task result is not a WhyChain", () => {
@@ -307,6 +377,17 @@ describe("Chat approvals", () => {
 });
 
 describe("Chat errors and history", () => {
+  it("shows the server's message for a refused run, with Retry", () => {
+    const refused = new Error("The data source could not be reached.");
+    refused.name = "connection_unavailable";
+    setStream({ error: refused, messages: [{ type: "human", id: "h1", content: "q" }] });
+    renderChat();
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "The data source could not be reached.",
+    );
+    expect(screen.getByRole("button", { name: "Retry" })).toBeVisible();
+  });
+
   it("shows a friendly banner with Retry and never the raw error", async () => {
     const stream = setStream({
       error: new Error("Traceback: secret stack"),
