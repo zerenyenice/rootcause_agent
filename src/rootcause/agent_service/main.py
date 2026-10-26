@@ -18,6 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from langchain_core.embeddings import Embeddings
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.store.base import BaseStore
+from langgraph.store.memory import InMemoryStore
 from limits import parse
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 
@@ -44,7 +45,7 @@ from rootcause.settings import Environment, Settings, get_settings
 from rootcause.telemetry import shutdown_telemetry
 
 APP_TITLE: Final = "RootCause Agent Service"
-CORS_METHODS: Final = ("GET", "POST")
+CORS_METHODS: Final = ("GET", "POST", "DELETE")
 CORS_HEADERS: Final = ("Content-Type", "Accept", REQUEST_ID_HEADER)
 
 
@@ -79,6 +80,7 @@ def _lifespan(settings: Settings, seams: _Seams) -> Callable[[FastAPI], Any]:
             if saver is None:
                 persistence = await stack.enter_async_context(open_persistence(settings))
                 saver, store = persistence.checkpointer, persistence.store
+            thread_store = store if store is not None else InMemoryStore()
             factory = _graph_factory(seams.graph_factory, store, settings)
             graph = await asyncio.to_thread(factory, checkpointer=saver)
             connection_graphs = ConnectionGraphs(
@@ -92,7 +94,7 @@ def _lifespan(settings: Settings, seams: _Seams) -> Callable[[FastAPI], Any]:
             stack.push_async_callback(connection_graphs.close)
             app.state.agent = AgentRuntime(
                 graph=graph,
-                threads=ThreadRegistry(saver),
+                threads=ThreadRegistry(saver, thread_store),
                 settings=settings,
                 connection_graphs=connection_graphs,
             )
