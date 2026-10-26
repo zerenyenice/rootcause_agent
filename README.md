@@ -254,6 +254,7 @@ uv run --with "langgraph-cli[inmem]" langgraph dev   # LangGraph Server (root la
    The chat UI calls the agent at `NEXT_PUBLIC_AGENT_URL` (default
    `http://localhost:8100`); the agent accepts browser requests from
    `ROOTCAUSE_AGENT_ALLOWED_ORIGINS` (JSON list, default `["http://localhost:3000"]`).
+   The API accepts browser requests from `ROOTCAUSE_API_ALLOWED_ORIGINS` (same format).
    No authentication in the MVP: bind the services to localhost.
    `langgraph dev` (root `langgraph.json`) still serves the same graph for LangGraph Studio.
 

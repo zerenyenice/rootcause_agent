@@ -21,6 +21,7 @@ from pydantic import (
     Field,
     SecretStr,
     ValidationError,
+    ValidationInfo,
     field_validator,
     model_validator,
 )
@@ -52,6 +53,7 @@ LOOPBACK_HOSTNAME = "localhost"
 # Browser origins allowed to call the agent service (CORS): ``scheme://host[:port]``.
 ORIGIN_PATTERN = re.compile(r"^https?://[A-Za-z0-9.\-]+(?::[0-9]{1,5})?$")
 DEFAULT_AGENT_ALLOWED_ORIGINS = ("http://localhost:3000",)
+DEFAULT_API_ALLOWED_ORIGINS = ("http://localhost:3000",)
 PLAINTEXT_HOST_ERROR = (
     "langfuse_host must use https unless it is a loopback address or a "
     "single-label service name (for example a compose service)"
@@ -138,6 +140,7 @@ class Settings(BaseSettings):
     rate_limit: str = "120/minute"
     # JSON list in the environment, e.g. '["http://localhost:3000"]'.
     agent_allowed_origins: tuple[str, ...] = DEFAULT_AGENT_ALLOWED_ORIGINS
+    api_allowed_origins: tuple[str, ...] = DEFAULT_API_ALLOWED_ORIGINS
     orchestrator_model: str = Field(default="anthropic:claude-opus-5", min_length=1)
     fast_model: str = Field(default="anthropic:claude-sonnet-5", min_length=1)
     reasoning_model: str = Field(default="anthropic:claude-opus-5", min_length=1)
@@ -216,12 +219,12 @@ class Settings(BaseSettings):
             raise ValueError(SECRET_KEY_FORMAT_ERROR)
         return value
 
-    @field_validator("agent_allowed_origins")
+    @field_validator("agent_allowed_origins", "api_allowed_origins")
     @classmethod
-    def _validate_origins(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+    def _validate_origins(cls, value: tuple[str, ...], info: ValidationInfo) -> tuple[str, ...]:
         """Exact origins only (no wildcard, path or trailing slash): CORS compares strings."""
         if any(ORIGIN_PATTERN.fullmatch(origin) is None for origin in value):
-            raise ValueError("agent_allowed_origins must be origins like 'https://host:port'")
+            raise ValueError(f"{info.field_name} must be origins like 'https://host:port'")
         return value
 
     @field_validator("langfuse_host")
