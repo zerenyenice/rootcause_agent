@@ -121,3 +121,28 @@ def test_orchestrator_prompt_delegates_and_relays_partial_notes() -> None:
     assert "partial" in prompt
     for field in ("what", "when", "where", "impact"):
         assert field in prompt
+
+
+@pytest.mark.unit
+def test_task_tool_message_is_exactly_the_why_chain_json(
+    scripted_model: Callable[..., Any], tool_call_message: Callable[..., Any], executor: Any
+) -> None:
+    from rootcause.agents.reports import WhyChain
+
+    model = scripted_model(
+        tool_call_message(
+            "task", {"description": "why did scrap rise?", "subagent_type": "root-cause"}, "t1"
+        ),
+        tool_call_message("WhyChain", CHAIN, "s1"),
+        AIMessage(content="report"),
+    )
+    handle = _build(model, executor=executor)
+
+    result = handle.graph.invoke(
+        {"messages": [HumanMessage("why did scrap rise?")]},
+        config={"configurable": {"thread_id": "t"}},
+    )
+
+    [task] = [m for m in result["messages"] if isinstance(m, ToolMessage) and m.name == "task"]
+    chain = WhyChain.model_validate_json(str(task.content))
+    assert task.content == chain.model_dump_json()

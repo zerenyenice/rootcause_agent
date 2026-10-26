@@ -16,9 +16,9 @@ from rootcause.agent_service.runs import (
     stream_connection_run,
     stream_run,
 )
-from rootcause.agent_service.schemas import RunRequest, ThreadCreated
+from rootcause.agent_service.schemas import RunRequest, ThreadCreated, ThreadSearch
 from rootcause.agent_service.sse import SSE_MEDIA_TYPE, to_json
-from rootcause.agent_service.threads import ThreadRegistry
+from rootcause.agent_service.threads import ThreadRegistry, title_from_messages
 from rootcause.settings import Settings
 
 THREAD_NOT_FOUND = "Thread not found."
@@ -67,6 +67,22 @@ async def create_thread(runtime: Runtime) -> ThreadCreated:
     return ThreadCreated(thread_id=runtime.threads.create())
 
 
+@router.post("/threads/search")
+async def search_threads(body: ThreadSearch, runtime: Runtime) -> Response:
+    """Threads that have run, newest ``updated_at`` first (LangGraph ``threads.search`` shape)."""
+    found = await runtime.threads.search(limit=body.limit, offset=body.offset)
+    return Response(
+        content=to_json([thread.as_json() for thread in found]), media_type="application/json"
+    )
+
+
+@router.delete("/threads/{thread_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_thread(thread_id: UUID, runtime: Runtime) -> Response:
+    """Delete a thread's metadata and checkpoints."""
+    await runtime.threads.delete(str(thread_id))
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @router.get("/threads/{thread_id}/state")
 async def thread_state(thread_id: UUID, runtime: Runtime) -> Response:
     """Current values, next nodes and pending interrupts of a thread."""
@@ -92,9 +108,16 @@ async def stream_thread_run(
     canonical = await _known_thread(runtime, thread_id)
     config = build_run_config(canonical, body, runtime.settings)
     connection_id = body.context.connection_id if body.context is not None else None
+    title = title_from_messages(body.input.messages) if body.input is not None else None
+    await runtime.threads.record_run(canonical, title=title, connection_id=connection_id)
+    subgraphs = body.stream_subgraphs
     if connection_id is None:
-        events = stream_run(runtime.graph, run_input(body), config, thread_id=canonical)
+        events = stream_run(
+            runtime.graph, run_input(body), config, thread_id=canonical, subgraphs=subgraphs
+        )
     else:
         resolve = partial(runtime.connection_graphs.graph_for, connection_id)
-        events = stream_connection_run(resolve, run_input(body), config, thread_id=canonical)
+        events = stream_connection_run(
+            resolve, run_input(body), config, thread_id=canonical, subgraphs=subgraphs
+        )
     return StreamingResponse(events, media_type=SSE_MEDIA_TYPE, headers=STREAM_HEADERS)

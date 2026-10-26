@@ -176,18 +176,24 @@ def _guard(result: ToolMessage | Command[Any]) -> ToolMessage | Command[Any]:
 
 
 def _checked(message: ToolMessage) -> ToolMessage:
-    if is_why_chain(message.content):
-        return message
+    chain = parse_why_chain(message.content)
+    if chain is not None:
+        # Canonical WhyChain JSON: the UI renders the card from exactly this content.
+        return message.model_copy(update={"content": chain.model_dump_json()})
     _logger.warning("root_cause_task_result_not_a_why_chain", empty=not message.text.strip())
     return message.model_copy(update={"content": FAILED_TASK_RESULT, "status": "error"})
 
 
+def parse_why_chain(content: Any) -> WhyChain | None:
+    """The WhyChain in JSON ``content``, or ``None`` when it is not one."""
+    if not isinstance(content, str) or not content.strip():
+        return None
+    try:
+        return WhyChain.model_validate_json(content)
+    except ValidationError:
+        return None
+
+
 def is_why_chain(content: Any) -> bool:
     """True when ``content`` is WhyChain JSON."""
-    if not isinstance(content, str) or not content.strip():
-        return False
-    try:
-        WhyChain.model_validate_json(content)
-    except ValidationError:
-        return False
-    return True
+    return parse_why_chain(content) is not None
