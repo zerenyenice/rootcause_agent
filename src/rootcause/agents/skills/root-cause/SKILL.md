@@ -222,6 +222,13 @@ gives nothing actionable) and verifiable, or it hits a stop condition:
 | `external` | An external event (supplier, weather, demand) |
 | `knowledge` | A knowledge or training gap in a procedure (never a person) |
 
+**Planned-event stop rule**: if the evidence shows the symptom is fully
+explained by a planned, recorded decision (a holiday, a planned shutdown, a
+scheduled maintenance window), the chain ends there. The root cause is that
+planned event, with type `process` or the closest category. Do not invent
+further whys about policy without data. Say in `notes` that the drop was
+planned.
+
 ## Phase 4: Validate backwards
 
 Walk the chain from the root cause up to the problem. For each link run a

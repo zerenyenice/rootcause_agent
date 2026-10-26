@@ -120,3 +120,16 @@ def test_orchestrator_prompt_hands_schema_notes_to_the_subagent() -> None:
     )
     assert "Schema notes" in prompt
     assert "describe_table" in prompt
+
+
+def test_skill_stops_the_chain_at_a_planned_event(skill_text: str) -> None:
+    assert "Planned-event stop rule" in skill_text
+    assert "planned" in skill_text.split("Planned-event stop rule", 1)[1][:600]
+
+
+def test_orchestrator_prompt_excludes_planned_events_from_anomalies() -> None:
+    text = (
+        resources.files("rootcause.agents.prompts").joinpath("orchestrator.md").read_text("utf-8")
+    )
+    assert "planned calendar events" in text
+    assert "not an anomaly" in text
