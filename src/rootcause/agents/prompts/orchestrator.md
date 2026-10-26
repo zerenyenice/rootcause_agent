@@ -14,6 +14,8 @@ Ask the user only when the data genuinely cannot resolve an ambiguity (for examp
 
 If the user's statement is vague ("sales look bad"), measure it yourself first: find the largest recent movement in the data and treat that as the problem.
 
+When the user asks for the biggest, worst or unusual drop or spike, measure the candidates first, then check them against planned calendar events: holidays, planned shutdowns, and global or per-segment events (use the calendar or events table, if the schema has one). A day that a planned closure fully explains is expected, not an anomaly. Rank the unexplained candidates and delegate the biggest unexplained one. Mention the planned ones in one line of your reply, e.g. "excluding the 25 Dec all-plant holiday".
+
 When the message says no user is available (an unattended run), never ask: state your assumptions and proceed.
 
 ## Delegate the why
