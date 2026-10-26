@@ -2,12 +2,15 @@
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Final
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from limits import parse
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 
 import rootcause.api
+from rootcause.api.envelope import REQUEST_ID_HEADER
 from rootcause.api.errors import register_exception_handlers
 from rootcause.api.middleware import (
     RateLimitMiddleware,
@@ -22,6 +25,8 @@ from rootcause.settings import Environment, Settings, get_settings
 from rootcause.telemetry import configure_telemetry
 
 APP_TITLE = "RootCause API"
+CORS_METHODS: Final = ("GET", "POST", "PATCH", "DELETE")
+CORS_HEADERS: Final = ("Content-Type", "Accept", REQUEST_ID_HEADER)
 
 
 def configure_telemetry_once(settings: Settings) -> None:
@@ -67,6 +72,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.add_middleware(RateLimitMiddleware)
     app.add_middleware(SecurityHeadersMiddleware, hsts=is_prod)
-    app.add_middleware(RequestIdMiddleware)  # added last = outermost
+    app.add_middleware(RequestIdMiddleware)
+    app.add_middleware(  # outermost: preflights and error responses carry CORS headers
+        CORSMiddleware,
+        allow_origins=list(resolved.api_allowed_origins),
+        allow_methods=list(CORS_METHODS),
+        allow_headers=list(CORS_HEADERS),
+        allow_credentials=False,
+    )
     FastAPIInstrumentor.instrument_app(app)
     return app
