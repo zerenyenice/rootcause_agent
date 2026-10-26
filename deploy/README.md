@@ -327,6 +327,14 @@ To use your own file instead, add a DuckDB connection in the UI (or
 `POST /api/v1/connections`), test it, import its catalog and select the tables
 the agent may use.
 
+Selection is **context, not access control** (ADR-0008): it decides which
+tables and columns the agent is told about and can search. The agent only
+queries connections whose login passed the read-only test, and that login's
+privileges are the data boundary. To keep sensitive columns away from the
+agent, do not grant them to the login (Postgres:
+`GRANT SELECT (col_a, col_b) ON schema.table TO rootcause_reader`, or a
+schema of views), rather than relying on leaving them unselected.
+
 ### Running the API on the host instead
 
 Start only `postgres` (and `openviking`), copy `deploy/.env` to the repo root
