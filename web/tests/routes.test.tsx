@@ -3,14 +3,16 @@ import CatalogRoute from "@/app/catalog/page";
 import ConnectionsRoute from "@/app/connections/page";
 import HomeRoute from "@/app/page";
 
-vi.mock("@/components/ChatPage", () => ({ ChatPage: () => <p>chat-page</p> }));
-vi.mock("@/components/ConnectionsPage", () => ({
+vi.mock("@/components/chat/ChatPage", () => ({ ChatPage: () => <p>chat-page</p> }));
+vi.mock("@/components/connections/ConnectionsPage", () => ({
   ConnectionsPage: () => <p>connections-page</p>,
 }));
-vi.mock("@/components/CatalogPage", () => ({ CatalogPage: () => <p>catalog-page</p> }));
+vi.mock("@/components/catalog/CatalogPage", () => ({
+  CatalogPage: () => <p>catalog-page</p>,
+}));
 
 describe("app routes", () => {
-  it("/ renders the chat page with its connection picker", () => {
+  it("/ renders the chat page", () => {
     render(<HomeRoute />);
     expect(screen.getByText("chat-page")).toBeInTheDocument();
   });

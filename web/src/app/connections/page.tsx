@@ -1,4 +1,4 @@
-import { ConnectionsPage } from "@/components/ConnectionsPage";
+import { ConnectionsPage } from "@/components/connections/ConnectionsPage";
 
 export default function ConnectionsRoute() {
   return <ConnectionsPage />;

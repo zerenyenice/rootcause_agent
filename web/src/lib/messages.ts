@@ -22,3 +22,22 @@ export function apiErrorMessage(error: unknown): string {
   if (error instanceof ApiError) return error.message;
   return "Something went wrong. Please try again.";
 }
+
+/** Merge by message id (later wins, first position kept); id-less messages are appended. */
+export function mergeMessages(
+  base: readonly Message[],
+  live: readonly Message[],
+): Message[] {
+  const merged: Message[] = [];
+  const positions = new Map<string, number>();
+  for (const message of [...base, ...live]) {
+    const position = message.id ? positions.get(message.id) : undefined;
+    if (position !== undefined) {
+      merged[position] = message;
+      continue;
+    }
+    if (message.id) positions.set(message.id, merged.length);
+    merged.push(message);
+  }
+  return merged;
+}
