@@ -81,3 +81,42 @@ def test_skill_paths_are_unique_directories() -> None:
     paths = skill_paths()
     assert len(set(paths)) == len(paths)
     assert all(p.is_dir() for p in paths)
+
+
+def test_method_requires_describe_before_query_and_retry_after_error(skill_text: str) -> None:
+    lowered = skill_text.lower()
+    assert "describe before you query" in lowered
+    assert "describe_table" in lowered
+    assert "never drop a hypothesis" in lowered
+    assert "never stop the investigation" in lowered
+
+
+def test_evidence_sweep_covers_every_table_family_and_forbids_skipping(skill_text: str) -> None:
+    lowered = skill_text.lower()
+    assert "phase 1b" in lowered
+    for family in (
+        "events and calendars",
+        "downtime",
+        "maintenance",
+        "telemetry",
+        "energy",
+        "work orders",
+        "materials",
+        "staffing",
+    ):
+        assert family in lowered, family
+    assert "never skip a family" in lowered
+    assert "control-group check" in lowered
+
+
+def test_partial_is_allowed_only_when_budget_is_nearly_used(skill_text: str) -> None:
+    assert "Return partial only" in skill_text
+    assert "85%" in skill_text
+
+
+def test_orchestrator_prompt_hands_schema_notes_to_the_subagent() -> None:
+    prompt = (
+        resources.files("rootcause.agents.prompts").joinpath("orchestrator.md").read_text("utf-8")
+    )
+    assert "Schema notes" in prompt
+    assert "describe_table" in prompt

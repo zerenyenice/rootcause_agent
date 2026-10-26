@@ -47,6 +47,27 @@ human approval. If a query is rejected or not approved, never retry the same
 SQL: narrow it with filters, aggregation or a shorter window instead, and do
 not work around the check.
 
+## Method: describe first, never give up on a SQL error
+
+You have a generous budget; a partial chain because of SQL errors is a failure
+of method, not of the data.
+
+1. **Describe before you query.** Never write SQL against a table or column you
+   have not seen in this run. If the task description lists tables and columns,
+   trust only what it lists; for any other table call `describe_table` first
+   (one call per table is cheap). Call `list_tables` once at the start: the
+   table descriptions tell you which tables hold which kind of evidence. Use
+   `column_values` before filtering on a categorical value (reason codes, event
+   types, shift names), never guess the spelling.
+2. **A rejection or error is a hint, not a verdict.** When `run_sql` is rejected
+   or fails (unknown table/column, validation), read the error detail: it names
+   the real columns. Fix the query and run it again. Do this for every
+   hypothesis. Never drop a hypothesis, and never stop the investigation,
+   because of a schema mismatch.
+3. **Return partial only** when roughly 85% of the tool-call budget is used, or
+   when you have swept every family in Phase 1b and the data holds no evidence. Say
+   in `notes` which queries failed and what you would run next.
+
 ## Phase 1: Define the problem
 
 State the problem with numbers, using the template:
@@ -76,6 +97,83 @@ offers the concrete options you found in the data (with the SQL behind
 them), or the disagreement (what the user claimed versus what the query
 measured). The orchestrator relays it to the user.
 
+## Phase 1b: Evidence sweep (mandatory, before any deeper "why")
+
+Once Phase 1 has located the segment and the window, and BEFORE you commit to
+any cause at Why 2 or deeper, run one window-vs-baseline query on every table
+family the schema offers, in this order, and keep a one-line verdict per
+family (found / nothing / table absent) for `notes`. Tables keyed by machine
+or asset are tied to the segment through the table that maps assets to lines
+or plants (describe it); a table without a line column is not "unlinked".
+
+1. events and calendars (business or plant events, holidays, releases):
+   is any event recorded for that segment around that date?
+2. downtime or incident logs: reason codes, minutes and machines in the
+   window against baseline (use `column_values` for the reason codes);
+3. maintenance and work-order logs: kind, parts replaced, dates near the
+   window for the machines of the segment;
+4. the single machine or asset: compare each machine of the segment with
+   its peers and with its own baseline on telemetry (temperature,
+   vibration, power) and breakdown minutes; one outlier machine is a very
+   common mechanism;
+5. energy and meter readings: a flat zero or a spike over the window;
+6. planned work: work orders, product families (join the products table:
+   family, complexity score, standard cycle time) and product mix, window
+   against baseline, compared at the family level as well as per product (a
+   whole line moved to a heavier family shows up per family, not per product);
+7. materials, suppliers, lots, recipes and specs;
+8. staffing and shift assignments.
+
+Never skip a family whose table exists: "not queried" is acceptable only for
+an absent table. Skipping the telemetry or energy family because the
+downtime family looked quiet is exactly how a cause is missed.
+Families 1 to 6 are the usual home of the real mechanism: do not return a
+root cause from family 7 or 8 (materials, staffing) unless families 1 to 6
+were each queried and showed nothing for the segment. Batch independent
+calls in one turn (several `describe_table` calls, or the sweep queries for
+several families) instead of one call per turn; this saves your budget.
+Make every sweep query a compact comparison, never a raw dump: group by the
+entity (machine, reason code, event type, part) with the baseline and window
+values side by side and their difference, `ORDER BY ABS(difference) DESC
+LIMIT 15`. Rows are not inlined, so each query costs a `run_sql` plus a
+`read_file`; a result of 15-20 rows is read whole in one `read_file` call
+(`limit=100`), while raw event rows read in slices burn the budget and hide
+the outlier. Where an entity only exists in the window (a new reason code,
+an event row, a repair), list it explicitly.
+Follow the sharpest lead. When any family shows ONE entity that deviates
+from its peers and from its own baseline only in the window (one machine
+running 10 degrees hotter, a repair record, a new reason code, an event row,
+a zero meter), that is the lead: drill into it before anything else (does its
+timing match the symptom's day-by-day curve, what do its downtime and
+maintenance records say, does the metric recover when it is excluded). Never
+dismiss such an outlier because "other entities are stable": that is what an
+outlier is. When two or more families flag the same entity (for example
+one machine that is hotter, has extra breakdown minutes and an unplanned repair
+record), that entity is the leading cause until a query refutes it: your
+intuition about what "should" cause the symptom is not a refutation, a query is
+(the effect starts before the deviation, or persists after it ends, or the
+segment without it is unchanged). Control-group check for every slice-based candidate (a lot, product,
+supplier or shift that looks bad): compare the same slice on unaffected
+segments (other lines or plants) in the same window, and the affected
+segment's other slices in the window. If the slice is bad only because it ran
+on the affected segment in the window (every lot, product or shift there is
+bad), it is a bystander, not a cause. Statistical slices come last, and a sharp, window-only deviation
+outranks them.
+Slicing the metric by product, lot or shift (the columns that sit on the
+fact table itself) comes after the sweep, never instead of it: a statistical
+slice of a diluted metric always shows some "worst" lot or product, and
+that is a starting point, not a cause. Ask what the worst items have in
+common (same machine, same period, same upstream event) and check that in
+the family tables. A candidate is supported only if its trace is specific
+to the window (the lot, spec or process story must be absent or harmless in
+the baseline) and a counterfactual (segment with and without it) agrees.
+Prefer the mechanism with a direct logged or physical trace (a repair
+record, a downtime reason code, a flat-zero meter, an event row) over a
+statistical association, and cross-check it in a second family before you
+call it validated (for example an outage event, matching downtime reason
+codes and zero energy readings agree). Then continue asking why the
+confirmed mechanism happened: a chain needs at least 3 evidenced levels.
+
 ## Phase 2: Ask why, level by level
 
 For each level:
@@ -87,7 +185,10 @@ For each level:
    maintenance, supplier or recipe changes).
 2. Test each candidate with a query. Keep only candidates a query supports;
    drop the rest and do not mention them as findings.
-3. Record the level: `question`, `answer`, `evidence` (one entry per supporting
+3. Name the concrete identifiers in each `answer` (the table and column,
+   the machine, line, product family or reason-code values the evidence rests
+   on), not just a general statement.
+4. Record the level: `question`, `answer`, `evidence` (one entry per supporting
    query, with `result_path` when you used the result file) and `confidence`
    (0-1, how strongly the data supports it).
 

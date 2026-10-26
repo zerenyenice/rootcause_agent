@@ -263,10 +263,10 @@ uv run --with "langgraph-cli[inmem]" langgraph dev   # LangGraph Server (root la
 
 4. Run the evaluation unattended. The runner hands the agent only the question;
    `investigate()` tells the orchestrator no user is available, runs on a fresh
-   thread, stops after `ROOTCAUSE_INVESTIGATION_MAX_STEPS` graph steps (default 80)
+   thread, stops after `ROOTCAUSE_INVESTIGATION_MAX_STEPS` graph steps (default 120)
    or `ROOTCAUSE_INVESTIGATION_TIMEOUT_SECONDS` (default 600, checked between
    approval rounds) and rejects every large-scan approval. The root-cause subagent
-   may make `ROOTCAUSE_INVESTIGATION_MAX_TOOL_CALLS` tool calls per run (default 40):
+   may make `ROOTCAUSE_INVESTIGATION_MAX_TOOL_CALLS` tool calls per run (default 60):
 
    ```bash
    uv run python -m rootcause.evals.run --cases data/warehouse/cases.json --levels easy --agent rootcause.agents.investigate:investigate
