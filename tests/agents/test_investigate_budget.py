@@ -1,7 +1,7 @@
 """investigate() budgets (RED): subagent tool calls, wall clock, resume-cap logging.
 
 Seams the implementation must provide:
-- ``Settings.investigation_max_tool_calls`` (int > 0, default 40, env
+- ``Settings.investigation_max_tool_calls`` (int > 0, default 60, env
   ``ROOTCAUSE_INVESTIGATION_MAX_TOOL_CALLS``): tool-call budget of the root-cause
   subagent (ToolCallLimitMiddleware or equivalent) plus a recursion limit for it
   derived from ``investigation_max_steps``.
@@ -85,7 +85,7 @@ def test_subagent_tool_call_budget_bounds_run_sql_and_the_run_still_returns(
 
 @pytest.mark.unit
 def test_tool_call_budget_default_env_and_validation(monkeypatch: pytest.MonkeyPatch) -> None:
-    assert _settings().model_dump()["investigation_max_tool_calls"] == 40
+    assert _settings().model_dump()["investigation_max_tool_calls"] == 60
 
     monkeypatch.setenv("ROOTCAUSE_INVESTIGATION_MAX_TOOL_CALLS", "7")
     monkeypatch.setenv("ROOTCAUSE_DATABASE_URL", "postgresql://u:p@localhost/db")

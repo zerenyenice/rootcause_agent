@@ -249,10 +249,10 @@ def test_runs_on_a_fresh_thread_with_the_step_budget_from_settings(
 
 
 @pytest.mark.unit
-def test_investigation_max_steps_defaults_to_80_and_reads_the_environment(
+def test_investigation_max_steps_defaults_to_120_and_reads_the_environment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    assert _settings().model_dump()["investigation_max_steps"] == 80
+    assert _settings().model_dump()["investigation_max_steps"] == 120
 
     monkeypatch.setenv("ROOTCAUSE_INVESTIGATION_MAX_STEPS", "25")
     monkeypatch.setenv("ROOTCAUSE_DATABASE_URL", "postgresql://u:p@localhost/db")
