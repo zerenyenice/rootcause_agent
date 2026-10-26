@@ -29,7 +29,11 @@ database, which also knows the hidden ones:
 * ``NATURAL`` joins and ``USING`` are rejected in statements reading a table with
   hidden columns (the database matches columns the check cannot see), and so is a
   column alias list on such a table (``t AS x(a, b)`` renames columns by position,
-  hidden ones included).
+  hidden ones included);
+* a whole-row reference is rejected: a bare name equal to a source alias reads the
+  whole row (or a same-named hidden column), never a checked column. Bare names
+  matching the alias of a table with hidden columns are rejected before
+  qualification, and any ``TableColumn`` sqlglot produces is rejected after it.
 """
 
 from __future__ import annotations
@@ -53,6 +57,7 @@ HIDDEN_COLUMN_CODE = "hidden_column"
 UNRESOLVABLE_REFERENCE_CODE = "unresolvable_reference"
 IMPLICIT_JOIN_COLUMNS_CODE = "implicit_join_columns"
 RENAMED_COLUMNS_CODE = "renamed_columns"
+ROW_REFERENCE_CODE = "row_reference"
 
 _UNQUALIFIED = "rootcause_unqualified"
 _ANY_TYPE = "TEXT"
@@ -145,6 +150,7 @@ def check_selection(sql: str, policy: SelectionPolicy) -> frozenset[tuple[str, s
     _mark_unqualified(tree)
     if touches_hidden:
         _reject_alias_shadowing(tree, policy)
+        _reject_restricted_alias_names(tree, policy)
     try:
         qualified = qualify(
             tree,
@@ -157,6 +163,9 @@ def check_selection(sql: str, policy: SelectionPolicy) -> frozenset[tuple[str, s
         )
     except Exception:  # unresolvable column (hidden or unknown) or unsupported shape
         raise SelectionRejected(UNRESOLVABLE_REFERENCE_CODE) from None
+    if any(True for _ in qualified.find_all(exp.TableColumn)):
+        # A whole-row reference (bare source alias) is never column-checked.
+        raise SelectionRejected(ROW_REFERENCE_CODE)
     for scope, columns in _columns_by_scope(qualified):
         for column in columns:
             _check_column(column, scope, policy)
@@ -265,6 +274,32 @@ def _reject_alias_shadowing(tree: exp.Expr, policy: SelectionPolicy) -> None:
                 raise SelectionRejected(UNRESOLVABLE_REFERENCE_CODE)
 
 
+def _reject_restricted_alias_names(tree: exp.Expr, policy: SelectionPolicy) -> None:
+    """A bare name equal to the alias of a table with hidden columns reads its whole row."""
+    for scope, columns in _columns_by_scope(tree):
+        aliases = _restricted_aliases(scope, policy)
+        if any(not column.table and column.name in aliases for column in columns):
+            raise SelectionRejected(ROW_REFERENCE_CODE)
+
+
+def _restricted_aliases(scope: Scope, policy: SelectionPolicy) -> frozenset[str]:
+    """Names of sources over a table with hidden columns, in ``scope`` or enclosing it."""
+    names: set[str] = set()
+    current: Scope | None = scope
+    while current is not None:
+        sources = (
+            *((name, source) for name, (_, source) in current.selected_sources.items()),
+            *current.lateral_sources.items(),
+        )
+        names.update(
+            name
+            for name, source in sources
+            if isinstance(source, exp.Table) and (source.db, source.name) in policy.restricted
+        )
+        current = current.parent
+    return frozenset(names)
+
+
 def _is_bare_order_key(column: exp.Column, scope: Scope) -> bool:
     """Whether ``column`` is a whole ``ORDER BY`` key of its own query (not a window's).
 
@@ -371,6 +406,7 @@ __all__ = [
     "HIDDEN_COLUMN_CODE",
     "IMPLICIT_JOIN_COLUMNS_CODE",
     "RENAMED_COLUMNS_CODE",
+    "ROW_REFERENCE_CODE",
     "UNKNOWN_TABLE_CODE",
     "UNRESOLVABLE_REFERENCE_CODE",
     "RelationName",
