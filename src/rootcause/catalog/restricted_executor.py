@@ -94,6 +94,11 @@ def _has_expanding_star(sql: str, dialect: Dialect) -> bool:
     )
 
 
+def _codes_only(rejected: QueryRejected) -> QueryRejected:
+    """Drop the inner reasons: it validates against the full catalog, hidden columns included."""
+    return QueryRejected(rejected.codes)
+
+
 class SelectionExecutor:
     """Runs SQL and schema lookups over the selected part of a source only; thread-safe."""
 
@@ -119,15 +124,26 @@ class SelectionExecutor:
 
     def run(self, sql: str, purpose: str) -> QueryResult:
         self._check(sql)
-        return self._inner.run(sql, purpose)
+        try:
+            return self._inner.run(sql, purpose)
+        except QueryRejected as rejected:
+            raise _codes_only(rejected) from None
 
     def explain(self, sql: str) -> QueryEstimate:
         self._check(sql)
-        return self._inner.explain(sql)
+        try:
+            return self._inner.explain(sql)
+        except QueryRejected as rejected:
+            raise _codes_only(rejected) from None
 
     def _check(self, sql: str) -> None:
         """Lenient existence check, then the strict selection check; both fail closed."""
-        result = validate_sql(sql, self._dialect, catalog=self._snapshot)
+        result = validate_sql(
+            sql,
+            self._dialect,
+            catalog=self._snapshot,
+            functions=getattr(self._inner, "function_catalog", None),
+        )
         if not result.ok:
             raise QueryRejected(
                 [issue.code.value for issue in result.errors],

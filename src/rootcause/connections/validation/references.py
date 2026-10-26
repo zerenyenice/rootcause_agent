@@ -37,6 +37,9 @@ class ColumnRef(NamedTuple):
     qualifier: str
     db: str = ""
     catalog: str = ""
+    #: a bare name that also matches a select alias usable here (WHERE, later projection,
+    #: ORDER/GROUP/HAVING/QUALIFY); DuckDB binds a source column first, the alias otherwise
+    alias_candidate: bool = False
 
     @property
     def display(self) -> str:
@@ -108,8 +111,9 @@ def _column_ref(column: exp.Column) -> ColumnRef:
 def _scope_refs(statement: exp.Expr, scopes: list[Scope]) -> tuple[ScopeRefs, ...]:
     by_expression = {id(scope.expression): index for index, scope in enumerate(scopes)}
     owned: dict[int, list[ColumnRef]] = {}
-    for column, owner in _owned_columns(statement, scopes, by_expression):
-        owned.setdefault(owner, []).append(_column_ref(column))
+    for column, owner, alias_candidate in _owned_columns(statement, scopes, by_expression):
+        column_ref = _column_ref(column)._replace(alias_candidate=alias_candidate)
+        owned.setdefault(owner, []).append(column_ref)
     qualifiers: dict[int, Mapping[str, TableRef | None]] = {}
     built = {
         id(scope): _build_scope(scope, tuple(owned.get(index, ())), qualifiers)
@@ -133,8 +137,8 @@ def _ancestors(scope: Scope) -> Iterable[Scope]:
 
 def _owned_columns(
     statement: exp.Expr, scopes: list[Scope], by_expression: Mapping[int, int]
-) -> Iterable[tuple[exp.Column, int]]:
-    """Pair each checkable column with the scope that owns it (nearest enclosing scope)."""
+) -> Iterable[tuple[exp.Column, int, bool]]:
+    """Pair each checkable column with its owning scope (nearest enclosing) and alias flag."""
     for column in statement.find_all(exp.Column):
         if isinstance(column.this, exp.Star):
             continue
@@ -142,13 +146,12 @@ def _owned_columns(
         if owner is None:
             continue
         select = scopes[owner].expression
-        if (
+        alias_candidate = (
             not column.table
             and _is_projection_alias(select, column.name)
             and (in_alias_clause or _in_other_projection(select, column))
-        ):
-            continue
-        yield column, owner
+        )
+        yield column, owner, alias_candidate
 
 
 def _owner(column: exp.Column, by_expression: Mapping[int, int]) -> tuple[int | None, bool]:
@@ -165,8 +168,9 @@ def _owner(column: exp.Column, by_expression: Mapping[int, int]) -> tuple[int | 
 def _in_other_projection(select: exp.Expr, column: exp.Column) -> bool:
     """Whether ``column`` sits in a projection other than the one aliased with its own name.
 
-    ``SELECT a * 2 AS b, b + 1`` reads the alias ``b`` (a lateral column alias), while
-    ``SELECT x AS x`` reads the column ``x``.
+    ``SELECT a * 2 AS b, b + 1`` may read the alias ``b`` (a lateral column alias) while
+    ``SELECT x AS x`` can only read the column ``x``. Whether the alias is really used is
+    decided by the catalog check: a column of a source in scope wins over the alias.
     """
     name = column.name.lower()
     for projection in select.expressions:

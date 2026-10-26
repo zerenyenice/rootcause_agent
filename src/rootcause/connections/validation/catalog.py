@@ -178,6 +178,8 @@ def _bare_issue(
         return ValidationIssue(IssueCode.AMBIGUOUS_COLUMN, message)
     if owners or scope.opaque or _resolves_in_outer_scope(catalog, name, scope, resolved):
         return None
+    if column.alias_candidate:
+        return None  # no source has the column, so DuckDB binds the select alias
     known = _column_list(catalog.columns_of(key for keys in table_keys for key in keys))
     return ValidationIssue(
         IssueCode.UNKNOWN_COLUMN,
