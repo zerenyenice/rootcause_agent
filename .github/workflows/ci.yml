@@ -300,7 +300,7 @@ jobs:
       # uv itself is version-pinned so the runner resolves/installs exactly
       # like a developer's machine; bump deliberately via a `ci:` commit.
       - name: Install uv (cache keyed on uv.lock)
-        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           version: "0.13.5"
           enable-cache: true
@@ -448,7 +448,7 @@ jobs:
       # cache-suffix keeps this job's cache key distinct from python-quality's
       # (same uv.lock glob) so the jobs don't race to save one key.
       - name: Install uv (cache keyed on uv.lock)
-        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           version: "0.13.5"
           enable-cache: true
@@ -584,7 +584,7 @@ jobs:
       # cache-suffix keeps this job's cache key distinct from python-quality's
       # (same uv.lock glob) so the two jobs don't race to save one key.
       - name: Install uv (cache keyed on uv.lock)
-        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           version: "0.13.5"
           enable-cache: true
@@ -630,7 +630,7 @@ jobs:
       # cache-suffix keeps this job's cache key distinct from python-quality's
       # (same uv.lock glob) so the jobs don't race to save one key.
       - name: Install uv (cache keyed on uv.lock)
-        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           version: "0.13.5"
           enable-cache: true
